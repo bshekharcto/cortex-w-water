@@ -1,18 +1,35 @@
-export type BillingStatus = 'Paid' | 'Pending' | 'Overdue';
+export type BillingStatus = 'PAID' | 'PENDING' | 'OVERDUE' | 'Paid' | 'Pending' | 'Overdue';
+
+export interface BillChargeDTO {
+  id: number;
+  chargeName: string;
+  type: string;
+  rate: number;
+  amountCharged: number;
+}
 
 export interface BillDTO {
   id: number;
-  assetId: string;
-  householdId: string;
-  siteId: number;
-  billDate: string;
+  customId: string;
+  date: string;
   dueDate: string;
+  startDate: string;
+  endDate: string;
+  amount: number;
   prevReading: number;
   currentReading: number;
-  consumption: number;      // currentReading - prevReading, display only, spec 26.8
-  amount: number;           // server-computed, never calculated client-side
-  billCharges: Array<{ label: string; amount: number }>;
-  status: BillingStatus;
+  consumption?: number;
+  status: string;
+  siteId: number;
+  assetId: number;
+  siteName: string;
+  householdName?: string;
+  householdCustomId?: string;
+  address?: string;
+  ward?: string;
+  billCharges: BillChargeDTO[];
+  meterId: string;
+  city?: string;
 }
 
 export interface BillingSlabDTO {
@@ -21,4 +38,66 @@ export interface BillingSlabDTO {
   minUnits: number;
   maxUnits: number | null;
   ratePerUnit: number;
+}
+
+export interface BillingStats {
+  totalBills: number;
+  totalAmount: number;
+  overdueAmount: number;
+  paidAmount: number;
+  overdueCount: number;
+  paidCount: number;
+  pendingCount: number;
+  avgAmount: number;
+  totalConsM3?: number;
+  avgConsM3?: number;
+}
+
+export interface BillingListFilter {
+  page: number;
+  size: number;
+  startDate?: string;
+  endDate?: string;
+  search?: string;
+  status?: string;
+  city?: string;
+}
+
+export interface BillDetailResponse {
+  bill: BillDTO;
+  consumer: {
+    customId: string;
+    name: string;
+    address: string;
+    city: string;
+    ward: string;
+    siteName: string;
+    mobile?: string;
+  };
+  meter: {
+    meterId: string;
+    assetId: number;
+    currentReading: number;
+    prevReading: number;
+    consumption: number;
+    activeGisMeter: any;
+  };
+  charges: BillChargeDTO[];
+  dailyReadings: Array<{
+    date: string;
+    shortDate: string;
+    readingM3: number;
+    reading: number;
+    consumptionL: number;
+    consumptionM3: number;
+    consumption: number;
+    flag?: string;
+  }>;
+  tariffs: Array<{
+    slab: string;
+    min: number;
+    max: number | null;
+    rate: number;
+    unit: string;
+  }>;
 }

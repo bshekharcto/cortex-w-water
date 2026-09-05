@@ -1,18 +1,30 @@
 import { apiRequest } from './httpClient';
-import type { BillDTO, BillingSlabDTO } from '@/modules/consumer/billing/types/billing.types';
+import type {
+  BillDTO,
+  BillingSlabDTO,
+  BillingListFilter,
+  BillingStats,
+  BillDetailResponse,
+} from '@/modules/consumer/billing/types/billing.types';
 import type { SpringPage } from '@/modules/dashboard/types/dashboard.types';
 
-/**
- * Upstream draws a hard, easy-to-miss line between `POST /api/billing`
- * (list, no trailing slash) and `POST /api/billing/` (create, trailing
- * slash required) — spec 26.1/26.2/28.3. That distinction is preserved
- * inside the BFF's billing route handler. The frontend calls two clearly
- * named, unambiguous BFF routes so no one can collapse them back together
- * "for consistency."
- */
+export type BillingPageResponse = SpringPage<BillDTO> & {
+  stats?: BillingStats;
+};
+
 export const billingApi = {
-  list: (filter: { page: number; size: number; startDate?: string; endDate?: string }) =>
-    apiRequest<SpringPage<BillDTO>>('/billing/list', { method: 'POST', body: filter }),
+  /**
+   * List bills with date range, search, pagination, and status filters.
+   * Default date range is 2026-01-01 to 2026-02-28 to capture live Cognecto records.
+   */
+  list: (filter: BillingListFilter) =>
+    apiRequest<BillingPageResponse>('/billing/list', { method: 'POST', body: filter }),
+
+  /**
+   * Composite 360 Bill Detail with live meter telemetry and slab breakdown.
+   */
+  getDetail: (idOrCustomId: number | string) =>
+    apiRequest<BillDetailResponse>(`/billing/${encodeURIComponent(idOrCustomId)}/detail`),
 
   create: (payload: Omit<BillDTO, 'id' | 'amount' | 'billCharges'>) =>
     // Server computes amount/billCharges — spec 26.8. Never calculated client-side.
