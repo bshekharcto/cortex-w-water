@@ -1,0 +1,67 @@
+/*
+ * Command Center — scoped DARK theme.
+ *
+ * NOTE ON DEVIATION: the Cortex-W foundation spec (section 2.1, guardrails
+ * #6/#7) explicitly calls for Command Center to be rendered in the SAME
+ * light theme as the rest of the app, using the supplied dark screenshot
+ * only as a density/layout reference. This file is a deliberate, requested
+ * deviation: Command Center is the one screen that stays dark.
+ *
+ * Implementation choice: these variables are scoped to `.cw-scope-dark`,
+ * a wrapper that only ever wraps the Command Center route subtree. This is
+ * NOT a global dark-mode toggle — there is no user-facing light/dark switch,
+ * no persisted theme preference, and no other route may apply this class.
+ * Every other module continues to read the :root tokens in tokens.css
+ * untouched.
+ *
+ * Palette is derived from the existing Cortex sidebar navy (#111827) so
+ * Command Center reads as "the operational console" rather than an
+ * unrelated dark skin bolted onto the product.
+ */
+
+.cw-scope-dark {
+  --cw-bg: #0B0F19;
+  --cw-surface: #131A2A;
+  --cw-surface-soft: #1B2333;
+
+  /* Sidebar stays visually identical in both themes on purpose */
+  --cw-sidebar: #111827;
+  --cw-sidebar-hover: #1B2435;
+  --cw-sidebar-text: #CBD5E1;
+  --cw-sidebar-text-active: #FFFFFF;
+
+  --cw-primary: #7A7BFF;
+  --cw-primary-soft: rgba(91, 92, 246, 0.16);
+  --cw-primary-border: rgba(91, 92, 246, 0.35);
+
+  --cw-blue: #6C9CFF;
+  --cw-green: #4ADE8A;
+  --cw-green-soft: rgba(74, 222, 138, 0.14);
+  --cw-orange: #F59B4E;
+  --cw-orange-soft: rgba(245, 155, 78, 0.14);
+  --cw-red: #F0685F;
+  --cw-red-soft: rgba(240, 104, 95, 0.14);
+  --cw-purple: #B48CF2;
+  --cw-teal: #5CC7BB;
+
+  --cw-text: #E7ECF7;
+  --cw-text-muted: #9AA7C2;
+  --cw-text-faint: #6B7690;
+
+  --cw-border: #26304A;
+  --cw-border-strong: #313D5C;
+
+  --cw-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 1px rgba(0, 0, 0, 0.25);
+
+  background: var(--cw-bg);
+  color: var(--cw-text);
+  /* isolate so nothing in this subtree can leak dark vars to siblings */
+  isolation: isolate;
+}
+
+.cw-scope-dark .cw-surface {
+  background: var(--cw-surface);
+  border: var(--cw-border-width) solid var(--cw-border);
+  border-radius: var(--cw-radius-panel);
+  box-shadow: var(--cw-shadow-card);
+}

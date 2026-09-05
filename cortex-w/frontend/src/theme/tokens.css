@@ -1,0 +1,81 @@
+/*
+ * Cortex-W global design tokens — LIGHT (default application theme).
+ * Source: Cognecto Cortex-W Foundation Spec, section 3.2-3.4.
+ *
+ * Applied at :root. Every screen except Command Center reads these tokens
+ * as-is. Command Center overrides a subset locally — see
+ * commandCenterDarkTokens.css — it does NOT toggle these root variables.
+ */
+
+:root {
+  /* Surfaces */
+  --cw-bg: #F6F8FC;
+  --cw-surface: #FFFFFF;
+  --cw-surface-soft: #F9FAFC;
+
+  /* Sidebar (always dark navy, in both light app and dark Command Center) */
+  --cw-sidebar: #111827;
+  --cw-sidebar-hover: #1B2435;
+  --cw-sidebar-text: #CBD5E1;
+  --cw-sidebar-text-active: #FFFFFF;
+
+  /* Brand */
+  --cw-primary: #5B5CF6;
+  --cw-primary-soft: #EEF0FF;
+  --cw-primary-border: #DDE1FF;
+
+  /* Semantic */
+  --cw-blue: #4F7FF0;
+  --cw-green: #43A566;
+  --cw-green-soft: #EAF8EF;
+  --cw-orange: #E77A2D;
+  --cw-orange-soft: #FFF3E8;
+  --cw-red: #D85850;
+  --cw-red-soft: #FDEDEC;
+  --cw-purple: #9A62E8;
+  --cw-teal: #43988E;
+
+  /* Text */
+  --cw-text: #172033;
+  --cw-text-muted: #697386;
+  --cw-text-faint: #9AA4B2;
+
+  /* Borders */
+  --cw-border: #E4E9F1;
+  --cw-border-strong: #D7DEE9;
+
+  /* Shape */
+  --cw-radius-panel: 12px;
+  --cw-radius-control: 9px;
+  --cw-border-width: 1px;
+  --cw-shadow-card: 0 1px 2px rgba(23, 32, 51, 0.04), 0 1px 1px rgba(23, 32, 51, 0.03);
+
+  /* Spacing */
+  --cw-gutter-desktop: 24px;
+  --cw-gutter-compact: 16px;
+  --cw-card-padding: 20px;
+
+  /* Type */
+  --cw-font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --cw-font-page-title: 600 26px/1.25 var(--cw-font-family);
+  --cw-font-section-title: 600 18px/1.3 var(--cw-font-family);
+  --cw-font-kpi: 700 32px/1.1 var(--cw-font-family);
+  --cw-font-table-body: 400 13.5px/1.4 var(--cw-font-family);
+  --cw-font-meta: 400 11.5px/1.4 var(--cw-font-family);
+  --cw-letter-spacing-micro: 0.04em;
+}
+
+body {
+  margin: 0;
+  background: var(--cw-bg);
+  color: var(--cw-text);
+  font: 400 14px/1.5 var(--cw-font-family);
+}
+
+/* Utility used by every card-like surface app-wide (light mode default) */
+.cw-surface {
+  background: var(--cw-surface);
+  border: var(--cw-border-width) solid var(--cw-border);
+  border-radius: var(--cw-radius-panel);
+  box-shadow: var(--cw-shadow-card);
+}

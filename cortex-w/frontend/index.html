@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cortex-W | Water Intelligence</title>
+    <!--
+      Runtime config is loaded as a plain script BEFORE the Vite bundle so
+      that a single built Docker image can move between environments without
+      a rebuild. See public/runtime-config.js and src/config/runtimeConfig.ts.
+    -->
+    <script src="/runtime-config.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

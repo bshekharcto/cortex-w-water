@@ -1,0 +1,51 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cortexw
+      POSTGRES_USER: cortexw
+      POSTGRES_PASSWORD: cortexw_dev
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cortexw"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: ./backend
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      APP_DATA_MODE: seed
+      DATABASE_URL: postgres://cortexw:cortexw_dev@postgres:5432/cortexw
+      UPSTREAM_API_BASE_URL: https://api.cognecto.com
+      UPSTREAM_DATA_REST_URL: https://api.cognecto.com
+      COGNECTO_API_URL: https://api.cognecto.com
+      JWT_LOCAL_SIGNING_SECRET: cortex-w-dev-secret-change-me
+      CORS_ORIGIN: http://localhost:8088
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8088:80"
+    environment:
+      APP_DATA_MODE: seed
+      API_BASE_URL: http://localhost:4000/api
+      GOOGLE_MAPS_API_KEY: 'AIzaSyDPTspFcq0ZZ_Nbjg7HkSQ1toulXqW2XdQ'
+      SHOW_DEMO_AUTH: 'true'
+      ENABLE_HYDRAULIC_SEED: 'true'
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
