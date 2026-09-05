@@ -22,21 +22,30 @@ export interface GeofenceDTO {
   outAlertEnabled: boolean;
 }
 
+export interface GatewayCandidate {
+  gatewayNumber: number;
+  latitude: number;
+  longitude: number;
+  metersAssigned: number;
+  metersCoveredCount: number;
+  percentCovered?: number;
+  avgDistanceM: number | null;
+  maxDistanceM: number | null;
+  coverageScore?: number;
+  coverageRadiusM?: number;
+  nearestExistingName?: string | null;
+  nearestExistingDistanceM?: number | null;
+  assignedAssetIds: number[];
+}
+
 export interface GatewayPlacementResult {
   siteId: number;
   totalMeters: number;
   totalMetersCovered: number;
+  overallCoveragePercent?: number;
   excludedMeterCount: number;
   excludedAssetIds: number[];
-  gateways: Array<{
-    gatewayNumber: number;
-    latitude: number;
-    longitude: number;
-    metersAssigned: number;
-    metersCoveredCount: number;
-    avgDistanceM: number;
-    maxDistanceM: number;
-    coverageScore: number;
-    assignedAssetIds: number[];
-  }>;
+  gateways: GatewayCandidate[];
+  existingGatewaysCount?: number;
 }
+

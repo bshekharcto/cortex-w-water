@@ -432,5 +432,146 @@ router.get('/meter-detail/:assetId', async (req, res) => {
   }
 });
 
+// Helper: Haversine distance in meters
+function computeHaversineDistanceM(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// GET /api/gis/geofences & GET /api/gis/geofence
+async function handleGeofences(req: any, res: any) {
+  try {
+    const siteIds = req.query.siteIds || '6394';
+    const authHeader = req.headers.authorization;
+    const token = await getAuthToken(authHeader);
+    const upstream = await proxyUpstream('GET', '/api/map/geofence', {
+      query: { siteIds: String(siteIds) },
+      headers: token ? { Authorization: token } : {},
+    });
+    res.status(upstream.status).json(upstream.data || []);
+  } catch (err: any) {
+    console.error('[gis] Error fetching geofences:', err.message);
+    res.status(500).json({ error: 'Failed to fetch geofences' });
+  }
+}
+router.get('/geofences', handleGeofences);
+router.get('/geofence', handleGeofences);
+
+// GET /api/gis/asset-locations
+router.get('/asset-locations', async (req, res) => {
+  try {
+    const siteIds = req.query.siteIds || '6394';
+    const authHeader = req.headers.authorization;
+    const token = await getAuthToken(authHeader);
+    const upstream = await proxyUpstream('GET', '/api/map/asset-locations', {
+      query: { siteIds: String(siteIds) },
+      headers: token ? { Authorization: token } : {},
+    });
+    res.status(upstream.status).json(upstream.data || {});
+  } catch (err: any) {
+    console.error('[gis] Error fetching asset locations:', err.message);
+    res.status(500).json({ error: 'Failed to fetch asset locations' });
+  }
+});
+
+// POST /api/gis/gateway-placement/compute
+router.post('/gateway-placement/compute', async (req, res) => {
+  try {
+    const siteId = Number(req.body.siteId ?? 6394);
+    const gatewayCount = Number(req.body.gatewayCount ?? req.body.numberOfGateways ?? 5);
+    const coverageRadiusM = Number(req.body.coverageRadiusM ?? req.body.radius ?? 500);
+
+    const authHeader = req.headers.authorization;
+    const token = await getAuthToken(authHeader);
+    const headers: Record<string, string> = token ? { Authorization: token } : {};
+
+    // Parallel fetch: upstream compute + existing geofences to enrich nearest existing gateways
+    const [computeRes, fenceRes] = await Promise.all([
+      proxyUpstream('POST', '/api/map/gateway-placement/compute', {
+        body: { siteId, gatewayCount, coverageRadiusM },
+        headers,
+      }),
+      proxyUpstream('GET', '/api/map/geofence', {
+        query: { siteIds: String(siteId) },
+        headers,
+      }).catch(() => ({ status: 500, data: [] })),
+    ]);
+
+    if (computeRes.status !== 200 || !computeRes.data) {
+      return res.status(computeRes.status).json(computeRes.data || { error: 'Computation failed' });
+    }
+
+    const rawData = computeRes.data as any;
+    const rawGateways: any[] = Array.isArray(rawData.gateways) ? rawData.gateways : [];
+    const fences: any[] = Array.isArray(fenceRes.data) ? fenceRes.data : [];
+
+    // Filter valid existing gateways with coordinates
+    const existingGateways = fences.filter((f: any) => f.radius && f.geofenceCoordinates?.[0]);
+
+    // Enrich candidate gateways
+    const enrichedGateways = rawGateways.map((g: any, index: number) => {
+      const gNum = g.gatewayNumber ?? (index + 1);
+      const assigned = g.metersAssigned ?? g.assignedAssetIds?.length ?? 0;
+      const covered = g.metersCoveredCount ?? 0;
+      const percent = assigned > 0 ? Math.round((covered / assigned) * 100) : 0;
+      const avgDist = g.avgDistanceM ? Number(g.avgDistanceM.toFixed(1)) : null;
+      const maxDist = g.maxDistanceM ? Number(g.maxDistanceM.toFixed(1)) : null;
+
+      // Find nearest existing gateway using Haversine distance
+      let nearestName: string | null = null;
+      let nearestDist: number | null = null;
+
+      for (const ex of existingGateways) {
+        const coords = ex.geofenceCoordinates[0];
+        const d = computeHaversineDistanceM(g.latitude, g.longitude, coords.latitude, coords.longitude);
+        if (nearestDist === null || d < nearestDist) {
+          nearestDist = d;
+          nearestName = ex.name || 'Existing Gateway';
+        }
+      }
+
+      return {
+        ...g,
+        gatewayNumber: gNum,
+        metersAssigned: assigned,
+        metersCoveredCount: covered,
+        percentCovered: percent,
+        avgDistanceM: avgDist,
+        maxDistanceM: maxDist,
+        coverageRadiusM,
+        nearestExistingName: nearestName,
+        nearestExistingDistanceM: nearestDist !== null ? Number(nearestDist.toFixed(1)) : null,
+      };
+    });
+
+    const totalCovered = rawData.totalMetersCovered ?? enrichedGateways.reduce((sum, g) => sum + g.metersCoveredCount, 0);
+    const totalMeters = rawData.totalMeters ?? 15307;
+    const overallPercent = totalMeters > 0 ? Math.round((totalCovered / totalMeters) * 100) : 28;
+
+    res.json({
+      siteId,
+      gatewayCount,
+      coverageRadiusM,
+      totalMeters,
+      totalMetersCovered: totalCovered,
+      overallCoveragePercent: overallPercent,
+      excludedMeterCount: rawData.excludedMeterCount ?? 0,
+      excludedAssetIds: rawData.excludedAssetIds ?? [],
+      gateways: enrichedGateways,
+      existingGatewaysCount: existingGateways.length,
+    });
+  } catch (err: any) {
+    console.error('[gis] Error computing gateway placement:', err.message);
+    res.status(500).json({ error: 'Failed to compute gateway placement' });
+  }
+});
+
 export default router;
+
 

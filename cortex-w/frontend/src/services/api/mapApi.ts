@@ -78,11 +78,11 @@ export const mapApi = {
   getGatewayPerformance: (params?: { siteId?: string; fromDate?: string; toDate?: string }) =>
     apiRequest<Array<{ gatewayId: string; date: string; activeMeterCount: number }>>('/gis/performance', { query: params }),
 
-  getAssetLocations: () =>
-    apiRequest<Record<string, SensorRawDataDTO>>('/gis/asset-locations'),
+  getAssetLocations: (siteId: number = 6394) =>
+    apiRequest<Record<string, SensorRawDataDTO>>('/gis/asset-locations', { query: { siteIds: siteId } }),
 
-  getGeofences: () =>
-    apiRequest<GeofenceDTO[]>('/gis/geofences'),
+  getGeofences: (siteId: number = 6394) =>
+    apiRequest<GeofenceDTO[]>('/gis/geofences', { query: { siteIds: siteId } }),
 
   getLatestMeterTelemetry: (assetId: string) =>
     apiRequest<MeterWiseConsumptionDTO>(`/gis/meters/${assetId}/latest`),
