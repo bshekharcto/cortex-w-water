@@ -27,25 +27,28 @@ function readRuntimeConfig(): RuntimeConfig {
   const raw = (window.__CORTEX_W_RUNTIME_CONFIG__ as any) ?? {};
   const env = (import.meta as any).env ?? {};
 
+  const isCloud = typeof window !== 'undefined' && !window.location.hostname.includes('localhost') && !window.location.hostname.includes('127.0.0.1');
+
   if (!raw.GOOGLE_MAPS_API_KEY && env.VITE_GOOGLE_MAPS_API_KEY) {
     raw.GOOGLE_MAPS_API_KEY = env.VITE_GOOGLE_MAPS_API_KEY;
   }
   if (env.VITE_API_BASE_URL) {
     raw.API_BASE_URL = env.VITE_API_BASE_URL;
+  } else if (isCloud && (!raw.API_BASE_URL || raw.API_BASE_URL.includes('localhost'))) {
+    raw.API_BASE_URL = 'https://cortex-w-backend.vercel.app/api';
   }
   if (env.VITE_APP_DATA_MODE) {
     raw.APP_DATA_MODE = env.VITE_APP_DATA_MODE;
+  } else if (isCloud) {
+    raw.APP_DATA_MODE = 'api';
   }
 
   const parsed = RuntimeConfigSchema.safeParse(raw);
   if (!parsed.success) {
-    // Fail loud in dev, degrade to safe seed-mode defaults in prod rather
-    // than crashing the whole shell on a misconfigured container.
-    // eslint-disable-next-line no-console
     console.error('Invalid runtime config, falling back to defaults', parsed.error);
     return RuntimeConfigSchema.parse({
-      API_BASE_URL: env.VITE_API_BASE_URL || 'http://localhost:4000/api',
-      APP_DATA_MODE: env.VITE_APP_DATA_MODE || 'seed',
+      API_BASE_URL: raw.API_BASE_URL || (isCloud ? 'https://cortex-w-backend.vercel.app/api' : 'http://localhost:4000/api'),
+      APP_DATA_MODE: raw.APP_DATA_MODE || (isCloud ? 'api' : 'seed'),
     });
   }
   return parsed.data;
