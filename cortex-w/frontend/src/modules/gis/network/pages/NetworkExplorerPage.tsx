@@ -215,7 +215,8 @@ export function NetworkExplorerPage() {
   const MAX_VIEWPORT_PINS = 300;
 
   const visibleMeters = useMemo(() => {
-    if (!showMeters) return [];
+    // When clustering is active (default), MarkerClusterer handles pins natively on canvas
+    if (!showMeters || enableClustering) return [];
 
     // If a search query is active, show the matching meters directly
     if (searchQuery.trim().length > 0) {
@@ -243,7 +244,7 @@ export function NetworkExplorerPage() {
       },
       MAX_VIEWPORT_PINS
     );
-  }, [showMeters, mapBounds, mapZoom, spatialIndex, filteredMeters, searchQuery]);
+  }, [showMeters, enableClustering, mapBounds, mapZoom, spatialIndex, filteredMeters, searchQuery]);
 
   // Initialize Map
   useEffect(() => {
@@ -254,6 +255,8 @@ export function NetworkExplorerPage() {
     const map = new google.maps.Map(mapContainerRef.current, {
       center: ODISHA_CENTER,
       zoom: 10,
+      minZoom: 7,
+      maxZoom: 18,
       mapTypeId: 'roadmap',
       mapTypeControl: true,
       streetViewControl: false,
@@ -271,23 +274,37 @@ export function NetworkExplorerPage() {
       infoWindowRef.current?.close();
     });
 
-    // Debounced idle listener to update viewport bounds smoothly at 60 FPS
+    // Debounced idle listener to update viewport bounds smoothly without triggering HTML re-render loops
     const handleIdle = () => {
       if (debouncedIdleRef.current) clearTimeout(debouncedIdleRef.current);
       debouncedIdleRef.current = setTimeout(() => {
-        if (!map) return;
-        const b = map.getBounds();
-        const z = map.getZoom() ?? 13;
-        setMapZoom(z);
+        if (!mapInstanceRef.current) return;
+        const currentMap = mapInstanceRef.current;
+        const b = currentMap.getBounds();
+        const z = currentMap.getZoom() ?? 10;
+        setMapZoom((prev) => (prev !== z ? z : prev));
         if (b) {
-          setMapBounds({
-            minLat: b.getSouthWest().lat(),
-            minLng: b.getSouthWest().lng(),
-            maxLat: b.getNorthEast().lat(),
-            maxLng: b.getNorthEast().lng(),
+          const sw = b.getSouthWest();
+          const ne = b.getNorthEast();
+          setMapBounds((prev) => {
+            if (
+              prev &&
+              Math.abs(prev.minLat - sw.lat()) < 1e-4 &&
+              Math.abs(prev.maxLat - ne.lat()) < 1e-4 &&
+              Math.abs(prev.minLng - sw.lng()) < 1e-4 &&
+              Math.abs(prev.maxLng - ne.lng()) < 1e-4
+            ) {
+              return prev; // Bounds unchanged, skip React re-render
+            }
+            return {
+              minLat: sw.lat(),
+              minLng: sw.lng(),
+              maxLat: ne.lat(),
+              maxLng: ne.lng(),
+            };
           });
         }
-      }, 150);
+      }, 200);
     };
 
     map.addListener('idle', handleIdle);
@@ -295,6 +312,16 @@ export function NetworkExplorerPage() {
     infoWindowRef.current = new google.maps.InfoWindow();
     mapInstanceRef.current = map;
   }, [isLoaded]);
+
+  // Ensure Google Maps redraws its canvas whenever activeView switches back to 'map'
+  useEffect(() => {
+    if (activeView === 'map' && mapInstanceRef.current && (window as any).google?.maps) {
+      const timer = setTimeout(() => {
+        (window as any).google.maps.event.trigger(mapInstanceRef.current, 'resize');
+      }, 60);
+      return () => clearTimeout(timer);
+    }
+  }, [activeView]);
 
   // Draw Gateways
   useEffect(() => {
@@ -410,7 +437,7 @@ export function NetworkExplorerPage() {
       markerClustererRef.current = new MarkerClusterer({
         map: mapInstanceRef.current,
         markers: newMarkers,
-        algorithm: new SuperClusterAlgorithm({ maxZoom: 16, radius: 80 }),
+        algorithm: new SuperClusterAlgorithm({ maxZoom: 17, radius: 80 }),
         renderer: {
           render(cluster) {
             const count = cluster.count;
@@ -446,10 +473,18 @@ export function NetworkExplorerPage() {
         },
         onClusterClick: (_event, cluster, map) => {
           if (cluster.bounds) {
-            map.fitBounds(cluster.bounds);
-            const z = map.getZoom() || 13;
+            const currentZ = map.getZoom() || 10;
             if (cluster.bounds.getNorthEast().equals(cluster.bounds.getSouthWest())) {
-              map.setZoom(Math.min(z + 2, 19));
+              map.panTo(cluster.position);
+              map.setZoom(Math.min(currentZ + 2, 17));
+            } else {
+              map.fitBounds(cluster.bounds, 50);
+              google.maps.event.addListenerOnce(map, 'idle', () => {
+                const z = map.getZoom();
+                if (z && z > 17) {
+                  map.setZoom(17);
+                }
+              });
             }
           }
         },
@@ -712,131 +747,134 @@ export function NetworkExplorerPage() {
         </div>
       </div>
 
-      {/* Main Map View */}
-      {activeView === 'map' && (
-        <div className="gis-map-viewport">
-          <div ref={mapContainerRef} className="gis-google-map-canvas" />
+      {/* Main Map View - KEPT MOUNTED IN DOM TO PRESERVE GOOGLE MAPS CANVAS */}
+      <div
+        className="gis-map-viewport"
+        style={{
+          display: activeView === 'map' ? 'block' : 'none',
+        }}
+      >
+        <div ref={mapContainerRef} className="gis-google-map-canvas" />
 
-          {/* Floating Map Legend */}
-          <div className="gis-map-legend">
-            <span className="gis-legend-title">Map Legend</span>
-            <div className="gis-legend-item">
-              <span className="gis-legend-icon gis-legend-icon--gw" />
-              <span>LoRa Gateway (Radius Circle)</span>
-            </div>
-            <div className="gis-legend-item">
-              <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#2563EB', color: '#fff', fontSize: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>50</span>
-              <span>Meter Cluster (Click to Zoom)</span>
-            </div>
-            <div className="gis-legend-item">
-              <span className="gis-legend-icon gis-legend-icon--active" />
-              <span>Meter Active (&gt; -95 dBm)</span>
-            </div>
-            <div className="gis-legend-item">
-              <span className="gis-legend-icon gis-legend-icon--weak" />
-              <span>Weak Signal Link (&lt; -95 dBm)</span>
-            </div>
-            <div className="gis-legend-item">
-              <span className="gis-legend-icon gis-legend-icon--silent" />
-              <span>Silent / Problem Meter</span>
-            </div>
+        {/* Floating Map Legend */}
+        <div className="gis-map-legend">
+          <span className="gis-legend-title">Map Legend</span>
+          <div className="gis-legend-item">
+            <span className="gis-legend-icon gis-legend-icon--gw" />
+            <span>LoRa Gateway (Radius Circle)</span>
           </div>
-
-          {/* Live Performance HUD */}
-          <div className="gis-map-perf-pill">
-            <span className="gis-perf-dot" />
-            <span>
-              {enableClustering
-                ? `Clustering Active: ${filteredMeters.length.toLocaleString()} Meters Clustered • Click Cluster to Zoom`
-                : mapZoom < 14
-                ? `City View: 22 LoRa Gateways (${filteredMeters.length.toLocaleString()} Meters) • Zoom in for Street Pins`
-                : `Street Inspection: Showing ${renderedMetersCount} Pins in Viewport`}
-            </span>
-            <span className="gis-perf-divider">•</span>
-            <span>Zoom {mapZoom}</span>
-            {isCachedFromDb && (
-              <>
-                <span className="gis-perf-divider">•</span>
-                <span style={{ color: '#10B981', fontWeight: 600 }}>⚡ Local IndexedDB</span>
-              </>
-            )}
-            <span className="gis-perf-badge">60 FPS</span>
+          <div className="gis-legend-item">
+            <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#2563EB', color: '#fff', fontSize: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>50</span>
+            <span>Meter Cluster (Click to Zoom)</span>
           </div>
-
-          {/* Gateway Inspector Drawer */}
-          {selectedEntity?.type === 'gateway' && (
-            <div className="gis-inspector-drawer">
-              <div className="gis-drawer-header">
-                <div className="gis-drawer-title-group">
-                  <span className="gis-drawer-type">LoRaWAN Gateway</span>
-                  <span className="gis-drawer-name">{selectedEntity.data.alias}</span>
-                </div>
-                <button
-                  className="gis-drawer-close"
-                  onClick={() => setSelectedEntity(null)}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              <div className="gis-card">
-                <span className="gis-card-title">GATEWAY TELEMETRY</span>
-                <div className="gis-kv-row">
-                  <span className="gis-k">Gateway ID</span>
-                  <span className="gis-v">{selectedEntity.data.gatewayId}</span>
-                </div>
-                <div className="gis-kv-row">
-                  <span className="gis-k">Meters Heard</span>
-                  <span className="gis-v">{selectedEntity.data.metersObserved}</span>
-                </div>
-                <div className="gis-kv-row">
-                  <span className="gis-k">Avg RSSI / SNR</span>
-                  <span className="gis-v">
-                    {selectedEntity.data.avgRssi} dBm · {selectedEntity.data.avgSnr} dB
-                  </span>
-                </div>
-                <div className="gis-kv-row">
-                  <span className="gis-k">Coverage Radius</span>
-                  <span className="gis-v">{selectedEntity.data.radiusMeters} meters</span>
-                </div>
-                <div className="gis-kv-row">
-                  <span className="gis-k">Coordinates</span>
-                  <span className="gis-v">
-                    {selectedEntity.data.lat.toFixed(4)}, {selectedEntity.data.lng.toFixed(4)}
-                  </span>
-                </div>
-              </div>
-
-              <button
-                className="gis-action-btn"
-                onClick={() =>
-                  navigate(`/app/command-center?gateway=${selectedEntity.data.gatewayId}`)
-                }
-              >
-                Open in Command Center
-              </button>
-            </div>
-          )}
-
-          {/* Load error / fallback if Google Maps API key has domain or quota restriction */}
-          {loadError && (
-            <div className="gis-error-fallback">
-              <AlertTriangle size={32} color="#F59E0B" />
-              <strong style={{ fontSize: 14 }}>Google Maps Notice</strong>
-              <p style={{ fontSize: 12, color: '#64748B', margin: 0 }}>
-                {loadError}
-              </p>
-              <button
-                className="gis-action-btn"
-                style={{ marginTop: 8 }}
-                onClick={() => setActiveView('table')}
-              >
-                Switch to Table View
-              </button>
-            </div>
-          )}
+          <div className="gis-legend-item">
+            <span className="gis-legend-icon gis-legend-icon--active" />
+            <span>Meter Active (&gt; -95 dBm)</span>
+          </div>
+          <div className="gis-legend-item">
+            <span className="gis-legend-icon gis-legend-icon--weak" />
+            <span>Weak Signal Link (&lt; -95 dBm)</span>
+          </div>
+          <div className="gis-legend-item">
+            <span className="gis-legend-icon gis-legend-icon--silent" />
+            <span>Silent / Problem Meter</span>
+          </div>
         </div>
-      )}
+
+        {/* Live Performance HUD */}
+        <div className="gis-map-perf-pill">
+          <span className="gis-perf-dot" />
+          <span>
+            {enableClustering
+              ? `Clustering Active: ${filteredMeters.length.toLocaleString()} Meters Clustered • Click Cluster to Zoom`
+              : mapZoom < 14
+              ? `City View: 22 LoRa Gateways (${filteredMeters.length.toLocaleString()} Meters) • Zoom in for Street Pins`
+              : `Street Inspection: Showing ${renderedMetersCount} Pins in Viewport`}
+          </span>
+          <span className="gis-perf-divider">•</span>
+          <span>Zoom {mapZoom}</span>
+          {isCachedFromDb && (
+            <>
+              <span className="gis-perf-divider">•</span>
+              <span style={{ color: '#10B981', fontWeight: 600 }}>⚡ Local IndexedDB</span>
+            </>
+          )}
+          <span className="gis-perf-badge">60 FPS</span>
+        </div>
+
+        {/* Gateway Inspector Drawer */}
+        {selectedEntity?.type === 'gateway' && (
+          <div className="gis-inspector-drawer">
+            <div className="gis-drawer-header">
+              <div className="gis-drawer-title-group">
+                <span className="gis-drawer-type">LoRaWAN Gateway</span>
+                <span className="gis-drawer-name">{selectedEntity.data.alias}</span>
+              </div>
+              <button
+                className="gis-drawer-close"
+                onClick={() => setSelectedEntity(null)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="gis-card">
+              <span className="gis-card-title">GATEWAY TELEMETRY</span>
+              <div className="gis-kv-row">
+                <span className="gis-k">Gateway ID</span>
+                <span className="gis-v">{selectedEntity.data.gatewayId}</span>
+              </div>
+              <div className="gis-kv-row">
+                <span className="gis-k">Meters Heard</span>
+                <span className="gis-v">{selectedEntity.data.metersObserved}</span>
+              </div>
+              <div className="gis-kv-row">
+                <span className="gis-k">Avg RSSI / SNR</span>
+                <span className="gis-v">
+                  {selectedEntity.data.avgRssi} dBm · {selectedEntity.data.avgSnr} dB
+                </span>
+              </div>
+              <div className="gis-kv-row">
+                <span className="gis-k">Coverage Radius</span>
+                <span className="gis-v">{selectedEntity.data.radiusMeters} meters</span>
+              </div>
+              <div className="gis-kv-row">
+                <span className="gis-k">Coordinates</span>
+                <span className="gis-v">
+                  {selectedEntity.data.lat.toFixed(4)}, {selectedEntity.data.lng.toFixed(4)}
+                </span>
+              </div>
+            </div>
+
+            <button
+              className="gis-action-btn"
+              onClick={() =>
+                navigate(`/app/command-center?gateway=${selectedEntity.data.gatewayId}`)
+              }
+            >
+              Open in Command Center
+            </button>
+          </div>
+        )}
+
+        {/* Load error / fallback if Google Maps API key has domain or quota restriction */}
+        {loadError && (
+          <div className="gis-error-fallback">
+            <AlertTriangle size={32} color="#F59E0B" />
+            <strong style={{ fontSize: 14 }}>Google Maps Notice</strong>
+            <p style={{ fontSize: 12, color: '#64748B', margin: 0 }}>
+              {loadError}
+            </p>
+            <button
+              className="gis-action-btn"
+              style={{ marginTop: 8 }}
+              onClick={() => setActiveView('table')}
+            >
+              Switch to Table View
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Table View with Pagination */}
       {activeView === 'table' && (

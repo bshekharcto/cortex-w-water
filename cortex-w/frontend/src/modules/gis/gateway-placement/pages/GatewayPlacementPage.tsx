@@ -80,6 +80,8 @@ export function GatewayPlacementPage() {
     const map = new google.maps.Map(mapContainerRef.current, {
       center: currentSite.center || BHUBANESWAR_CENTER,
       zoom: 12,
+      minZoom: 8,
+      maxZoom: 18,
       mapTypeId: 'roadmap',
       mapTypeControl: true,
       mapTypeControlOptions: {
@@ -94,19 +96,33 @@ export function GatewayPlacementPage() {
     const handleIdle = () => {
       if (debouncedIdleRef.current) clearTimeout(debouncedIdleRef.current);
       debouncedIdleRef.current = setTimeout(() => {
-        if (!map) return;
-        const b = map.getBounds();
-        const z = map.getZoom() ?? 12;
-        setMapZoom(z);
+        if (!mapInstanceRef.current) return;
+        const currentMap = mapInstanceRef.current;
+        const b = currentMap.getBounds();
+        const z = currentMap.getZoom() ?? 12;
+        setMapZoom((prev) => (prev !== z ? z : prev));
         if (b) {
-          setMapBounds({
-            minLat: b.getSouthWest().lat(),
-            maxLat: b.getNorthEast().lat(),
-            minLng: b.getSouthWest().lng(),
-            maxLng: b.getNorthEast().lng(),
+          const sw = b.getSouthWest();
+          const ne = b.getNorthEast();
+          setMapBounds((prev) => {
+            if (
+              prev &&
+              Math.abs(prev.minLat - sw.lat()) < 1e-4 &&
+              Math.abs(prev.maxLat - ne.lat()) < 1e-4 &&
+              Math.abs(prev.minLng - sw.lng()) < 1e-4 &&
+              Math.abs(prev.maxLng - ne.lng()) < 1e-4
+            ) {
+              return prev;
+            }
+            return {
+              minLat: sw.lat(),
+              maxLat: ne.lat(),
+              minLng: sw.lng(),
+              maxLng: ne.lng(),
+            };
           });
         }
-      }, 120);
+      }, 150);
     };
 
     map.addListener('idle', handleIdle);
@@ -482,10 +498,18 @@ export function GatewayPlacementPage() {
             { lat: cluster.bounds.minLat, lng: cluster.bounds.minLng },
             { lat: cluster.bounds.maxLat, lng: cluster.bounds.maxLng }
           );
-          map.fitBounds(b);
-          const currentZ = map.getZoom() || 12;
-          if (b.getNorthEast().equals(b.getSouthWest())) {
+          if (cluster.bounds.minLat === cluster.bounds.maxLat && cluster.bounds.minLng === cluster.bounds.maxLng) {
+            map.panTo({ lat: cluster.lat, lng: cluster.lng });
+            const currentZ = map.getZoom() || 12;
             map.setZoom(Math.min(currentZ + 2, 17));
+          } else {
+            map.fitBounds(b);
+            google.maps.event.addListenerOnce(map, 'idle', () => {
+              const z = map.getZoom();
+              if (z && z > 17) {
+                map.setZoom(17);
+              }
+            });
           }
         });
 
