@@ -43,23 +43,6 @@ export function LoginForm() {
 
   return (
     <>
-      {/* Right-hand top developer quick-fill bar */}
-      <div className="cw-dev-topright-strip">
-        <span className="cw-dev-topright-label">Quick Fill:</span>
-        {DEMO_ROLES.map((r) => (
-          <button
-            key={r.label}
-            type="button"
-            id={`dev-quick-${r.label.toLowerCase().replace(/\s+/g, '-')}`}
-            className={`cw-dev-quickbtn ${activeRole === r.label ? 'cw-dev-quickbtn--active' : ''}`}
-            onClick={() => handleRoleSelect(r)}
-            title={`Fill ${r.label} credentials (${r.username} / ${r.password})`}
-          >
-            {r.label === 'WATCO' ? '★ WATCO' : r.label}
-          </button>
-        ))}
-      </div>
-
       <form onSubmit={handleSubmit} className="cw-login-form">
         <h1 style={{ font: 'var(--cw-font-page-title)', marginBottom: 4 }}>Sign in</h1>
         <p style={{ color: 'var(--cw-text-muted)', marginBottom: 20 }}>
@@ -77,7 +60,7 @@ export function LoginForm() {
                 className={`cw-demo-role-btn ${activeRole === r.label ? 'cw-demo-role-btn--active' : ''}`}
                 onClick={() => handleRoleSelect(r)}
               >
-                {r.label === 'WATCO' ? '★ WATCO' : r.label}
+                {r.label}
               </button>
               {idx < DEMO_ROLES.length - 1 && <span className="cw-demo-sep">|</span>}
             </span>
