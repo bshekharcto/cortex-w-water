@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <!-- Glowing Water Blue Gradient -->
+    <linearGradient id="waterGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="50%" stop-color="#00E5FF" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+
+    <!-- Outer Soft Glow Filter -->
+    <filter id="neonGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Ambient Outer Glow Line -->
+  <polygon
+    points="32,8 52.78,20 52.78,44 32,56 11.22,44 11.22,20"
+    stroke="#00E5FF"
+    stroke-width="6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    opacity="0.45"
+    filter="url(#neonGlow)"
+  />
+
+  <!-- Main Radiant Water Blue Line -->
+  <polygon
+    points="32,8 52.78,20 52.78,44 32,56 11.22,44 11.22,20"
+    stroke="url(#waterGlow)"
+    stroke-width="3"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    opacity="0.95"
+  />
+
+  <!-- Crisp Intense Inner White-Blue Core -->
+  <polygon
+    points="32,8 52.78,20 52.78,44 32,56 11.22,44 11.22,20"
+    stroke="#F0F9FF"
+    stroke-width="1.2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    opacity="0.9"
+  />
+</svg>
