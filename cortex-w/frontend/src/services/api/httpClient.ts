@@ -17,8 +17,17 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
+function getNormalizedBaseUrl(): string {
+  let base = (runtimeConfig.API_BASE_URL || 'https://cortex-w-backend.vercel.app/api').trim();
+  if (!base.endsWith('/api') && !base.endsWith('/api/')) {
+    base = base.replace(/\/+$/, '') + '/api';
+  }
+  return base.replace(/\/+$/, '') + '/';
+}
+
 function buildUrl(path: string, query?: Record<string, unknown>): string {
-  const url = new URL(path.replace(/^\//, ''), runtimeConfig.API_BASE_URL + '/');
+  const cleanPath = path.replace(/^\//, '').replace(/^api\//, '');
+  const url = new URL(cleanPath, getNormalizedBaseUrl());
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined && value !== null) {

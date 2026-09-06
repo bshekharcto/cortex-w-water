@@ -32,14 +32,27 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-// ---------- Routes ----------
+// ---------- Routes (support both /api/* and /* for bulletproof client routing) ----------
 app.use('/api/auth', authRoutes);
+app.use('/auth', authRoutes);
+
 app.use('/api/command-center', commandCenterRoutes);
+app.use('/command-center', commandCenterRoutes);
+
 app.use('/api/households', householdsRoutes);
+app.use('/households', householdsRoutes);
+
 app.use('/api/billing', billingRoutes);
+app.use('/billing', billingRoutes);
+
 app.use('/api/alarms', alarmsRoutes);
+app.use('/alarms', alarmsRoutes);
+
 app.use('/api/sites', sitesRoutes);
+app.use('/sites', sitesRoutes);
+
 app.use('/api/gis', gisRoutes);
+app.use('/gis', gisRoutes);
 
 // ---------- Run migrations at startup ----------
 async function runMigrations() {
