@@ -18,7 +18,19 @@ interface RequestOptions {
 }
 
 function getNormalizedBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    // If running in browser on localhost or 127.0.0.1, use same-origin '/api/'
+    // so Nginx reverse-proxies directly to backend container without cross-origin/PNA issues.
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      return `${window.location.origin}/api/`;
+    }
+  }
   let base = (runtimeConfig.API_BASE_URL || 'https://cortex-w-backend.vercel.app/api').trim();
+  if (base.startsWith('/')) {
+    if (typeof window !== 'undefined') {
+      base = `${window.location.origin}${base}`;
+    }
+  }
   if (!base.endsWith('/api') && !base.endsWith('/api/')) {
     base = base.replace(/\/+$/, '') + '/api';
   }

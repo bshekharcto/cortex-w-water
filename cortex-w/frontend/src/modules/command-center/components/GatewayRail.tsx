@@ -6,12 +6,14 @@ interface Props {
   gateways: GatewayItem[];
   selectedGatewayId: string | null;
   onSelectGateway: (id: string | null) => void;
+  loading?: boolean;
 }
 
 export function GatewayRail({
   gateways,
   selectedGatewayId,
   onSelectGateway,
+  loading,
 }: Props) {
   const [filter, setFilter] = useState<'ALL' | 'REPORTING' | 'DEGRADED' | 'STALE' | 'NO_TRAFFIC'>('ALL');
   const [railSearch, setRailSearch] = useState('');
@@ -38,7 +40,7 @@ export function GatewayRail({
       <div className="cc-rail-header">
         <div className="cc-rail-title-row">
           <span className="cc-rail-title">GATEWAYS</span>
-          <span className="cc-rail-count">{gateways.length} known</span>
+          <span className="cc-rail-count">{loading && gateways.length === 0 ? 'Syncing...' : `${gateways.length} known`}</span>
         </div>
 
         <div className="cc-rail-search-box">
@@ -66,6 +68,22 @@ export function GatewayRail({
       </div>
 
       <div className="cc-rail-list">
+        {loading && gateways.length === 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 8 }}>
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div key={i} className="cc-rail-item" style={{ cursor: 'default' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span className="cc-skeleton-box" style={{ width: 70, height: 14 }} />
+                  <span className="cc-skeleton-box" style={{ width: 45, height: 14, borderRadius: 4 }} />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span className="cc-skeleton-box" style={{ width: 85, height: 11 }} />
+                  <span className="cc-skeleton-box" style={{ width: 60, height: 11 }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
         {filteredList.map((gw) => {
           const isSelected = selectedGatewayId === gw.gatewayId;
           const statusDotClass =

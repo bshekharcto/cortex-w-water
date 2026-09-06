@@ -5,8 +5,8 @@
 
 cat <<JSEOF > /usr/share/nginx/html/runtime-config.js
 window.__CORTEX_W_RUNTIME_CONFIG__ = {
-  APP_DATA_MODE: '${APP_DATA_MODE:-seed}',
-  API_BASE_URL: '${API_BASE_URL:-http://localhost:4000/api}',
+  APP_DATA_MODE: '${APP_DATA_MODE:-api}',
+  API_BASE_URL: '${API_BASE_URL:-/api}',
   GOOGLE_MAPS_API_KEY: '${GOOGLE_MAPS_API_KEY:-}',
   SHOW_DEMO_AUTH: ${SHOW_DEMO_AUTH:-true},
   ENABLE_HYDRAULIC_SEED: ${ENABLE_HYDRAULIC_SEED:-true},

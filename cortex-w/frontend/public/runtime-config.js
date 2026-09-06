@@ -3,8 +3,8 @@
 // container's environment variables, so the same compiled JS bundle can run
 // against seed, staging, or production without a rebuild.
 window.__CORTEX_W_RUNTIME_CONFIG__ = {
-  APP_DATA_MODE: 'seed', // 'seed' | 'api' | 'hybrid'
-  API_BASE_URL: 'http://localhost:4000/api',
+  APP_DATA_MODE: 'api', // 'seed' | 'api' | 'hybrid'
+  API_BASE_URL: '/api',
   GOOGLE_MAPS_API_KEY: 'AIzaSyDPTspFcq0ZZ_Nbjg7HkSQ1toulXqW2XdQ',
   SHOW_DEMO_AUTH: true,
   ENABLE_HYDRAULIC_SEED: true,

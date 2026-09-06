@@ -1,7 +1,7 @@
 export type GatewayState = 'reporting' | 'degraded' | 'stale' | 'no-traffic' | 'never-observed';
 export type MeterState = 'live' | 'stale' | 'silent' | 'weak-rssi' | 'poor-snr' | 'multi-gw' | 'fcnt-gap' | 'gw-changed';
 export type GatewayTabType = 'METERS' | 'FRAMES' | 'TRAFFIC' | 'RADIO';
-export type TimeWindow = '1H' | '6H' | '24H' | '7D' | 'CUSTOM';
+export type TimeWindow = '1H' | '6H' | '24H' | '7D' | '30D' | 'CUSTOM';
 
 export interface GatewayItem {
   gatewayId: string;

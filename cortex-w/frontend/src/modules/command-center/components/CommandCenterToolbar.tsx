@@ -10,6 +10,10 @@ interface Props {
   onSearchChange: (q: string) => void;
   onRefresh: () => void;
   lastUpdatedText: string;
+  isSyncing?: boolean;
+  sites?: Array<{ id: string; name: string }>;
+  selectedSiteId?: string;
+  onSiteChange?: (siteId: string) => void;
 }
 
 export function CommandCenterToolbar({
@@ -21,6 +25,10 @@ export function CommandCenterToolbar({
   onSearchChange,
   onRefresh,
   lastUpdatedText,
+  isSyncing,
+  sites,
+  selectedSiteId = 'ALL',
+  onSiteChange,
 }: Props) {
   return (
     <div className="cc-toolbar-section">
@@ -52,8 +60,25 @@ export function CommandCenterToolbar({
             </button>
           </div>
 
-          <select className="cc-site-selector" defaultValue="6394">
-            <option value="6394">Site: BHUBANESWAR (6394)</option>
+          <select
+            className="cc-site-selector"
+            value={selectedSiteId}
+            onChange={(e) => onSiteChange?.(e.target.value)}
+          >
+            {sites && sites.length > 0 ? (
+              sites.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.id === 'ALL' ? 'All Sites (Fleet)' : `Site: ${s.name} (${s.id})`}
+                </option>
+              ))
+            ) : (
+              <>
+                <option value="ALL">All Sites (Fleet)</option>
+                <option value="6394">Site: BHUBANESWAR (6394)</option>
+                <option value="6916">Site: Cuttack (6916)</option>
+                <option value="6906">Site: Puri (6906)</option>
+              </>
+            )}
           </select>
         </div>
 
@@ -70,7 +95,7 @@ export function CommandCenterToolbar({
           </div>
 
           <div className="cc-time-group">
-            {(['1H', '6H', '24H', '7D', 'CUSTOM'] as TimeWindow[]).map((t) => (
+            {(['1H', '6H', '24H', '7D', '30D', 'CUSTOM'] as TimeWindow[]).map((t) => (
               <button
                 key={t}
                 className={`cc-time-btn ${timeRange === t ? 'cc-time-btn--active' : ''}`}
@@ -79,6 +104,14 @@ export function CommandCenterToolbar({
                 {t}
               </button>
             ))}
+          </div>
+
+          <div
+            className={`cc-sync-pill ${isSyncing ? '' : 'cc-sync-pill--live'}`}
+            title={isSyncing ? 'Synchronizing upstream telemetry stream...' : 'Live stream active'}
+          >
+            <span className="cc-sync-pulse-dot" />
+            <span>{isSyncing ? 'Syncing stream...' : 'Live Feed'}</span>
           </div>
 
           <div className="cc-live-badge" title="Auto refresh active (every 30s)">

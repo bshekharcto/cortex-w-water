@@ -1,4 +1,13 @@
 import { z } from 'zod';
+import { existsSync } from 'fs';
+
+if (existsSync('.env')) {
+  try {
+    process.loadEnvFile('.env');
+  } catch {
+    // ignore
+  }
+}
 
 const EnvSchema = z.object({
   PORT: z.coerce.number().default(4000),

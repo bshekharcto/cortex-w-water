@@ -1,10 +1,32 @@
 import { NetworkKpiData } from '../types/commandCenter.types';
 
 interface Props {
-  kpis: NetworkKpiData;
+  kpis?: NetworkKpiData | null;
+  loading?: boolean;
 }
 
-export function NetworkKpiStrip({ kpis }: Props) {
+export function NetworkKpiStrip({ kpis, loading }: Props) {
+  if (loading && !kpis) {
+    return (
+      <div className="cc-kpi-grid">
+        {[1, 2, 3, 4, 5, 6, 7].map((i) => (
+          <div key={i} className="cc-kpi-card" style={{ padding: '12px 14px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span className="cc-skeleton-box" style={{ width: 8, height: 8, borderRadius: '50%' }} />
+              <span className="cc-skeleton-box" style={{ width: '60%', height: 12 }} />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+              <span className="cc-skeleton-box" style={{ width: '45%', height: 24 }} />
+              <span className="cc-skeleton-box" style={{ width: '25%', height: 12 }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (!kpis) return null;
+
   return (
     <div className="cc-kpi-grid">
       {/* KPI 1 */}

@@ -59,7 +59,7 @@ async function runMigrations() {
   const distDir = join(__dirname, 'db', 'migrations');
   const srcDir = join(__dirname, '..', 'src', 'db', 'migrations');
   const migrationsDir = existsSync(distDir) ? distDir : srcDir;
-  for (const file of ['001_initial_schema.sql', '002_seed_data.sql']) {
+  for (const file of ['001_initial_schema.sql', '002_seed_data.sql', '005_raw_telemetry.sql']) {
     try {
       const sql = readFileSync(join(migrationsDir, file), 'utf-8');
       await pool.query(sql);

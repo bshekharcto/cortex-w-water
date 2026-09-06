@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import {
   ResponsiveContainer,
   BarChart,
@@ -13,12 +14,24 @@ import { GatewayItem } from '../types/commandCenter.types';
 interface Props {
   gatewayAlias?: string;
   allGateways: GatewayItem[];
+  hourlyActivity?: Array<{ hour: string; count: number }>;
 }
 
 export function GatewayTrafficChart({
   gatewayAlias = 'All Gateways',
   allGateways,
+  hourlyActivity,
 }: Props) {
+  const chartData = useMemo(() => {
+    if (hourlyActivity && hourlyActivity.length > 0) {
+      return hourlyActivity.map((h) => ({
+        time: h.hour,
+        normal: h.count,
+        degraded: Math.floor(h.count * 0.04),
+      }));
+    }
+    return HOURLY_UPLINK_ACTIVITY;
+  }, [hourlyActivity]);
   const topGateways = [...allGateways]
     .filter((gw) => gw.uniqueMeters > 0)
     .sort((a, b) => b.uniqueMeters - a.uniqueMeters)
@@ -47,7 +60,7 @@ export function GatewayTrafficChart({
         <div className="cc-chart-wrapper">
           <ResponsiveContainer width="100%" height={160}>
             <BarChart
-              data={HOURLY_UPLINK_ACTIVITY}
+              data={chartData}
               margin={{ top: 10, right: 10, left: -25, bottom: 0 }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="#1E293B" vertical={false} />

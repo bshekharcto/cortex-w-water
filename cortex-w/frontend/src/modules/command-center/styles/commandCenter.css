@@ -1099,3 +1099,61 @@
 .cc-feed-row:hover {
   background: #132038;
 }
+
+/* ---------- Skeleton Shimmer & Sync Indicators ---------- */
+@keyframes cc-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.cc-skeleton-box {
+  background: linear-gradient(90deg, #10192e 25%, #1e293b 50%, #10192e 75%);
+  background-size: 200% 100%;
+  animation: cc-shimmer 1.8s infinite ease-in-out;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.cc-sync-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(14, 165, 233, 0.12);
+  border: 1px solid rgba(14, 165, 233, 0.35);
+  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 9999px;
+  transition: all 0.2s ease;
+}
+
+.cc-sync-pill--live {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #34d399;
+}
+
+.cc-sync-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: currentColor;
+  box-shadow: 0 0 8px currentColor;
+  animation: cc-dot-pulse 1.5s infinite;
+}
+
+@keyframes cc-dot-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+}

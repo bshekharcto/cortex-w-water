@@ -7,8 +7,8 @@ import { z } from 'zod';
  * section 17.1 / 42.
  */
 const RuntimeConfigSchema = z.object({
-  APP_DATA_MODE: z.enum(['seed', 'api', 'hybrid']).default('seed'),
-  API_BASE_URL: z.string().url(),
+  APP_DATA_MODE: z.enum(['seed', 'api', 'hybrid']).default('api'),
+  API_BASE_URL: z.string().default('/api'),
   GOOGLE_MAPS_API_KEY: z.string().default(''),
   SHOW_DEMO_AUTH: z.boolean().default(false),
   ENABLE_HYDRAULIC_SEED: z.boolean().default(true),
@@ -47,8 +47,8 @@ function readRuntimeConfig(): RuntimeConfig {
   if (!parsed.success) {
     console.error('Invalid runtime config, falling back to defaults', parsed.error);
     return RuntimeConfigSchema.parse({
-      API_BASE_URL: raw.API_BASE_URL || (isCloud ? 'https://cortex-w-backend.vercel.app/api' : 'http://localhost:4000/api'),
-      APP_DATA_MODE: raw.APP_DATA_MODE || (isCloud ? 'api' : 'seed'),
+      API_BASE_URL: raw.API_BASE_URL || (isCloud ? 'https://cortex-w-backend.vercel.app/api' : '/api'),
+      APP_DATA_MODE: raw.APP_DATA_MODE || 'api',
     });
   }
   return parsed.data;

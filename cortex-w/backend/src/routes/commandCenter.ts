@@ -2,8 +2,78 @@ import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
+import { fetchAndAggregateTelemetry } from '../services/telemetryAggregator.js';
+import { getPostgresAggregatedSummary } from '../services/telemetryDbService.js';
 
 const router = Router();
+
+// ---------- Live Telemetry Aggregator (PostgreSQL 7-Day Default & Sub-second Feed) ----------
+
+router.get('/summary', async (req, res) => {
+  try {
+    const days = parseInt((req.query.days as string) || '7', 10);
+    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+    const refresh = req.query.refresh === 'true';
+    const siteId = (req.query.siteId as string) || (req.query.siteIds as string) || 'ALL';
+
+    try {
+      const pgSummary = await getPostgresAggregatedSummary(days, date, refresh, siteId);
+      return res.json(pgSummary);
+    } catch (pgErr: any) {
+      console.warn('[commandCenter] Fallback to memory aggregator:', pgErr.message);
+      const fallback = await fetchAndAggregateTelemetry(date, refresh);
+      return res.json(fallback);
+    }
+  } catch (err: any) {
+    console.error('[commandCenter] Error generating telemetry summary:', err);
+    res.status(500).json({ error: 'Failed to aggregate telemetry', message: err.message });
+  }
+});
+
+router.get('/feed', async (req, res) => {
+  try {
+    const limit = parseInt((req.query.limit as string) || '100', 10);
+    try {
+      const result = await pool.query(
+        'SELECT * FROM raw_telemetry_packets ORDER BY decoded_at DESC LIMIT $1',
+        [limit]
+      );
+      if (result.rows.length > 0) {
+        return res.json(
+          result.rows.map((r: any, idx: number) => ({
+            id: `feed-${r.id || idx}-${r.meter_id}`,
+            decodedAt: r.decoded_at,
+            meterTimestamp: r.meter_timestamp || r.decoded_at,
+            meterId: r.meter_id,
+            devEui: r.dev_eui,
+            gatewayId: r.gateway_id,
+            gatewayAlias: `GW-${(r.gateway_id || '').slice(-3).toUpperCase()}`,
+            fCnt: r.fcnt,
+            fPort: r.fport,
+            frequency: r.frequency,
+            dr: r.dr,
+            rssi: r.rssi,
+            snr: r.snr,
+            confirmed: r.confirmed,
+            adr: r.adr,
+            checksumStatus: r.checksum_status,
+            statusByte: r.status_byte,
+            statusEvent: r.reverse_flow > 0.05 ? 'WEAK_RSSI' : 'FRAME_RECEIVED',
+          }))
+        );
+      }
+    } catch (pgErr) {
+      // ignore and fallback
+    }
+
+    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+    const summary = await fetchAndAggregateTelemetry(date, false);
+    res.json((summary.recentFrames || []).slice(0, limit));
+  } catch (err: any) {
+    console.error('[commandCenter] Error getting live feed:', err);
+    res.status(500).json({ error: 'Failed to get live feed', message: err.message });
+  }
+});
 
 // ---------- Dashboard ----------
 

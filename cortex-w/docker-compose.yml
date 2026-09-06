@@ -39,8 +39,8 @@ services:
     ports:
       - "8088:80"
     environment:
-      APP_DATA_MODE: seed
-      API_BASE_URL: http://localhost:4000/api
+      APP_DATA_MODE: api
+      API_BASE_URL: /api
       GOOGLE_MAPS_API_KEY: 'AIzaSyDPTspFcq0ZZ_Nbjg7HkSQ1toulXqW2XdQ'
       SHOW_DEMO_AUTH: 'true'
       ENABLE_HYDRAULIC_SEED: 'true'
