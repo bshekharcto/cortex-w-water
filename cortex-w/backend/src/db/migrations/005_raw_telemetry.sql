@@ -35,7 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_raw_packets_gateway ON raw_telemetry_packets (gat
 CREATE INDEX IF NOT EXISTS idx_raw_packets_meter ON raw_telemetry_packets (meter_id, decoded_at DESC);
 
 CREATE TABLE IF NOT EXISTS telemetry_aggregation_cache (
-  cache_key VARCHAR(50) PRIMARY KEY,
+  cache_key VARCHAR(100) PRIMARY KEY,
   from_date VARCHAR(10) NOT NULL,
   to_date VARCHAR(10) NOT NULL,
   summary_json JSONB NOT NULL,
