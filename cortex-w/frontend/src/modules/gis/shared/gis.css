@@ -200,6 +200,10 @@
 .gis-legend-icon--active { background: #10B981; }
 .gis-legend-icon--weak { background: #F59E0B; }
 .gis-legend-icon--silent { background: #EF4444; }
+.gis-legend-icon--72h { background: #047857; border: 1.5px solid #FFFFFF; box-shadow: 0 0 3px rgba(4, 120, 87, 0.4); }
+.gis-legend-icon--10d { background: #10B981; border: 1.5px solid #FFFFFF; box-shadow: 0 0 3px rgba(16, 185, 129, 0.4); }
+.gis-legend-icon--30d { background: #86EFAC; border: 1.5px solid #059669; }
+.gis-legend-icon--never { background: #CBD5E1; border: 1.5px solid #64748B; }
 
 /* Right-hand Slide Drawer for Marker Inspection */
 .gis-inspector-drawer {

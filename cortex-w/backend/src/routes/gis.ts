@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { config } from '../config/env.js';
+import { pool } from '../db/pool.js';
 
 const router = Router();
 
@@ -72,7 +73,7 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
   const siteQuery: Record<string, string> = isAll ? {} : { siteIds: siteId };
 
   // Fetch in parallel
-  const [geoRes, perfRes, locRes, healthRes] = await Promise.all([
+  const [geoRes, perfRes, locRes, healthRes, dbTelemetryRes] = await Promise.all([
     proxyUpstream('GET', '/api/map/geofence', {
       query: siteQuery,
       headers,
@@ -89,6 +90,10 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       query: siteQuery,
       headers,
     }).catch(() => ({ status: 500, data: null })),
+    pool.query('SELECT meter_id, max(decoded_at) as last_seen FROM raw_telemetry_packets GROUP BY meter_id').catch((err) => {
+      console.warn('[gis] DB telemetry recency query notice:', err.message);
+      return { rows: [] };
+    }),
   ]);
 
   const geofences = Array.isArray(geoRes.data) ? geoRes.data : [];
@@ -96,7 +101,22 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
   const locations = typeof locRes.data === 'object' && locRes.data !== null ? (locRes.data as Record<string, any>) : {};
   const healthList = Array.isArray(healthRes.data) ? healthRes.data : [];
 
-  console.log(`[gis] Upstream fetch for site ${siteId}: geofences=${geofences.length} (status ${geoRes.status}), perf=${perfList.length}, locations=${Object.keys(locations).length}, health=${healthList.length}`);
+  // Build lookup map for meter telemetry recency from PostgreSQL
+  const dbLastSeenMap = new Map<string, string>();
+  if (dbTelemetryRes && Array.isArray(dbTelemetryRes.rows)) {
+    dbTelemetryRes.rows.forEach((r: any) => {
+      if (r.meter_id && r.last_seen) {
+        const iso = new Date(r.last_seen).toISOString();
+        const raw = String(r.meter_id);
+        dbLastSeenMap.set(raw, iso);
+        const clean = raw.replace(/^0+/, '');
+        dbLastSeenMap.set(clean, iso);
+        dbLastSeenMap.set(clean.padStart(10, '0'), iso);
+      }
+    });
+  }
+
+  console.log(`[gis] Upstream fetch for site ${siteId}: geofences=${geofences.length}, locations=${Object.keys(locations).length}, health=${healthList.length}, dbMetersWithTelemetry=${dbLastSeenMap.size}`);
 
   // 1. Process Gateways
   const gateways = geofences.map((g: any) => {
@@ -173,6 +193,24 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       defaultGatewayAlias = 'GW-2a0 (sector 11)';
     }
 
+    const rawMeterId = String(h.meterId || h.assetId || '');
+    const cleanId = rawMeterId.replace(/^0+/, '');
+    const paddedId = cleanId.padStart(10, '0');
+    const dbSeen = dbLastSeenMap.get(rawMeterId) || dbLastSeenMap.get(paddedId) || dbLastSeenMap.get(cleanId);
+    const finalLastSeen = dbSeen || h.lastSeenDate || h.decodedAt || 'Never';
+
+    let recencyBucket: 'last72h' | 'last10d' | 'last30d' | 'never' = 'never';
+    if (finalLastSeen && finalLastSeen !== 'Never') {
+      const ts = new Date(finalLastSeen).getTime();
+      if (!isNaN(ts)) {
+        const ageHours = Math.max(0, now - ts) / (1000 * 3600);
+        if (ageHours <= 72) recencyBucket = 'last72h';
+        else if (ageHours <= 240) recencyBucket = 'last10d';
+        else if (ageHours <= 720) recencyBucket = 'last30d';
+        else recencyBucket = 'never';
+      }
+    }
+
     return {
       id: h.meterId || String(h.assetId),
       assetId: h.assetId,
@@ -196,7 +234,8 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       batteryPercentage: h.batteryStatus === 'OK' ? 92 : 28,
       valveStatus: 'Normal',
       valveState: 'Open',
-      lastSeen: h.lastSeenDate || h.decodedAt || 'Recent',
+      lastSeen: finalLastSeen,
+      recencyBucket,
       pipeDiameter: '15mm (1/2")',
       connectionType: 'Domestic Metered',
       installDate: '2025-06-15',
@@ -204,8 +243,8 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       yesterdayConsumptionL: Math.round((h.assetId % 300) + 380),
       monthConsumptionM3: Number((((h.assetId % 100) + 120) / 10).toFixed(1)),
       last10DaysTotalL: Math.round(((h.assetId % 300) + 380) * 9.8),
-      lastSeenDate: h.lastSeenDate || '',
-      decodedAt: h.decodedAt || '',
+      lastSeenDate: finalLastSeen !== 'Never' ? finalLastSeen : '',
+      decodedAt: finalLastSeen !== 'Never' ? finalLastSeen : '',
     };
   }).filter((m: any) => m.lat !== null && m.lng !== null);
 

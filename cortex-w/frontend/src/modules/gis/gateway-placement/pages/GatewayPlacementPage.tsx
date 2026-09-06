@@ -19,6 +19,7 @@ import { mapApi } from '@/services/api/mapApi';
 import type { GatewayCandidate, GatewayPlacementResult, GeofenceDTO } from '../../shared/mapTypes';
 import { GatewayCandidateDrawer } from '../components/GatewayCandidateDrawer';
 import { MeterHistoryDrawer } from '../../shared/MeterHistoryDrawer';
+import { getMeterColorInfo } from '../../shared/meterColorUtils';
 import '../../shared/gis.css';
 
 // Supported sites matching Cognecto database
@@ -520,24 +521,19 @@ export function GatewayPlacementPage() {
 
     // Mode 2: Zoom >= 14 -> Render Viewport Capped Double-Sized Meter Markers
     visibleMeters.forEach((meter) => {
-      const color =
-        meter.status === 'active'
-          ? '#10B981'
-          : meter.status === 'weak'
-          ? '#F59E0B'
-          : '#EF4444';
+      const colorInfo = getMeterColorInfo(meter);
 
       const marker = new google.maps.Marker({
         position: { lat: meter.lat, lng: meter.lng },
         map,
-        title: `Meter ${meter.meterId} (${meter.householdName || 'Water Consumer'})`,
+        title: `Meter ${meter.meterId} (${meter.householdName || 'Water Consumer'}) • ${colorInfo.label}`,
         icon: {
           path: google.maps.SymbolPath.CIRCLE,
           scale: 8, // Doubled circle size matching Network Explorer
-          fillColor: color,
+          fillColor: colorInfo.color,
           fillOpacity: 0.95,
-          strokeColor: '#FFFFFF',
-          strokeWeight: 2,
+          strokeColor: colorInfo.strokeColor,
+          strokeWeight: colorInfo.strokeWeight,
         },
       });
 
@@ -785,6 +781,41 @@ export function GatewayPlacementPage() {
               />
               <span>Existing gateways</span>
             </label>
+          </div>
+
+          {/* Floating Map Legend */}
+          <div className="gis-map-legend" style={{ position: 'absolute', bottom: 80, left: 16 }}>
+            <span className="gis-legend-title">Telemetry Recency (Dot Fill)</span>
+            <div className="gis-legend-item">
+              <span className="gis-legend-icon gis-legend-icon--72h" />
+              <span>Last 72 Hours (Deep Green)</span>
+            </div>
+            <div className="gis-legend-item">
+              <span className="gis-legend-icon gis-legend-icon--10d" />
+              <span>Last 10 Days (Mid Green)</span>
+            </div>
+            <div className="gis-legend-item">
+              <span className="gis-legend-icon gis-legend-icon--30d" />
+              <span>Last 30 Days (Light Green)</span>
+            </div>
+            <div className="gis-legend-item">
+              <span className="gis-legend-icon gis-legend-icon--never" />
+              <span>Never Received (Light Gray)</span>
+            </div>
+            <div style={{ height: 1, background: '#E2E8F0', margin: '3px 0' }} />
+            <span className="gis-legend-title" style={{ fontSize: 9.5 }}>Signal Quality (Border)</span>
+            <div className="gis-legend-item">
+              <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2px solid #FFFFFF', display: 'inline-block' }} />
+              <span>Strong (&gt; -95 dBm · White)</span>
+            </div>
+            <div className="gis-legend-item">
+              <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2.5px solid #EAB308', display: 'inline-block' }} />
+              <span>Marginal (-95 to -105 dBm · Yellow)</span>
+            </div>
+            <div className="gis-legend-item">
+              <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2.5px solid #EF4444', display: 'inline-block' }} />
+              <span>Critical (&lt; -105 dBm · Red)</span>
+            </div>
           </div>
 
           {/* Floating Bottom Left Summary Bar matching screenshot */}

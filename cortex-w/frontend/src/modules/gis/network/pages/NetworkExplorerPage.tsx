@@ -24,6 +24,7 @@ import { mapApi } from '@/services/api/mapApi';
 import { SpatialGridIndex, BoundingBox } from '../../shared/spatialIndex';
 import { gisLocalDb } from '../../shared/gisLocalDb';
 import { MarkerClusterer, SuperClusterAlgorithm } from '@googlemaps/markerclusterer';
+import { getMeterColorInfo } from '../../shared/meterColorUtils';
 import '../../shared/gis.css';
 
 export function NetworkExplorerPage() {
@@ -402,23 +403,18 @@ export function NetworkExplorerPage() {
     );
 
     const newMarkers = validMeters.map((meter) => {
-      const color =
-        meter.status === 'active'
-          ? '#10B981'
-          : meter.status === 'weak'
-          ? '#F59E0B'
-          : '#EF4444';
+      const colorInfo = getMeterColorInfo(meter);
 
       const marker = new google.maps.Marker({
         position: { lat: meter.lat, lng: meter.lng },
-        title: `Meter ${meter.meterId} (${meter.householdName || 'Water Consumer'})`,
+        title: `Meter ${meter.meterId} (${meter.householdName || 'Water Consumer'}) • ${colorInfo.label}`,
         icon: {
           path: google.maps.SymbolPath.CIRCLE,
           scale: 8, // Doubled circle size for clarity
-          fillColor: color,
+          fillColor: colorInfo.color,
           fillOpacity: 0.95,
-          strokeColor: '#FFFFFF',
-          strokeWeight: 2,
+          strokeColor: colorInfo.strokeColor,
+          strokeWeight: colorInfo.strokeWeight,
         },
       });
 
@@ -535,24 +531,19 @@ export function NetworkExplorerPage() {
       if (!markersMap.has(meter.meterId)) {
         if (meter.lat == null || meter.lng == null) continue;
 
-        const color =
-          meter.status === 'active'
-            ? '#10B981'
-            : meter.status === 'weak'
-            ? '#F59E0B'
-            : '#EF4444';
+        const colorInfo = getMeterColorInfo(meter);
 
         const marker = new google.maps.Marker({
           position: { lat: meter.lat, lng: meter.lng },
           map: map,
-          title: `Meter ${meter.meterId} (${meter.householdName})`,
+          title: `Meter ${meter.meterId} (${meter.householdName}) • ${colorInfo.label}`,
           icon: {
             path: google.maps.SymbolPath.CIRCLE,
             scale: 8, // Doubled circle size
-            fillColor: color,
+            fillColor: colorInfo.color,
             fillOpacity: 0.95,
-            strokeColor: '#FFFFFF',
-            strokeWeight: 2,
+            strokeColor: colorInfo.strokeColor,
+            strokeWeight: colorInfo.strokeWeight,
           },
           optimized: true,
         });
@@ -758,7 +749,38 @@ export function NetworkExplorerPage() {
 
         {/* Floating Map Legend */}
         <div className="gis-map-legend">
-          <span className="gis-legend-title">Map Legend</span>
+          <span className="gis-legend-title">Telemetry Recency (Dot Fill)</span>
+          <div className="gis-legend-item">
+            <span className="gis-legend-icon gis-legend-icon--72h" />
+            <span>Last 72 Hours (Deep Green)</span>
+          </div>
+          <div className="gis-legend-item">
+            <span className="gis-legend-icon gis-legend-icon--10d" />
+            <span>Last 10 Days (Mid Green)</span>
+          </div>
+          <div className="gis-legend-item">
+            <span className="gis-legend-icon gis-legend-icon--30d" />
+            <span>Last 30 Days (Light Green)</span>
+          </div>
+          <div className="gis-legend-item">
+            <span className="gis-legend-icon gis-legend-icon--never" />
+            <span>Never Received (Light Gray)</span>
+          </div>
+          <div style={{ height: 1, background: '#E2E8F0', margin: '3px 0' }} />
+          <span className="gis-legend-title" style={{ fontSize: 9.5 }}>Signal Quality (Border)</span>
+          <div className="gis-legend-item">
+            <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2px solid #FFFFFF', display: 'inline-block' }} />
+            <span>Strong (&gt; -95 dBm · White)</span>
+          </div>
+          <div className="gis-legend-item">
+            <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2.5px solid #EAB308', display: 'inline-block' }} />
+            <span>Marginal (-95 to -105 dBm · Yellow)</span>
+          </div>
+          <div className="gis-legend-item">
+            <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2.5px solid #EF4444', display: 'inline-block' }} />
+            <span>Critical (&lt; -105 dBm · Red)</span>
+          </div>
+          <div style={{ height: 1, background: '#E2E8F0', margin: '3px 0' }} />
           <div className="gis-legend-item">
             <span className="gis-legend-icon gis-legend-icon--gw" />
             <span>LoRa Gateway (Radius Circle)</span>
@@ -766,18 +788,6 @@ export function NetworkExplorerPage() {
           <div className="gis-legend-item">
             <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#2563EB', color: '#fff', fontSize: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>50</span>
             <span>Meter Cluster (Click to Zoom)</span>
-          </div>
-          <div className="gis-legend-item">
-            <span className="gis-legend-icon gis-legend-icon--active" />
-            <span>Meter Active (&gt; -95 dBm)</span>
-          </div>
-          <div className="gis-legend-item">
-            <span className="gis-legend-icon gis-legend-icon--weak" />
-            <span>Weak Signal Link (&lt; -95 dBm)</span>
-          </div>
-          <div className="gis-legend-item">
-            <span className="gis-legend-icon gis-legend-icon--silent" />
-            <span>Silent / Problem Meter</span>
           </div>
         </div>
 
