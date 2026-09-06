@@ -64,15 +64,23 @@ async function runMigrations() {
 }
 
 // ---------- Start ----------
+export default app;
+
 async function start() {
   console.log(`[cortex-w bff] APP_DATA_MODE=${config.APP_DATA_MODE}`);
-  await runMigrations();
+  try {
+    await runMigrations();
+  } catch (e) {
+    console.warn('[db] Startup migration warning:', e);
+  }
   app.listen(config.PORT, () => {
     console.log(`[cortex-w bff] Listening on :${config.PORT}`);
   });
 }
 
-start().catch((err) => {
-  console.error('Fatal startup error:', err);
-  process.exit(1);
-});
+if (!process.env.VERCEL) {
+  start().catch((err) => {
+    console.error('Fatal startup error:', err);
+    process.exit(1);
+  });
+}
