@@ -4,8 +4,42 @@ import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { fetchAndAggregateTelemetry } from '../services/telemetryAggregator.js';
 import { getPostgresAggregatedSummary } from '../services/telemetryDbService.js';
+import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
 
 const router = Router();
+
+// ---------- Telemetry Sync & Cron Job ----------
+
+router.all('/sync-cron', async (req, res) => {
+  try {
+    // Optional Vercel CRON_SECRET authorization check
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret) {
+      const authHeader = req.headers.authorization;
+      if (authHeader !== `Bearer ${cronSecret}`) {
+        return res.status(401).json({ error: 'Unauthorized: invalid CRON_SECRET' });
+      }
+    }
+
+    const customDate = req.query.date as string | undefined;
+    const customDates = customDate ? [customDate] : undefined;
+
+    console.log('[commandCenter] Cron/Manual sync triggered:', {
+      ip: req.ip,
+      method: req.method,
+      customDate,
+    });
+
+    const result = await syncLatestTelemetry(customDates);
+    return res.json({
+      status: result.success ? 'success' : 'error',
+      ...result,
+    });
+  } catch (err: any) {
+    console.error('[commandCenter] Cron sync failed:', err);
+    return res.status(500).json({ error: 'Sync failed', message: err.message });
+  }
+});
 
 // ---------- Live Telemetry Aggregator (PostgreSQL 7-Day Default & Sub-second Feed) ----------
 

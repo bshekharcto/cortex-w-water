@@ -9,6 +9,12 @@
       }
     }
   ],
+  "crons": [
+    {
+      "path": "/api/command-center/sync-cron",
+      "schedule": "*/15 * * * *"
+    }
+  ],
   "routes": [
     {
       "src": "/(.*)",

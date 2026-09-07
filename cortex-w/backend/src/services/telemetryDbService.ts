@@ -176,7 +176,11 @@ export async function ingestDateIntoPostgres(date: string): Promise<number> {
 /**
  * Ensures the past N days of telemetry are stored in PostgreSQL
  */
-export async function ensureDaysIngested(days: number = 7, referenceDate?: string): Promise<{ datesIngested: string[]; totalPackets: number }> {
+export async function ensureDaysIngested(
+  days: number = 7,
+  referenceDate?: string,
+  forceDateIngestion: boolean = false
+): Promise<{ datesIngested: string[]; totalPackets: number }> {
   const ref = referenceDate ? new Date(referenceDate) : new Date();
   const dates: string[] = [];
 
@@ -196,8 +200,8 @@ export async function ensureDaysIngested(days: number = 7, referenceDate?: strin
     );
     const count = checkRes.rows[0]?.count ?? 0;
 
-    // Past dates don't change: if already ingested, keep it!
-    if (count > 0 && date < todayStr) {
+    // Past dates don't change unless forced: if already ingested, keep it!
+    if (!forceDateIngestion && count > 0 && date < todayStr) {
       totalPackets += count;
       continue;
     }
@@ -249,10 +253,21 @@ export async function getPostgresAggregatedSummary(
     }
   }
 
-  // 2. Ensure data is ingested in the background without blocking the API response
-  ensureDaysIngested(days, toDate).catch((err) =>
-    console.warn('[telemetryDb] Background ingestion note:', err.message)
-  );
+  // 2. Telemetry ingestion:
+  // If user requested manual refresh, await latest date ingestion so response is immediately fresh!
+  if (forceRefresh) {
+    try {
+      console.log(`[telemetryDb] Manual refresh requested: awaiting latest packets for ${toDate}...`);
+      await ingestDateIntoPostgres(toDate);
+    } catch (ingestErr: any) {
+      console.warn('[telemetryDb] Refresh ingestion warning:', ingestErr.message);
+    }
+  } else {
+    // Otherwise kick off non-blocking background ingestion
+    ensureDaysIngested(days, toDate).catch((err) =>
+      console.warn('[telemetryDb] Background ingestion note:', err.message)
+    );
+  }
 
   // 3. PostgreSQL SQL Aggregation: Overall KPIs
   const kpiRes = await pool.query(`
