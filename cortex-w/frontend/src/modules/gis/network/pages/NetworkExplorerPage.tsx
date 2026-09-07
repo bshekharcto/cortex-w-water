@@ -8,6 +8,9 @@ import {
   Map as MapIcon,
   BarChart3,
   AlertTriangle,
+  Info,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import { runtimeConfig } from '@/config/runtimeConfig';
 import { useGoogleMaps } from '../../shared/useGoogleMaps';
@@ -41,6 +44,7 @@ export function NetworkExplorerPage() {
   const [showCircles, setShowCircles] = useState(true);
   const [enableClustering, setEnableClustering] = useState(true);
   const [problemsOnly, setProblemsOnly] = useState(false);
+  const [isLegendOpen, setIsLegendOpen] = useState(false);
 
   // High-performance map viewport & LOD state
   const [mapZoom, setMapZoom] = useState<number>(10);
@@ -747,48 +751,99 @@ export function NetworkExplorerPage() {
       >
         <div ref={mapContainerRef} className="gis-google-map-canvas" />
 
-        {/* Floating Map Legend */}
-        <div className="gis-map-legend">
-          <span className="gis-legend-title">Telemetry Recency (Dot Fill)</span>
-          <div className="gis-legend-item">
-            <span className="gis-legend-icon gis-legend-icon--72h" />
-            <span>Last 72 Hours (Deep Green)</span>
-          </div>
-          <div className="gis-legend-item">
-            <span className="gis-legend-icon gis-legend-icon--10d" />
-            <span>Last 10 Days (Mid Green)</span>
-          </div>
-          <div className="gis-legend-item">
-            <span className="gis-legend-icon gis-legend-icon--30d" />
-            <span>Last 30 Days (Light Green)</span>
-          </div>
-          <div className="gis-legend-item">
-            <span className="gis-legend-icon gis-legend-icon--never" />
-            <span>Never Received (Light Gray)</span>
-          </div>
-          <div style={{ height: 1, background: '#E2E8F0', margin: '3px 0' }} />
-          <span className="gis-legend-title" style={{ fontSize: 9.5 }}>Signal Quality (Border)</span>
-          <div className="gis-legend-item">
-            <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2px solid #FFFFFF', display: 'inline-block' }} />
-            <span>Strong (&gt; -95 dBm · White)</span>
-          </div>
-          <div className="gis-legend-item">
-            <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2.5px solid #EAB308', display: 'inline-block' }} />
-            <span>Marginal (-95 to -105 dBm · Yellow)</span>
-          </div>
-          <div className="gis-legend-item">
-            <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2.5px solid #EF4444', display: 'inline-block' }} />
-            <span>Critical (&lt; -105 dBm · Red)</span>
-          </div>
-          <div style={{ height: 1, background: '#E2E8F0', margin: '3px 0' }} />
-          <div className="gis-legend-item">
-            <span className="gis-legend-icon gis-legend-icon--gw" />
-            <span>LoRa Gateway (Radius Circle)</span>
-          </div>
-          <div className="gis-legend-item">
-            <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#2563EB', color: '#fff', fontSize: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>50</span>
-            <span>Meter Cluster (Click to Zoom)</span>
-          </div>
+        {/* Floating Collapsible Map Legend (Bottom Left) */}
+        <div style={{ position: 'absolute', bottom: 20, left: 20, zIndex: 5 }}>
+          {!isLegendOpen ? (
+            <button
+              onClick={() => setIsLegendOpen(true)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 7,
+                background: 'rgba(255, 255, 255, 0.95)',
+                backdropFilter: 'blur(8px)',
+                border: '1px solid #CBD5E1',
+                borderRadius: 20,
+                padding: '6px 14px',
+                fontSize: 12,
+                fontWeight: 600,
+                color: '#1E293B',
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+              title="Click to view Map Legend & Signal Quality"
+            >
+              <Info size={14} color="#2563EB" />
+              <span>Map Legend</span>
+              <ChevronUp size={14} color="#64748B" />
+            </button>
+          ) : (
+            <div className="gis-map-legend" style={{ position: 'relative', bottom: 'auto', left: 'auto', minWidth: 260 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                <span className="gis-legend-title" style={{ margin: 0 }}>Map Legend</span>
+                <button
+                  onClick={() => setIsLegendOpen(false)}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    cursor: 'pointer',
+                    padding: '2px 4px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    color: '#64748B',
+                    fontSize: 11,
+                    fontWeight: 500,
+                  }}
+                  title="Close Legend"
+                >
+                  <span>Hide</span>
+                  <ChevronDown size={14} />
+                </button>
+              </div>
+
+              <div className="gis-legend-item">
+                <span className="gis-legend-icon gis-legend-icon--72h" />
+                <span>Last 72 Hours (Deep Green)</span>
+              </div>
+              <div className="gis-legend-item">
+                <span className="gis-legend-icon gis-legend-icon--10d" />
+                <span>Last 10 Days (Mid Green)</span>
+              </div>
+              <div className="gis-legend-item">
+                <span className="gis-legend-icon gis-legend-icon--30d" />
+                <span>Last 30 Days (Light Green)</span>
+              </div>
+              <div className="gis-legend-item">
+                <span className="gis-legend-icon gis-legend-icon--never" />
+                <span>Never Received (Light Gray)</span>
+              </div>
+              <div style={{ height: 1, background: '#E2E8F0', margin: '3px 0' }} />
+              <span className="gis-legend-title" style={{ fontSize: 9.5 }}>Signal Quality (Border)</span>
+              <div className="gis-legend-item">
+                <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2px solid #FFFFFF', display: 'inline-block' }} />
+                <span>Strong (&gt; -95 dBm · White)</span>
+              </div>
+              <div className="gis-legend-item">
+                <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2.5px solid #EAB308', display: 'inline-block' }} />
+                <span>Marginal (-95 to -105 dBm · Yellow)</span>
+              </div>
+              <div className="gis-legend-item">
+                <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2.5px solid #EF4444', display: 'inline-block' }} />
+                <span>Critical (&lt; -105 dBm · Red)</span>
+              </div>
+              <div style={{ height: 1, background: '#E2E8F0', margin: '3px 0' }} />
+              <div className="gis-legend-item">
+                <span className="gis-legend-icon gis-legend-icon--gw" />
+                <span>LoRa Gateway (Radius Circle)</span>
+              </div>
+              <div className="gis-legend-item">
+                <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#2563EB', color: '#fff', fontSize: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>50</span>
+                <span>Meter Cluster (Click to Zoom)</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Live Performance HUD */}
