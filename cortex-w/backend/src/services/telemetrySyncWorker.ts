@@ -1,6 +1,9 @@
 import { ingestDateIntoPostgres, getPostgresAggregatedSummary } from './telemetryDbService.js';
+import { pool } from '../db/pool.js';
 
 let isSyncing = false;
+let lastSyncStartTime = 0;
+const SYNC_LOCK_TIMEOUT_MS = 5 * 60 * 1000; // 5 minute max lock
 let schedulerTimer: NodeJS.Timeout | null = null;
 
 export interface SyncResult {
@@ -17,7 +20,8 @@ export interface SyncResult {
  * inserts new packets into PostgreSQL with deduplication, and pre-warms the summary cache.
  */
 export async function syncLatestTelemetry(customDates?: string[]): Promise<SyncResult> {
-  if (isSyncing) {
+  const nowMs = Date.now();
+  if (isSyncing && (nowMs - lastSyncStartTime) < SYNC_LOCK_TIMEOUT_MS) {
     console.log('[telemetrySync] Sync already in progress, skipping duplicate call.');
     return {
       success: true,
@@ -29,13 +33,28 @@ export async function syncLatestTelemetry(customDates?: string[]): Promise<SyncR
   }
 
   isSyncing = true;
+  lastSyncStartTime = Date.now();
   const startTime = Date.now();
-  const todayStr = new Date().toISOString().slice(0, 10);
   
-  // Default target dates: today and operational reference date 2026-09-06
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  
+  // Yesterday (bridges UTC vs local IST rollover)
+  const yesterday = new Date(now);
+  yesterday.setUTCDate(now.getUTCDate() - 1);
+  const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+  // 2 days ago (resilience for weekend or delayed ingestion)
+  const twoDaysAgo = new Date(now);
+  twoDaysAgo.setUTCDate(now.getUTCDate() - 2);
+  const twoDaysAgoStr = twoDaysAgo.toISOString().slice(0, 10);
+
+  // Default target dates: today, yesterday, 2-days-ago, and operational baseline 2026-09-06
   const targetDates = Array.from(
     new Set([
       todayStr,
+      yesterdayStr,
+      twoDaysAgoStr,
       '2026-09-06',
       ...(customDates || []),
     ])
@@ -44,11 +63,25 @@ export async function syncLatestTelemetry(customDates?: string[]): Promise<SyncR
   let totalAdded = 0;
   const syncedDates: string[] = [];
 
-  console.log(`[telemetrySync] Starting telemetry ping for dates: ${targetDates.join(', ')}...`);
+  console.log(`[telemetrySync] Starting telemetry ping for target dates: ${targetDates.join(', ')}...`);
 
   try {
     for (const date of targetDates) {
       try {
+        // For past dates: if already sufficiently backfilled in PostgreSQL, skip re-fetching
+        if (date < todayStr && !customDates?.includes(date)) {
+          const countRes = await pool.query(
+            'SELECT COUNT(*)::int as count FROM raw_telemetry_packets WHERE date_key = $1',
+            [date]
+          );
+          const existingCount = countRes.rows[0]?.count ?? 0;
+          if (existingCount >= 200) {
+            console.log(`[telemetrySync] Date ${date} already has ${existingCount} packets in PostgreSQL, skipping backfill.`);
+            syncedDates.push(date);
+            continue;
+          }
+        }
+
         const added = await ingestDateIntoPostgres(date);
         totalAdded += added;
         syncedDates.push(date);
@@ -58,11 +91,11 @@ export async function syncLatestTelemetry(customDates?: string[]): Promise<SyncR
       }
     }
 
-    // Pre-warm the cache for 7D and 30D fleet views
-    for (const date of targetDates) {
+    // Pre-warm the cache for 7D and 30D fleet views using SQL aggregation ONLY (skip re-ingestion)
+    for (const date of [todayStr, '2026-09-06']) {
       try {
-        await getPostgresAggregatedSummary(7, date, true, 'ALL');
-        await getPostgresAggregatedSummary(30, date, true, 'ALL');
+        await getPostgresAggregatedSummary(7, date, true, 'ALL', true);
+        await getPostgresAggregatedSummary(30, date, true, 'ALL', true);
       } catch (cacheErr: any) {
         console.warn(`[telemetrySync] Cache pre-warm note for ${date}:`, cacheErr.message);
       }

@@ -223,7 +223,8 @@ export async function getPostgresAggregatedSummary(
   days: number = 7,
   referenceDate?: string,
   forceRefresh: boolean = false,
-  siteId: string = 'ALL'
+  siteId: string = 'ALL',
+  skipIngestion: boolean = false
 ): Promise<TelemetrySummary> {
   const ref = referenceDate ? new Date(referenceDate) : new Date();
   const toDate = ref.toISOString().slice(0, 10);
@@ -255,14 +256,14 @@ export async function getPostgresAggregatedSummary(
 
   // 2. Telemetry ingestion:
   // If user requested manual refresh, await latest date ingestion so response is immediately fresh!
-  if (forceRefresh) {
+  if (forceRefresh && !skipIngestion) {
     try {
       console.log(`[telemetryDb] Manual refresh requested: awaiting latest packets for ${toDate}...`);
       await ingestDateIntoPostgres(toDate);
     } catch (ingestErr: any) {
       console.warn('[telemetryDb] Refresh ingestion warning:', ingestErr.message);
     }
-  } else {
+  } else if (!skipIngestion) {
     // Otherwise kick off non-blocking background ingestion
     ensureDaysIngested(days, toDate).catch((err) =>
       console.warn('[telemetryDb] Background ingestion note:', err.message)

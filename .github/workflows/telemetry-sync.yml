@@ -1,0 +1,22 @@
+name: Telemetry Sync Cron
+
+on:
+  schedule:
+    # Runs every 15 minutes, 24/7 (Free in GitHub Actions)
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub UI anytime
+
+jobs:
+  sync-telemetry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Telemetry Ingestion on Vercel Backend
+        run: |
+          echo "Triggering telemetry sync on cortex-w-backend..."
+          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" https://cortex-w-backend.vercel.app/api/command-center/sync-cron)
+          echo "HTTP Response Status: $HTTP_STATUS"
+          cat response.json
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Telemetry sync failed with status $HTTP_STATUS"
+            exit 1
+          fi
