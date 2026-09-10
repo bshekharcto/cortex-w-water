@@ -7,6 +7,7 @@ import {
   aggregateGlobalKpis,
   aggregateZoneKpis,
   aggregateDmaKpis,
+  computePercentages,
 } from './dashboardAggregation';
 
 // Lazy import for synthetic fixture data — tree-shaken when in pure api mode
@@ -119,14 +120,33 @@ export async function fetchDmaMeterRows(zoneId: string, dmaId: string): Promise<
   }
 
   // Synthesize sample meters for DMA preview if meters array empty in seed
-  const count = Math.min(dma.totalDevices, 15);
+  const count = Math.min(dma.totalDevices, 60);
   const sampleMeters: MeterRow[] = [];
+  const now = Date.now();
   for (let i = 1; i <= count; i++) {
-    const isConn = i <= Math.round(dma.connected * (count / dma.totalDevices));
+    const connCount = Math.round(dma.connected * (count / dma.totalDevices));
+    const discCount = Math.round(dma.disconnected * (count / dma.totalDevices));
+    let status: 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN';
+    let latestReadingAt: string | undefined;
+
+    if (i <= connCount) {
+      status = 'CONNECTED';
+      latestReadingAt = new Date(now - ((i * 27) % 28 + 1) * 86400 * 1000).toISOString();
+    } else if (i <= connCount + discCount) {
+      status = 'DISCONNECTED';
+      latestReadingAt = new Date(now - (35 + (i * 7) % 85) * 86400 * 1000).toISOString();
+    } else {
+      status = 'NEVER_SEEN';
+      latestReadingAt = undefined;
+    }
+
+    const dist = 90 + ((i * 47) % 1350);
+    const subDmaIdx = ((i - 1) % 4) + 1;
+
     sampleMeters.push({
       zoneName: zone?.zoneName || 'Bhubaneswar',
       dmaName: dma.dmaName,
-      subDmaName: `Sub-${dma.dmaName.split(' ')[0] || 'DMA'} 1`,
+      subDmaName: `Sub-${dma.dmaName.split(' ')[0] || 'DMA'} ${subDmaIdx}`,
       deviceId: `506f9800${String(i * 1000).padStart(8, '0')}`,
       meterId: `002500${String(i * 100).padStart(4, '0')}`,
       meterType: 'Axioma Qalcosonic W1',
@@ -134,11 +154,11 @@ export async function fetchDmaMeterRows(zoneId: string, dmaId: string): Promise<
       consumerName: `Consumer (${1550000 + i})`,
       address: `${zone?.zoneName || 'Bhubaneswar'}, ${dma.dmaName}`,
       meterSize: '15mm',
-      totalizerM3: 400 + i * 15,
-      latestReadingAt: new Date(Date.now() - i * 3600 * 1000).toISOString(),
-      connectivityStatus: isConn ? 'CONNECTED' : 'DISCONNECTED',
-      distanceMeters: 120 + i * 50,
-      isWithin1km: (120 + i * 50) <= 1000,
+      totalizerM3: status === 'NEVER_SEEN' ? 0 : Number((150 + i * 14.5).toFixed(2)),
+      latestReadingAt,
+      connectivityStatus: status,
+      distanceMeters: dist,
+      isWithin1km: dist <= 1000,
     });
   }
   return sampleMeters;
@@ -159,10 +179,32 @@ export async function fetchScopeKpis(scope: DashboardScope): Promise<DashboardKp
   }
 
   // DMA level
-  const meters = await fetchDmaMeterRows(scope.zoneId, scope.dmaId);
   const dmas = await fetchDmaRows(scope.zoneId);
   const matchedDma = dmas.find((d) => d.dmaId === scope.dmaId);
 
+  if (matchedDma && matchedDma.totalDevices > 0) {
+    const { connectedPct, disconnectedPct, neverSeenPct } = computePercentages(
+      matchedDma.connected,
+      matchedDma.disconnected,
+      matchedDma.neverSeen,
+      matchedDma.totalDevices
+    );
+    return {
+      totalDevices: matchedDma.totalDevices,
+      connected: matchedDma.connected,
+      disconnected: matchedDma.disconnected,
+      neverSeen: matchedDma.neverSeen,
+      connectedPct,
+      disconnectedPct,
+      neverSeenPct,
+      yesterdayFlowM3: matchedDma.yesterdayFlowM3,
+      todayFlowM3: matchedDma.todayFlowM3,
+      monthToDateFlowM3: matchedDma.monthToDateFlowM3,
+      dataTimestamp: matchedDma.dataTimestamp || new Date().toISOString(),
+    };
+  }
+
+  const meters = await fetchDmaMeterRows(scope.zoneId, scope.dmaId);
   return aggregateDmaKpis(meters, {
     yesterdayFlowM3: matchedDma?.yesterdayFlowM3 ?? 0,
     todayFlowM3: matchedDma?.todayFlowM3 ?? 0,

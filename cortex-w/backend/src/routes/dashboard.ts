@@ -79,25 +79,50 @@ const FALLBACK_DMAS: Record<string, any[]> = {
 };
 
 function generateFallbackMeters(dmaNum: string) {
-  const count = 10;
+  const count = 60;
   const meters = [];
+  const now = Date.now();
   for (let i = 1; i <= count; i++) {
+    const subDmaIndex = ((i - 1) % 4) + 1;
+    // Status distribution: ~44% Connected, ~20% Disconnected, ~36% Never Seen
+    let status: 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN';
+    let latestReadingAt: string | undefined;
+    let flowM3 = 0;
+
+    if (i <= 26) {
+      status = 'CONNECTED';
+      // Within last 30 days (1 to 28 days ago)
+      latestReadingAt = new Date(now - ((i * 27) % 28 + 1) * 86400 * 1000).toISOString();
+      flowM3 = 150 + (i * 19.5);
+    } else if (i <= 38) {
+      status = 'DISCONNECTED';
+      // Older than 30 days (35 to 120 days ago)
+      latestReadingAt = new Date(now - (35 + (i * 7) % 85) * 86400 * 1000).toISOString();
+      flowM3 = 80 + (i * 12.3);
+    } else {
+      status = 'NEVER_SEEN';
+      latestReadingAt = undefined;
+      flowM3 = 0;
+    }
+
+    const dist = 90 + ((i * 47) % 1350);
+
     meters.push({
       zoneName: 'Bhubaneswar',
       dmaName: `DMA ${dmaNum}`,
-      subDmaName: `Sub-DMA ${dmaNum}.1`,
-      deviceId: `506f9800${String(i * 1000).padStart(8, '0')}`,
-      meterId: `002500${String(i * 100).padStart(4, '0')}`,
+      subDmaName: `Sub-DMA ${dmaNum}.${subDmaIndex}`,
+      deviceId: `506f9800${String(i * 1000 + Number(dmaNum)).padStart(8, '0')}`,
+      meterId: `002500${String(i * 100 + Number(dmaNum)).padStart(4, '0')}`,
       meterType: 'Axioma Qalcosonic W1',
-      consumerId: `WS/BMC/${1550000 + i}`,
-      consumerName: `Consumer (${1550000 + i})`,
-      address: `Bhubaneswar, Sector ${dmaNum}`,
+      consumerId: `WS/BMC/${1550000 + Number(dmaNum) * 1000 + i}`,
+      consumerName: `Consumer (${1550000 + Number(dmaNum) * 1000 + i})`,
+      address: `Bhubaneswar North, Sector ${dmaNum} (Block ${String.fromCharCode(65 + (i % 6))})`,
       meterSize: '15mm',
-      totalizerM3: 400 + i * 15,
-      latestReadingAt: new Date(Date.now() - i * 3600 * 1000).toISOString(),
-      connectivityStatus: i <= 7 ? 'CONNECTED' : i <= 9 ? 'DISCONNECTED' : 'NEVER_SEEN',
-      distanceMeters: 100 + i * 80,
-      isWithin1km: (100 + i * 80) <= 1000,
+      totalizerM3: Number(flowM3.toFixed(2)),
+      latestReadingAt,
+      connectivityStatus: status,
+      distanceMeters: dist,
+      isWithin1km: dist <= 1000,
     });
   }
   return meters;
