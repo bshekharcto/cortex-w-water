@@ -130,6 +130,7 @@ async function runMigrations() {
     "001_initial_schema.sql",
     "002_seed_data.sql",
     "005_raw_telemetry.sql",
+    "006_geographical_dma.sql",
   ];
 
   for (const file of migrations) {
@@ -207,5 +208,10 @@ if (!process.env.VERCEL) {
     console.error("Fatal startup error:", err);
 
     process.exit(1);
+  });
+} else {
+  // On Vercel serverless, run migrations once on function cold-start
+  runMigrations().catch((err) => {
+    console.warn("[db] Vercel serverless cold-start migration notice:", err?.message || err);
   });
 }
