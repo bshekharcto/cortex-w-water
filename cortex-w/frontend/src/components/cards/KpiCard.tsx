@@ -21,6 +21,15 @@ const TONE_VAR: Record<NonNullable<KpiCardProps['iconTone']>, string> = {
   teal: '--cw-teal',
 };
 
+function getKpiFontSize(val: string): string {
+  const len = val.length;
+  if (len <= 6) return '26px';
+  if (len <= 8) return '22px';
+  if (len <= 11) return '19px';
+  if (len <= 14) return '16.5px';
+  return '15px';
+}
+
 export function KpiCard({ icon: Icon, iconTone = 'primary', label, value, subtitle, delta, onClick }: KpiCardProps) {
   const tone = TONE_VAR[iconTone];
   return (
@@ -33,9 +42,15 @@ export function KpiCard({ icon: Icon, iconTone = 'primary', label, value, subtit
       <div className="cw-kpi-icon" style={{ color: `var(${tone})`, background: `color-mix(in srgb, var(${tone}) 14%, transparent)` }}>
         <Icon size={18} strokeWidth={1.5} />
       </div>
-      <div className="cw-kpi-value" style={{ font: 'var(--cw-font-kpi)' }}>{value}</div>
-      <div className="cw-kpi-label">{label}</div>
-      {subtitle && <div className="cw-kpi-subtitle">{subtitle}</div>}
+      <div
+        className="cw-kpi-value"
+        style={{ fontSize: getKpiFontSize(value) }}
+        title={value}
+      >
+        {value}
+      </div>
+      <div className="cw-kpi-label" title={label}>{label}</div>
+      {subtitle && <div className="cw-kpi-subtitle" title={subtitle}>{subtitle}</div>}
       {delta && (
         <div className={clsx('cw-kpi-delta', delta.direction === 'up' ? 'cw-kpi-delta--up' : 'cw-kpi-delta--down')}>
           {delta.label}

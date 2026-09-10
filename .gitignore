@@ -31,3 +31,5 @@ Thumbs.db
 .tempmediaStorage/
 *.local
 scratch/
+cortex-w/scripts/*.sql
+*.tsbuildinfo

@@ -28,6 +28,7 @@ import { SpatialGridIndex, BoundingBox } from '../../shared/spatialIndex';
 import { gisLocalDb } from '../../shared/gisLocalDb';
 import { MarkerClusterer, SuperClusterAlgorithm } from '@googlemaps/markerclusterer';
 import { getMeterColorInfo } from '../../shared/meterColorUtils';
+import { getGatewayMapMarkerIcon, getGatewaySvg } from '../../shared/gatewayIconUtils';
 import '../../shared/gis.css';
 
 export function NetworkExplorerPage() {
@@ -344,15 +345,9 @@ export function NetworkExplorerPage() {
         const marker = new google.maps.Marker({
           position: { lat: gw.lat, lng: gw.lng },
           map: mapInstanceRef.current,
-          title: gw.alias,
-          icon: {
-            path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-            scale: 8,
-            fillColor: gw.status === 'degraded' ? '#F59E0B' : '#2563EB',
-            fillOpacity: 1,
-            strokeColor: '#FFFFFF',
-            strokeWeight: 2,
-          },
+          title: `${gw.alias} (${gw.status.toUpperCase()})`,
+          icon: getGatewayMapMarkerIcon(gw.status),
+          zIndex: 9999,
         });
 
         marker.addListener('click', () => {
@@ -835,8 +830,20 @@ export function NetworkExplorerPage() {
               </div>
               <div style={{ height: 1, background: '#E2E8F0', margin: '3px 0' }} />
               <div className="gis-legend-item">
-                <span className="gis-legend-icon gis-legend-icon--gw" />
-                <span>LoRa Gateway (Radius Circle)</span>
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 15,
+                    height: 17,
+                    flexShrink: 0,
+                  }}
+                  dangerouslySetInnerHTML={{
+                    __html: getGatewaySvg('reporting').replace('width="38"', 'width="15"').replace('height="44"', 'height="17"'),
+                  }}
+                />
+                <span>LoRa Gateway (Network Box &amp; Antenna)</span>
               </div>
               <div className="gis-legend-item">
                 <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#2563EB', color: '#fff', fontSize: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>50</span>

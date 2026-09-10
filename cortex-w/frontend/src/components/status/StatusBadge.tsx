@@ -16,6 +16,8 @@ const TONE_CLASS: Record<StatusTone, string> = {
  */
 export const STATUS_TONE_MAP: Record<string, StatusTone> = {
   Reporting: 'positive',
+  Connected: 'positive',
+  Disconnected: 'warning',
   Delayed: 'warning',
   Silent: 'negative',
   'Never Seen': 'negative',

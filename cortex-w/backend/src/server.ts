@@ -15,6 +15,7 @@ import billingRoutes from "./routes/billing.js";
 import alarmsRoutes from "./routes/alarms.js";
 import sitesRoutes from "./routes/sites.js";
 import gisRoutes from "./routes/gis.js";
+import dashboardRoutes from "./routes/dashboard.js";
 import { startTelemetrySyncScheduler } from "./services/telemetrySyncWorker.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -107,6 +108,10 @@ app.use("/sites", sitesRoutes);
 // GIS
 app.use("/api/gis", gisRoutes);
 app.use("/gis", gisRoutes);
+
+// Dashboard
+app.use("/api/dashboard", dashboardRoutes);
+app.use("/dashboard", dashboardRoutes);
 
 // ============================================================
 // Run Database Migrations

@@ -45,6 +45,8 @@ export function AppRouter() {
           <Route element={<AppShell />}>
             {/* GLOBAL TOOLS */}
             <Route path="/app/dashboard" element={<DashboardPage />} />
+            <Route path="/app/dashboard/zone/:zoneId" element={<DashboardPage />} />
+            <Route path="/app/dashboard/zone/:zoneId/dma/:dmaId" element={<DashboardPage />} />
             <Route element={<CommandCenterDarkScope />}>
               <Route path="/app/command-center" element={<CommandCenterPage />} />
               <Route path="/app/command-center/gateways/:gatewayId" element={<CommandCenterPage />} />
