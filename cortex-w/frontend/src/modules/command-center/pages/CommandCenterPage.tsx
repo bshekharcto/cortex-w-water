@@ -34,7 +34,7 @@ import {
   RawFrameItem,
 } from '../types/commandCenter.types';
 
-const TARGET_DATE = '2026-09-06';
+const TARGET_DATE = new Date().toISOString().slice(0, 10);
 
 export function CommandCenterPage() {
   const [activeMode, setActiveMode] = useState<'Gateways' | 'Meters'>('Gateways');
