@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { getAuthToken, getLiveGisData } from './gis.js';
+import { pool } from '../db/pool.js';
 
 const router = Router();
 
@@ -161,29 +162,54 @@ router.get('/:id/detail', async (req, res) => {
       lng: matchedMeter?.lng ?? null,
     };
 
-    // 4. Generate/aggregate daily readings
-    let dailyReadings = matchedMeter?.last10DaysReadings || [];
-    if (!dailyReadings || dailyReadings.length === 0) {
-      // Generate standard 10-day consumption chart for visualization
-      const dates = [];
-      for (let i = 9; i >= 0; i--) {
-        const d = new Date(Date.now() - i * 86400000);
-        dates.push(d.toISOString().split('T')[0]);
+    // 4. Last 10 actual readings for this household's meter (real data only, no fabricated fallback)
+    let dailyReadings: any[] = [];
+    const meterIdForReadings = matchedMeter?.meterId;
+    if (meterIdForReadings) {
+      try {
+        // One reading per unique calendar day (the latest reading of that day), last 10 unique days
+        const readingsRes = await pool.query(
+          `SELECT DISTINCT ON (date_key) date_key, decoded_at, forward_flow_l
+           FROM raw_telemetry_packets
+           WHERE meter_id = $1
+           ORDER BY date_key DESC, decoded_at DESC
+           LIMIT 10`,
+          [meterIdForReadings]
+        );
+        const realRows = readingsRes.rows.reverse(); // oldest -> newest for charting
+        dailyReadings = realRows.map((r: any, idx: number) => {
+          // forward_flow_l column stores KL (kilolitres) natively — 1 KL === 1 m3
+          const readingKl = Number(r.forward_flow_l) || 0;
+          const prevReadingKl = idx > 0 ? Number(realRows[idx - 1].forward_flow_l) || 0 : readingKl;
+          const consKl = Math.max(0, readingKl - prevReadingKl);
+          const consL = Math.round(consKl * 1000);
+          const dateStr = new Date(r.decoded_at).toISOString();
+          return {
+            date: dateStr.split('T')[0],
+            shortDate: dateStr.slice(5, 10),
+            readingM3: Number(readingKl.toFixed(3)),
+            reading: Number(readingKl.toFixed(3)),
+            consumptionL: consL,
+            consumptionM3: Number(consKl.toFixed(3)),
+            consumption: consL,
+            flag: 'Normal',
+          };
+        });
+      } catch (err: any) {
+        console.warn('[households] Failed to fetch real readings:', err.message);
       }
-      const baseReading = matchedMeter?.currentReadingM3 || 142.5;
-      dailyReadings = dates.map((date, idx) => {
-        const consL = Math.round(380 + Math.sin(idx) * 90 + (idx % 3) * 45);
-        const rd = Number((baseReading - (9 - idx) * 0.42).toFixed(2));
-        return {
-          date,
-          shortDate: date.slice(5),
-          readingM3: rd,
-          reading: rd,
-          consumptionL: consL,
-          consumptionM3: Number((consL / 1000).toFixed(3)),
-          consumption: consL,
-          flag: idx === 7 ? 'Peak' : 'Normal',
-        };
+    }
+    // Pad with zero-value entries if fewer than 10 real readings exist (no fabricated data)
+    while (dailyReadings.length < 10) {
+      dailyReadings.unshift({
+        date: null,
+        shortDate: '--',
+        readingM3: 0,
+        reading: 0,
+        consumptionL: 0,
+        consumptionM3: 0,
+        consumption: 0,
+        flag: 'No Data',
       });
     }
 
