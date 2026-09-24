@@ -25,13 +25,18 @@ export async function fetchZoneRows(): Promise<ZoneRow[]> {
   if (runtimeConfig.APP_DATA_MODE !== 'seed') {
     try {
       const res = await apiRequest<ZoneRow[]>('/dashboard/zones');
-      if (Array.isArray(res) && res.length > 0) return res;
+      // Real API call succeeded — even a genuinely empty result is the truth,
+      // not a reason to fall back to fake data.
+      if (Array.isArray(res)) return res;
     } catch (err) {
-      console.warn('[dashboardDataService] Error fetching zone rows from API, using fallback baseline:', err);
+      console.warn('[dashboardDataService] Error fetching zone rows from API:', err);
     }
+    // Real call failed outright (network/API error) — report empty rather
+    // than silently substituting fake demo numbers in production.
+    return [];
   }
 
-  // Graceful fallback to verified baseline data
+  // Seed mode only: synthetic fixture data
   const seed = await getSeedData();
   return seed.zones.map((z) => ({
     zoneId: z.zoneId,
@@ -54,13 +59,14 @@ export async function fetchDmaRows(zoneId: string): Promise<DmaRow[]> {
   if (runtimeConfig.APP_DATA_MODE !== 'seed') {
     try {
       const res = await apiRequest<DmaRow[]>(`/dashboard/zone/${encodeURIComponent(zoneId)}/dmas`);
-      if (Array.isArray(res) && res.length > 0) return res;
+      if (Array.isArray(res)) return res;
     } catch (err) {
-      console.warn('[dashboardDataService] Error fetching DMA rows from API, using fallback baseline:', err);
+      console.warn('[dashboardDataService] Error fetching DMA rows from API:', err);
     }
+    return [];
   }
 
-  // Graceful fallback to verified baseline data
+  // Seed mode only: synthetic fixture data
   const seed = await getSeedData();
   const zone = seed.zones.find(
     (z) => z.zoneId === zoneId || z.zoneName.toLowerCase() === zoneId.replace(/^zone-/, '').toLowerCase()
@@ -89,13 +95,14 @@ export async function fetchDmaMeterRows(zoneId: string, dmaId: string): Promise<
   if (runtimeConfig.APP_DATA_MODE !== 'seed') {
     try {
       const res = await apiRequest<MeterRow[]>(`/dashboard/dma/${encodeURIComponent(dmaId)}/meters`);
-      if (Array.isArray(res) && res.length > 0) return res;
+      if (Array.isArray(res)) return res;
     } catch (err) {
-      console.warn('[dashboardDataService] Error fetching meter rows from API, using fallback baseline:', err);
+      console.warn('[dashboardDataService] Error fetching meter rows from API:', err);
     }
+    return [];
   }
 
-  // Graceful fallback to verified baseline data
+  // Seed mode only: synthetic fixture data
   const seed = await getSeedData();
   const zone = seed.zones.find(
     (z) => z.zoneId === zoneId || z.zoneName.toLowerCase() === zoneId.replace(/^zone-/, '').toLowerCase()

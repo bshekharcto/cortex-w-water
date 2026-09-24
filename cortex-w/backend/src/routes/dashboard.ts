@@ -1,7 +1,17 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
+import { config } from '../config/env.js';
 
 const router = Router();
+
+// The FALLBACK_ constants below are seed/demo data only — this whole module
+// currently has no real backing data source (unlike gis.ts, which now reads
+// real telemetry). Outside of seed mode, missing data must be reported as
+// genuinely empty, never as these fabricated numbers. See
+// ECOSYSTEM_ARCHITECTURE.md for the plan to give this module a real endpoint.
+function isSeedMode() {
+  return config.APP_DATA_MODE === 'seed';
+}
 
 const ZONE_SLUG_MAP: Record<string, string> = {
   'zone-bhubaneswar': 'Bhubaneswar',
@@ -178,10 +188,10 @@ router.get('/zones', async (req, res) => {
       return res.json(mapped);
     }
 
-    return res.json(FALLBACK_ZONES);
+    return res.json(isSeedMode() ? FALLBACK_ZONES : []);
   } catch (err: any) {
-    console.warn('[dashboard] DB query failed in /zones, returning fallback data:', err?.message || err);
-    return res.json(FALLBACK_ZONES);
+    console.warn('[dashboard] DB query failed in /zones:', err?.message || err);
+    return res.json(isSeedMode() ? FALLBACK_ZONES : []);
   }
 });
 
@@ -247,10 +257,11 @@ router.get('/zone/:zoneId/dmas', async (req, res) => {
       return res.json(dmaRows);
     }
 
-    // Fallback if no matching rows in DB
-    return res.json(FALLBACK_DMAS[fallbackKey] || []);
+    // No matching rows in DB
+    return res.json(isSeedMode() ? (FALLBACK_DMAS[fallbackKey] || []) : []);
   } catch (err: any) {
-    console.warn('[dashboard] DB error fetching DMAs, returning fallback:', err?.message || err);
+    console.warn('[dashboard] DB error fetching DMAs:', err?.message || err);
+    if (!isSeedMode()) return res.json([]);
     const targetZone = ZONE_SLUG_MAP[req.params.zoneId?.toLowerCase() || ''] || req.params.zoneId || '';
     const fallbackKey = targetZone.toLowerCase().includes('bhubaneswar')
       ? 'bhubaneswar'
@@ -337,10 +348,10 @@ router.get('/dma/:dmaId/meters', async (req, res) => {
       return res.json(meterRows);
     }
 
-    return res.json(generateFallbackMeters(dmaNum));
+    return res.json(isSeedMode() ? generateFallbackMeters(dmaNum) : []);
   } catch (err: any) {
-    console.warn('[dashboard] Error fetching DMA meters, returning fallback preview:', err?.message || err);
-    return res.json(generateFallbackMeters(dmaNum));
+    console.warn('[dashboard] Error fetching DMA meters:', err?.message || err);
+    return res.json(isSeedMode() ? generateFallbackMeters(dmaNum) : []);
   }
 });
 
