@@ -156,7 +156,7 @@ router.get('/:id/detail', async (req, res) => {
       mobile: initialHousehold?.mobile || '—',
       siteName: hmdData.siteName || initialHousehold?.siteName || detectedCity,
       status: initialHousehold?.status || (matchedMeter ? 'ACTIVE' : 'REGISTERED'),
-      registrationDate: initialHousehold?.registrationDate || '2025-06-15',
+      registrationDate: initialHousehold?.registrationDate || null,
       city: detectedCity,
       lat: matchedMeter?.lat ?? null,
       lng: matchedMeter?.lng ?? null,
@@ -213,21 +213,44 @@ router.get('/:id/detail', async (req, res) => {
       });
     }
 
+    // Fetch this household's real most recent bill instead of fabricating one.
+    let latestBill: any = null;
+    try {
+      const wideRangeStart = new Date(Date.now() - 5 * 365 * 86400000).toISOString().slice(0, 10);
+      const wideRangeEnd = new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10);
+      const billsRes = await proxyUpstream('POST', '/api/billing', {
+        query: { startDate: wideRangeStart, endDate: wideRangeEnd },
+        body: { page: 0, size: 200 },
+        headers,
+      });
+      const billRows: any[] = Array.isArray((billsRes.data as any)?.content) ? (billsRes.data as any).content : [];
+      const householdBills = billRows.filter(
+        (b: any) => b.customId === customId || b.householdCustomId === customId
+      );
+      householdBills.sort((a: any, b: any) => new Date(b.billDate).getTime() - new Date(a.billDate).getTime());
+      if (householdBills.length > 0) {
+        const b = householdBills[0];
+        latestBill = {
+          billNumber: b.billNumber || `BILL-${b.id}`,
+          billDate: b.billDate,
+          dueDate: b.dueDate,
+          totalAmount: b.totalAmount ?? b.amount ?? null,
+          waterCharges: b.waterCharges ?? null,
+          sewerageCharges: b.sewerageCharges ?? null,
+          status: (b.status || 'UNKNOWN').toUpperCase(),
+          paymentDate: b.paymentDate || null,
+        };
+      }
+    } catch (err: any) {
+      console.warn('[households] Failed to fetch latest bill:', err.message);
+    }
+
     res.json({
       consumer,
       meters: hmdData.meters || [],
       activeMeter: matchedMeter || null,
       dailyReadings,
-      latestBill: {
-        billNumber: `BILL-${customId.split('/').pop() || '01'}-2026`,
-        billDate: today,
-        dueDate: new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0],
-        totalAmount: 345.5,
-        waterCharges: 295.0,
-        sewerageCharges: 50.5,
-        status: 'PAID',
-        paymentDate: today,
-      },
+      latestBill,
     });
   } catch (err: any) {
     console.error('[households] Error fetching household detail:', err.message);
