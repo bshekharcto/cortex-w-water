@@ -33,3 +33,7 @@ Thumbs.db
 scratch/
 cortex-w/scripts/*.sql
 *.tsbuildinfo
+global-bundle.pem
+water_telemetry_3months.csv
+ECOSYSTEM_ARCHITECTURE.md
+cortex-w/neon_backup.dump
