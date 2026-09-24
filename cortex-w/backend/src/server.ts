@@ -126,11 +126,16 @@ async function runMigrations() {
 
   console.log(`[db] Migration directory: ${migrationsDir}`);
 
+  // Seed/demo-data migrations only run in seed mode — production (api/hybrid)
+  // uses a real, metadata-free schema: only actual telemetry tables are created.
+  const isSeedMode = config.APP_DATA_MODE === "seed";
+
   const migrations = [
-    "001_initial_schema.sql",
-    "002_seed_data.sql",
+    ...(isSeedMode
+      ? ["001_initial_schema.sql", "002_seed_data.sql", "006_geographical_dma.sql"]
+      : []),
     "005_raw_telemetry.sql",
-    "006_geographical_dma.sql",
+    "007_water_rollup_tables.sql",
   ];
 
   for (const file of migrations) {
