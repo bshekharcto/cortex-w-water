@@ -24,23 +24,23 @@ export interface LiveMeterDetailResponse {
   latestReading: number | null;
   readingDate: string | null;
   consumption: number;
-  batteryVoltage: number;
-  batteryStatus: string;
+  batteryVoltage: number | null;
+  batteryStatus: string | null;
   signalRssi: number | null;
   signalSnr: number | null;
-  valveStatus: boolean;
-  valveClosed: boolean;
+  valveStatus: boolean | null;
+  valveClosed: boolean | null;
   lastSeen: string | null;
   consumer: {
     id: number | null;
     customId: string | null;
     name: string;
-    mobile: string;
-    location: string;
-    ward: string;
+    mobile: string | null;
+    location: string | null;
+    ward: string | null;
     status: string;
-    registrationDate: string;
-    siteName: string;
+    registrationDate: string | null;
+    siteName: string | null;
   };
   replacement: {
     oldMeterNumber: string;
@@ -59,9 +59,16 @@ export interface LiveMeterDetailResponse {
   }>;
   latestBill?: any;
   dailyReadings: Array<{
-    date: string;
-    reading: number;
-    consumption: number;
+    date: string | null;
+    shortDate: string;
+    readingM3: number;
+    consumptionL: number;
+    consumptionM3: number;
+    minFlowLph: number | null;
+    maxFlowLph: number | null;
+    uplinksReceived: number | null;
+    uplinksExpected: number | null;
+    flag: string;
   }>;
 }
 

@@ -129,64 +129,48 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
     };
   }, [meter.assetId, meter.meterId]);
 
-  // Derived display fields prioritizing live Cognecto backend data
+  // Derived display fields prioritizing live Cognecto backend data.
+  // Every fallback below is an honest "unknown" (null/0/'—'), never a
+  // fabricated plausible-looking number.
   const consumerName = liveDetail?.consumer?.name || meter.householdName || 'Consumer';
-  const consumerId = liveDetail?.consumer?.customId || meter.householdId || 'WS/BMC';
-  const consumerMobile = liveDetail?.consumer?.mobile || '8895102323';
-  const consumerAddress = liveDetail?.consumer?.location || meter.locality || 'Bhubaneswar Zone';
-  const consumerWard = liveDetail?.consumer?.ward || '59';
+  const consumerId = liveDetail?.consumer?.customId || meter.householdId || null;
+  const consumerMobile = liveDetail?.consumer?.mobile || null;
+  const consumerAddress = liveDetail?.consumer?.location || meter.locality || null;
+  const consumerWard = liveDetail?.consumer?.ward || null;
   const currentReadingM3 =
     liveDetail?.latestReading !== null && liveDetail?.latestReading !== undefined
       ? liveDetail.latestReading
-      : meter.currentReadingM3 || 120.45;
-  const lastSeenDate = liveDetail?.readingDate || liveDetail?.lastSeen || meter.lastSeen || 'Recent';
-  const batteryVolts = liveDetail?.batteryVoltage ?? (meter.batteryVoltage || 3.6);
-  const batteryStat = liveDetail?.batteryStatus ?? (meter.batteryStatus || 'Normal');
-  const valveStateText = liveDetail ? (liveDetail.valveClosed ? 'Closed' : 'Open') : (meter.valveState || 'Open');
+      : meter.currentReadingM3 ?? null;
+  const lastSeenDate = liveDetail?.readingDate || liveDetail?.lastSeen || meter.lastSeen || null;
+  const batteryVolts = liveDetail?.batteryVoltage ?? meter.batteryVoltage ?? null;
+  const batteryStat = liveDetail?.batteryStatus ?? meter.batteryStatus ?? null;
+  const valveStateText = liveDetail
+    ? (liveDetail.valveClosed === null ? null : liveDetail.valveClosed ? 'Closed' : 'Open')
+    : (meter.valveState ?? null);
 
   const yesterdayL =
     liveDetail?.consumption !== undefined && liveDetail?.consumption !== null
       ? Math.round(liveDetail.consumption * 1000)
-      : (meter.yesterdayConsumptionL || 420);
+      : (meter.yesterdayConsumptionL ?? 0);
   const yesterdayM3 = Number((yesterdayL / 1000).toFixed(3));
-  const dailyAvg = meter.dailyAvgL || 410;
-  const monthM3 = meter.monthConsumptionM3 || 14.2;
-  const estimatedBill = meter.estimatedBillInr ?? Math.round(monthM3 * 22.5);
+  const dailyAvg = meter.dailyAvgL ?? 0;
+  const monthM3 = meter.monthConsumptionM3 ?? 0;
+  // Use the REAL fetched bill (from /api/billing/latest-bill/:assetId) —
+  // never fabricate an estimate from a made-up rate.
+  const realLatestBill = liveDetail?.latestBill;
+  const estimatedBill = realLatestBill?.totalAmount ?? realLatestBill?.amount ?? null;
 
-  // Safe 10-Day Reading List with fallback generation if not present on raw API meter
+  // Real last-10-unique-days readings, from our own telemetry store via the
+  // backend (never generated client-side).
   const readingsList: MeterDailyReading[] = useMemo(() => {
+    if (liveDetail?.dailyReadings && Array.isArray(liveDetail.dailyReadings) && liveDetail.dailyReadings.length > 0) {
+      return liveDetail.dailyReadings as unknown as MeterDailyReading[];
+    }
     if (meter.last10DaysReadings && Array.isArray(meter.last10DaysReadings) && meter.last10DaysReadings.length > 0) {
       return meter.last10DaysReadings;
     }
-    // Generate realistic 10-day history anchored on yesterday's reading
-    const list: MeterDailyReading[] = [];
-    let cumm = typeof currentReadingM3 === 'number' ? currentReadingM3 : 120;
-    const baseL = yesterdayL || 410;
-
-    for (let i = 0; i < 10; i++) {
-      const d = new Date(Date.now() - (9 - i) * 86400000);
-      const dateStr = d.toISOString().split('T')[0];
-      const shortDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      const variance = (i * 43 + (meter.assetId || 100) * 17) % 110 - 55;
-      const dayL = Math.max(160, baseL + variance);
-      const dayM3 = Number((dayL / 1000).toFixed(3));
-      cumm += dayM3;
-
-      list.push({
-        date: dateStr,
-        shortDate,
-        consumptionL: dayL,
-        consumptionM3: dayM3,
-        readingM3: Number(cumm.toFixed(3)),
-        minFlowLph: Math.max(0, Math.round(dayL * 0.03)),
-        maxFlowLph: Math.round(dayL * 0.28),
-        uplinksReceived: i === 7 ? 22 : 24,
-        uplinksExpected: 24,
-        flag: dayL > 520 ? 'Peak' : 'Normal',
-      });
-    }
-    return list;
-  }, [meter, currentReadingM3, yesterdayL]);
+    return [];
+  }, [liveDetail, meter]);
 
   // Safe Alerts List
   const alertsList: MeterAlert[] = useMemo(() => {
@@ -201,7 +185,7 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
           category: 'RF Link',
           title: 'Prolonged Silence / No Uplinks',
           description: 'No telemetry packet received from this endpoint in the last 36 hours.',
-          timestamp: lastSeenDate,
+          timestamp: lastSeenDate || '',
           status: 'Active',
         },
       ];
@@ -214,7 +198,7 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
           category: 'RF Link',
           title: 'Marginal Signal Link (Low RSSI)',
           description: `Signal strength at ${meter.rssi || -102} dBm is near threshold.`,
-          timestamp: lastSeenDate,
+          timestamp: lastSeenDate || '',
           status: 'Active',
         },
       ];
@@ -277,7 +261,7 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
               {statusStr.toUpperCase()}
             </span>
             <span className={`gis-badge-sub ${valveStateText === 'Open' ? 'gis-badge-sub--ok' : 'gis-badge-sub--warn'}`}>
-              VALVE {valveStateText.toUpperCase()}
+              VALVE {valveStateText ? valveStateText.toUpperCase() : 'UNKNOWN'}
             </span>
             {isLoadingDetail && (
               <span className="gis-drawer-loading">
@@ -371,7 +355,7 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             <span className="gis-kpi-small">Static</span>
           </div>
           <div className="gis-kpi-footer">
-            <span className="gis-meta-seen">Battery: {batteryVolts}V ({meter.batteryPercentage || 96}%)</span>
+            <span className="gis-meta-seen">Battery: {batteryVolts ?? '—'}V ({meter.batteryPercentage ?? '—'}%)</span>
           </div>
         </div>
       </div>
@@ -638,29 +622,29 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             </div>
             <div className="gis-kv-row">
               <span className="gis-k">Distance to Gateway</span>
-              <span className="gis-v">{meter.distanceMeters || 320} meters</span>
+              <span className="gis-v">{meter.distanceMeters != null ? `${meter.distanceMeters} meters` : '—'}</span>
             </div>
             <div className="gis-kv-row">
               <span className="gis-k">RSSI Signal Power</span>
               <span
                 className="gis-v"
                 style={{
-                  color: (meter.rssi || -85) > -90 ? '#059669' : (meter.rssi || -85) > -95 ? '#D97706' : '#DC2626',
+                  color: meter.rssi == null ? undefined : meter.rssi > -90 ? '#059669' : meter.rssi > -95 ? '#D97706' : '#DC2626',
                 }}
               >
-                {meter.rssi || -85} dBm
+                {meter.rssi != null ? `${meter.rssi} dBm` : '—'}
               </span>
             </div>
             <div className="gis-kv-row">
               <span className="gis-k">Signal-to-Noise Ratio (SNR)</span>
-              <span className="gis-v" style={{ color: (meter.snr || 8) > -10 ? '#059669' : '#D97706' }}>
-                {meter.snr || 8} dB
+              <span className="gis-v" style={{ color: meter.snr == null ? undefined : meter.snr > -10 ? '#059669' : '#D97706' }}>
+                {meter.snr != null ? `${meter.snr} dB` : '—'}
               </span>
             </div>
             <div className="gis-kv-row">
               <span className="gis-k">Device EUI</span>
               <span className="gis-v" style={{ fontFamily: 'monospace' }}>
-                {meter.devEui || `00-24-00-60-${String(meter.meterId || '0000').slice(-4)}`}
+                {meter.devEui || '—'}
               </span>
             </div>
             <div className="gis-kv-row">
@@ -673,8 +657,8 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             <span className="gis-card-title">Hardware & Metrology</span>
             <div className="gis-kv-row">
               <span className="gis-k">Battery Cell Voltage</span>
-              <span className="gis-v" style={{ color: batteryVolts >= 3.4 ? '#059669' : '#DC2626' }}>
-                {batteryVolts} V ({meter.batteryPercentage || 90}%)
+              <span className="gis-v" style={{ color: batteryVolts == null ? undefined : batteryVolts >= 3.4 ? '#059669' : '#DC2626' }}>
+                {batteryVolts != null ? `${batteryVolts} V` : '—'} ({meter.batteryPercentage ?? '—'}%)
               </span>
             </div>
             <div className="gis-kv-row">
@@ -803,12 +787,12 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             <span className="gis-card-title">Deployment Site</span>
             <div className="gis-kv-row">
               <span className="gis-k">Site</span>
-              <span className="gis-v">{liveDetail?.consumer?.siteName || 'BHUBANESWAR'} (Site 6394)</span>
+              <span className="gis-v">{liveDetail?.consumer?.siteName || '—'}</span>
             </div>
             <div className="gis-kv-row">
               <span className="gis-k">Geographic Coordinates</span>
               <span className="gis-v">
-                {(meter.lat || 20.2961).toFixed(4)}° N, {(meter.lng || 85.8245).toFixed(4)}° E
+                {meter.lat != null && meter.lng != null ? `${meter.lat.toFixed(4)}° N, ${meter.lng.toFixed(4)}° E` : '—'}
               </span>
             </div>
           </div>
