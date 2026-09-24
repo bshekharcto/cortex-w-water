@@ -21,9 +21,17 @@ import { billingApi } from '@/services/api/billingApi';
 import { BillDetailDrawer } from '../components/BillDetailDrawer';
 import '@/modules/gis/shared/gis.css';
 
-// Default date range preset: Jan 01 2026 to Feb 28 2026 per user instruction
-const DEFAULT_START_DATE = '2026-01-01';
-const DEFAULT_END_DATE = '2026-02-28';
+// Default date range: matches the "all-time" cycle preset (see
+// handleCyclePresetChange below) — computed relative to today rather than a
+// fixed calendar window, so this keeps meaning "all time" regardless of
+// when it's actually run (same class of bug as the Command Center
+// TARGET_DATE issue, now fixed here too).
+function defaultEndDate() {
+  return new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10);
+}
+function defaultStartDate() {
+  return new Date(Date.now() - 5 * 365 * 86400000).toISOString().slice(0, 10);
+}
 
 export function BillingPage() {
   const { billId } = useParams<{ billId?: string }>();
@@ -34,9 +42,9 @@ export function BillingPage() {
   const [pageSize, setPageSize] = useState<number>(25);
 
   // Filters
-  const [startDate, setStartDate] = useState<string>(DEFAULT_START_DATE);
-  const [endDate, setEndDate] = useState<string>(DEFAULT_END_DATE);
-  const [cyclePreset, setCyclePreset] = useState<'jan-feb-2026' | 'all-2026' | 'all-time' | 'custom'>('jan-feb-2026');
+  const [startDate, setStartDate] = useState<string>(defaultStartDate());
+  const [endDate, setEndDate] = useState<string>(defaultEndDate());
+  const [cyclePreset, setCyclePreset] = useState<'jan-feb-2026' | 'all-2026' | 'all-time' | 'custom'>('all-time');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'OVERDUE' | 'PAID' | 'PENDING'>('ALL');
   const [cityFilter, setCityFilter] = useState<'ALL' | 'Bhubaneswar' | 'Puri' | 'Cuttack'>('ALL');
   const [searchInput, setSearchInput] = useState<string>('');
@@ -55,7 +63,11 @@ export function BillingPage() {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
-  // Handle cycle preset change
+  // Handle cycle preset change.
+  // "jan-feb-2026"/"all-2026" stay as explicit, user-chosen historical
+  // filters (a real named billing period the client may want to pick).
+  // "all-time" is computed relative to today rather than a fixed calendar
+  // window, so it actually means "all time" whenever this runs.
   const handleCyclePresetChange = (preset: 'jan-feb-2026' | 'all-2026' | 'all-time') => {
     setCyclePreset(preset);
     if (preset === 'jan-feb-2026') {
@@ -65,8 +77,8 @@ export function BillingPage() {
       setStartDate('2026-01-01');
       setEndDate('2026-12-31');
     } else if (preset === 'all-time') {
-      setStartDate('2025-01-01');
-      setEndDate('2026-12-31');
+      setStartDate(new Date(Date.now() - 5 * 365 * 86400000).toISOString().slice(0, 10));
+      setEndDate(new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10));
     }
     setPage(0);
   };
@@ -115,9 +127,9 @@ export function BillingPage() {
     setActiveSearch('');
     setStatusFilter('ALL');
     setCityFilter('ALL');
-    setCyclePreset('jan-feb-2026');
-    setStartDate(DEFAULT_START_DATE);
-    setEndDate(DEFAULT_END_DATE);
+    setCyclePreset('all-time');
+    setStartDate(defaultStartDate());
+    setEndDate(defaultEndDate());
     setPage(0);
   };
 

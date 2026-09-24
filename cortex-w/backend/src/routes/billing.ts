@@ -18,8 +18,14 @@ async function handleBillingList(req: any, res: any) {
   try {
     const page = parseInt((req.body?.page ?? req.query?.page ?? '0') as string, 10);
     const size = parseInt((req.body?.size ?? req.query?.size ?? '25') as string, 10);
-    const startDate = (req.body?.startDate ?? req.query?.startDate ?? '2026-01-01') as string;
-    const endDate = (req.body?.endDate ?? req.query?.endDate ?? '2026-02-28') as string;
+    // Default to a rolling 90-day window ending today when no explicit range
+    // is supplied — a fixed calendar date here would look "frozen in time"
+    // once that window is in the past (same class of bug as the Command
+    // Center TARGET_DATE issue).
+    const defaultEndDate = new Date().toISOString().slice(0, 10);
+    const defaultStartDate = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const startDate = (req.body?.startDate ?? req.query?.startDate ?? defaultStartDate) as string;
+    const endDate = (req.body?.endDate ?? req.query?.endDate ?? defaultEndDate) as string;
     const search = ((req.body?.search ?? req.query?.search ?? '') as string).trim().toLowerCase();
     const statusFilter = ((req.body?.status ?? req.query?.status ?? 'ALL') as string).toUpperCase();
     const cityFilter = (req.body?.city ?? req.query?.city ?? 'ALL') as string;
@@ -156,9 +162,13 @@ router.get('/:id/detail', async (req, res) => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = token;
 
-    // Fetch live bills across wide range to find the requested bill
+    // Fetch live bills across a wide range to find the requested bill —
+    // computed relative to today rather than a fixed calendar window, so
+    // this keeps working correctly regardless of when it's actually run.
+    const wideRangeStart = new Date(Date.now() - 5 * 365 * 86400000).toISOString().slice(0, 10);
+    const wideRangeEnd = new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10);
     const upstream = await proxyUpstream('POST', '/api/billing', {
-      query: { startDate: '2025-01-01', endDate: '2026-12-31' },
+      query: { startDate: wideRangeStart, endDate: wideRangeEnd },
       body: { page: 0, size: 200 },
       headers,
     });
@@ -200,28 +210,54 @@ router.get('/:id/detail', async (req, res) => {
         (matchedBill.householdCustomId && m.householdShortId === matchedBill.householdCustomId)
     );
 
-    // Build 10-day reading history
-    let dailyReadings = matchedGisMeter?.last10DaysReadings || [];
-    if (!dailyReadings || dailyReadings.length === 0) {
-      const dates = [];
-      for (let i = 9; i >= 0; i--) {
-        const d = new Date(Date.now() - i * 86400000);
-        dates.push(d.toISOString().split('T')[0]);
+    // Last 10 unique days of REAL readings for this meter (no fabricated
+    // fallback — matches the fix already applied in households.ts).
+    let dailyReadings: any[] = [];
+    const meterIdForReadings = matchedGisMeter?.meterId || matchedBill.meterId;
+    if (meterIdForReadings) {
+      try {
+        const readingsRes = await pool.query(
+          `SELECT DISTINCT ON (date_key) date_key, decoded_at, forward_flow_l
+           FROM raw_telemetry_packets
+           WHERE meter_id = $1
+           ORDER BY date_key DESC, decoded_at DESC
+           LIMIT 10`,
+          [meterIdForReadings]
+        );
+        const realRows = readingsRes.rows.reverse(); // oldest -> newest for charting
+        dailyReadings = realRows.map((r: any, idx: number) => {
+          // forward_flow_l column stores KL (kilolitres) natively — 1 KL === 1 m3
+          const readingKl = Number(r.forward_flow_l) || 0;
+          const prevReadingKl = idx > 0 ? Number(realRows[idx - 1].forward_flow_l) || 0 : readingKl;
+          const consKl = Math.max(0, readingKl - prevReadingKl);
+          const consL = Math.round(consKl * 1000);
+          const dateStr = new Date(r.decoded_at).toISOString();
+          return {
+            date: dateStr.split('T')[0],
+            shortDate: dateStr.slice(5, 10),
+            readingM3: Number(readingKl.toFixed(3)),
+            reading: Number(readingKl.toFixed(3)),
+            consumptionL: consL,
+            consumptionM3: Number(consKl.toFixed(3)),
+            consumption: consL,
+            flag: 'Normal',
+          };
+        });
+      } catch (err: any) {
+        console.warn('[billing] Failed to fetch real readings:', err.message);
       }
-      const baseReading = currR > 0 ? currR : 116.0;
-      dailyReadings = dates.map((date, idx) => {
-        const consL = Math.round(340 + Math.sin(idx) * 80 + (idx % 3) * 40);
-        const rd = Number((baseReading - (9 - idx) * 0.38).toFixed(2));
-        return {
-          date,
-          shortDate: date.slice(5),
-          readingM3: rd,
-          reading: rd,
-          consumptionL: consL,
-          consumptionM3: Number((consL / 1000).toFixed(3)),
-          consumption: consL,
-          flag: idx === 8 ? 'Peak' : 'Normal',
-        };
+    }
+    // Pad with zero-value entries if fewer than 10 real readings exist (no fabricated data)
+    while (dailyReadings.length < 10) {
+      dailyReadings.unshift({
+        date: null,
+        shortDate: '--',
+        readingM3: 0,
+        reading: 0,
+        consumptionL: 0,
+        consumptionM3: 0,
+        consumption: 0,
+        flag: 'No Data',
       });
     }
 
