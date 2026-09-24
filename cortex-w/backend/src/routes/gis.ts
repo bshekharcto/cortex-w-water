@@ -484,6 +484,59 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     // Extract meter swap / replacement history
     const replacement = imeiHistories.find((ih: any) => ih.oldImeiNumber && ih.oldImeiNumber !== ih.newImeiNumber);
 
+    // Real last-10-unique-days readings from our own telemetry store (same
+    // proven pattern as households.ts/billing.ts) — never fabricated.
+    let dailyReadings: any[] = [];
+    const meterIdForReadings = latest?.meterId || meterId;
+    if (meterIdForReadings) {
+      try {
+        const readingsRes = await pool.query(
+          `SELECT DISTINCT ON (date_key) date_key, decoded_at, forward_flow_l
+           FROM raw_telemetry_packets
+           WHERE meter_id = $1
+           ORDER BY date_key DESC, decoded_at DESC
+           LIMIT 10`,
+          [meterIdForReadings]
+        );
+        const realRows = readingsRes.rows.reverse();
+        dailyReadings = realRows.map((r: any, idx: number) => {
+          const readingKl = Number(r.forward_flow_l) || 0;
+          const prevReadingKl = idx > 0 ? Number(realRows[idx - 1].forward_flow_l) || 0 : readingKl;
+          const consKl = Math.max(0, readingKl - prevReadingKl);
+          const consL = Math.round(consKl * 1000);
+          const dateStr = new Date(r.decoded_at).toISOString();
+          return {
+            date: dateStr.split('T')[0],
+            shortDate: dateStr.slice(5, 10),
+            readingM3: Number(readingKl.toFixed(3)),
+            consumptionL: consL,
+            consumptionM3: Number(consKl.toFixed(3)),
+            minFlowLph: null,
+            maxFlowLph: null,
+            uplinksReceived: null,
+            uplinksExpected: null,
+            flag: 'Normal',
+          };
+        });
+      } catch (err: any) {
+        console.warn('[gis] Failed to fetch real meter readings:', err.message);
+      }
+    }
+    while (dailyReadings.length < 10) {
+      dailyReadings.unshift({
+        date: null,
+        shortDate: '--',
+        readingM3: 0,
+        consumptionL: 0,
+        consumptionM3: 0,
+        minFlowLph: null,
+        maxFlowLph: null,
+        uplinksReceived: null,
+        uplinksExpected: null,
+        flag: 'No Data',
+      });
+    }
+
     res.json({
       assetId: Number(assetId),
       meterId: latest?.meterId || asset?.imeiNumber || meterId,
@@ -492,23 +545,23 @@ router.get('/meter-detail/:assetId', async (req, res) => {
       latestReading: latest?.currentReading ?? null,
       readingDate: latest?.date || null,
       consumption: latest?.consumption ?? 0,
-      batteryVoltage: latest?.batteryVoltage || 3.6,
-      batteryStatus: latest?.batteryStatus || 'OK',
-      signalRssi: latest?.rssi || null,
-      signalSnr: latest?.snr || null,
-      valveStatus: latest?.valveStatus ?? true,
-      valveClosed: latest?.valveClosed ?? false,
+      batteryVoltage: latest?.batteryVoltage ?? null,
+      batteryStatus: latest?.batteryStatus ?? null,
+      signalRssi: latest?.rssi ?? null,
+      signalSnr: latest?.snr ?? null,
+      valveStatus: latest?.valveStatus ?? null,
+      valveClosed: latest?.valveClosed ?? null,
       lastSeen: latest?.lastSeen || asset?.createdDate || null,
       consumer: {
         id: asset?.household?.id || null,
         customId: asset?.household?.customId || hhDetail?.consumerId || null,
         name: asset?.household?.name || hhDetail?.consumerName || 'Registered Consumer',
-        mobile: asset?.household?.mobile || '',
-        location: asset?.household?.location || hhDetail?.address || '',
-        ward: asset?.household?.ward || '59',
+        mobile: asset?.household?.mobile || null,
+        location: asset?.household?.location || hhDetail?.address || null,
+        ward: asset?.household?.ward || null,
         status: asset?.household?.status || 'ACTIVE',
-        registrationDate: asset?.household?.registrationDate || asset?.createdDate || '',
-        siteName: asset?.siteName || hhDetail?.siteName || 'BHUBANESWAR',
+        registrationDate: asset?.household?.registrationDate || asset?.createdDate || null,
+        siteName: asset?.siteName || hhDetail?.siteName || null,
       },
       replacement: replacement
         ? {
@@ -522,7 +575,7 @@ router.get('/meter-detail/:assetId', async (req, res) => {
         : null,
       photos,
       latestBill,
-      dailyReadings: hhDetail?.meters?.find((m: any) => m.meterNumber === meterId)?.dailyReadings || [],
+      dailyReadings,
     });
   } catch (err: any) {
     console.error('[gis] Error fetching meter detail:', err.message);
