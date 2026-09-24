@@ -194,42 +194,49 @@ export function GatewayPlacementPage() {
         });
       } else if (typeof assetLocRes === 'object' && assetLocRes !== null) {
         // Fallback: convert asset coordinates into GisMeter objects
+        // This planning tool only needs real device COORDINATES to compute
+        // gateway placement geometry — it does not have real telemetry for
+        // these devices (that only comes from the /meters endpoint, handled
+        // above). Every telemetry-ish field below is therefore an honest
+        // "no data" placeholder, not a plausible-looking fabricated number —
+        // GisMeter's fields aren't nullable (a broader type change would be
+        // needed to express "unknown" properly; flagged as a follow-up).
         const fallbackMeters = Object.entries(assetLocRes)
           .filter(([_, p]: any) => p && p.latitude && p.longitude && Math.abs(p.latitude) > 1e-5)
           .map(([assetId, p]: any) => ({
             id: String(assetId),
             assetId: Number(assetId),
             meterId: `MTR-${assetId}`,
-            devEui: `506F9800${String(assetId).padStart(8, '0')}`,
+            devEui: '',
             householdId: `HH-${assetId}`,
             householdShortId: `H-${assetId}`,
             householdName: `Consumer #${assetId}`,
             locality: currentSite.name,
             lat: p.latitude,
             lng: p.longitude,
-            gatewayId: '506f9800000002a5',
-            gatewayAlias: 'Gateway',
-            distanceMeters: 450,
-            rssi: -88,
-            snr: 8.5,
-            status: 'active' as const,
+            gatewayId: '',
+            gatewayAlias: '',
+            distanceMeters: 0,
+            rssi: 0,
+            snr: 0,
+            status: 'silent' as const,
             batteryStatus: 'Normal' as const,
-            batteryVoltage: 3.6,
-            batteryPercentage: 95,
+            batteryVoltage: 0,
+            batteryPercentage: 0,
             valveStatus: 'Normal' as const,
             valveState: 'Open' as const,
-            lastSeen: new Date().toISOString(),
-            pipeDiameter: '15mm',
-            connectionType: 'Domestic',
-            installDate: '2024-01-15',
-            currentReadingM3: 45.2,
-            yesterdayConsumptionL: 410,
-            yesterdayConsumptionM3: 0.41,
-            monthConsumptionL: 12400,
-            monthConsumptionM3: 12.4,
-            estimatedBillInr: 280,
+            lastSeen: '',
+            pipeDiameter: '',
+            connectionType: '',
+            installDate: '',
+            currentReadingM3: 0,
+            yesterdayConsumptionL: 0,
+            yesterdayConsumptionM3: 0,
+            monthConsumptionL: 0,
+            monthConsumptionM3: 0,
+            estimatedBillInr: 0,
             currentFlowRateLph: 0,
-            dailyAvgL: 410,
+            dailyAvgL: 0,
             last10DaysReadings: [],
             alerts: [],
           })) as unknown as GisMeter[];

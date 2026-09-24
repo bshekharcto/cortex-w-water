@@ -17,8 +17,6 @@ import { useGoogleMaps } from '../../shared/useGoogleMaps';
 import {
   BHUBANESWAR_CENTER,
   ODISHA_CENTER,
-  GIS_GATEWAYS,
-  GIS_METERS,
   GisGateway,
   GisMeter,
 } from '../../shared/gisData';
@@ -60,11 +58,12 @@ export function NetworkExplorerPage() {
   // Performance Load More State
   const [perfVisibleCount, setPerfVisibleCount] = useState(8);
 
-  const [gateways, setGateways] = useState<GisGateway[]>(GIS_GATEWAYS);
-  const [meters, setMeters] = useState<GisMeter[]>(GIS_METERS);
+  const [gateways, setGateways] = useState<GisGateway[]>([]);
+  const [meters, setMeters] = useState<GisMeter[]>([]);
   const [liveSummary, setLiveSummary] = useState<{ totalMeters: number; activeCount: number; problemCount: number } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isCachedFromDb, setIsCachedFromDb] = useState(false);
+  const [dataLoadError, setDataLoadError] = useState<string | null>(null);
 
   // Reset table pagination when search or filters change
   useEffect(() => {
@@ -107,10 +106,14 @@ export function NetworkExplorerPage() {
     let cancelled = false;
 
     async function loadDataWithLocalStorage() {
-      // Step 1: Immediate local database load (SQLite in browser)
+      let hadCachedData = false;
+
+      // Step 1: Immediate local database load (a real cache of previously-
+      // fetched live data, not fabricated — populated by Step 2 below)
       try {
         const cached = (await gisLocalDb.loadMeters('ALL')) || (await gisLocalDb.loadMeters('6394'));
         if (!cancelled && cached && cached.meters.length > 0) {
+          hadCachedData = true;
           setMeters(cached.meters);
           setIsCachedFromDb(true);
           const activeCount = cached.meters.filter((m) => m.status === 'active').length;
@@ -131,22 +134,25 @@ export function NetworkExplorerPage() {
         setIsLoading(true);
         const [gwData, metersData] = await Promise.all([
           mapApi.getGateways('ALL').catch((e) => {
-            console.warn('[gis] Failed to load live gateways, using fallback:', e);
+            console.warn('[gis] Failed to load live gateways:', e);
             return null;
           }),
           mapApi.getMeters({ siteId: 'ALL' }).catch((e) => {
-            console.warn('[gis] Failed to load live meters, using fallback:', e);
+            console.warn('[gis] Failed to load live meters:', e);
             return null;
           }),
         ]);
 
         if (cancelled) return;
 
-        if (gwData && Array.isArray(gwData) && gwData.length > 0) {
+        const gatewaysOk = gwData && Array.isArray(gwData) && gwData.length > 0;
+        const metersOk = metersData && metersData.meters && metersData.meters.length > 0;
+
+        if (gatewaysOk) {
           setGateways(gwData);
         }
 
-        if (metersData && metersData.meters && metersData.meters.length > 0) {
+        if (metersOk) {
           setMeters(metersData.meters);
           if (metersData.summary) {
             setLiveSummary(metersData.summary);
@@ -155,9 +161,17 @@ export function NetworkExplorerPage() {
           gisLocalDb.saveMeters(metersData.meters, 'ALL').catch((e) => {
             console.warn('[gis] Failed to save to IndexedDB:', e);
           });
+          setDataLoadError(null);
+        } else if (!hadCachedData) {
+          // Live fetch failed AND there's no cached data to fall back on —
+          // tell the user honestly instead of silently showing an empty map.
+          setDataLoadError('Unable to load live network data. Please check your connection and try again.');
         }
       } catch (err) {
         console.warn('[gis] Error syncing live data:', err);
+        if (!hadCachedData) {
+          setDataLoadError('Unable to load live network data. Please check your connection and try again.');
+        }
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -943,6 +957,25 @@ export function NetworkExplorerPage() {
               onClick={() => setActiveView('table')}
             >
               Switch to Table View
+            </button>
+          </div>
+        )}
+
+        {/* Honest error when live network data genuinely failed to load (no
+            cached fallback available) — never silently show stale/fake data */}
+        {!loadError && dataLoadError && (
+          <div className="gis-error-fallback">
+            <AlertTriangle size={32} color="#EF4444" />
+            <strong style={{ fontSize: 14 }}>Data Load Failed</strong>
+            <p style={{ fontSize: 12, color: '#64748B', margin: 0 }}>
+              {dataLoadError}
+            </p>
+            <button
+              className="gis-action-btn"
+              style={{ marginTop: 8 }}
+              onClick={() => window.location.reload()}
+            >
+              Retry
             </button>
           </div>
         )}
