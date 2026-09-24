@@ -36,7 +36,10 @@ export async function getAuthToken(providedHeader?: string): Promise<string> {
   }
   try {
     const loginRes = await proxyUpstream('POST', '/api/auth/login', {
-      body: { username: 'WATCOAdmin', password: 'AdminWatco' },
+      body: {
+        username: process.env.UPSTREAM_SERVICE_USERNAME || 'WATCOAdmin',
+        password: process.env.UPSTREAM_SERVICE_PASSWORD || 'AdminWatco',
+      },
     });
     const token =
       (loginRes.data as any)?.token ||
@@ -90,8 +93,42 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       query: siteQuery,
       headers,
     }).catch(() => ({ status: 500, data: null })),
-    pool.query('SELECT meter_id, max(decoded_at) as last_seen FROM raw_telemetry_packets GROUP BY meter_id').catch((err) => {
-      console.warn('[gis] DB telemetry recency query notice:', err.message);
+    pool.query(`
+      WITH latest_reading AS (
+        SELECT DISTINCT ON (meter_id)
+          meter_id, decoded_at, forward_flow_l AS current_reading_kl,
+          battery_voltage, valve_closed, valve_health, dev_eui
+        FROM raw_telemetry_packets
+        ORDER BY meter_id, decoded_at DESC
+      ),
+      yesterday AS (
+        SELECT meter_id, total_consumption_kl AS yesterday_kl
+        FROM water_daily_summary
+        WHERE summary_date = (CURRENT_DATE - INTERVAL '1 day')::date
+      ),
+      last10d AS (
+        SELECT meter_id, SUM(total_consumption_kl) AS last10d_kl
+        FROM water_daily_summary
+        WHERE summary_date >= (CURRENT_DATE - INTERVAL '10 days')::date
+        GROUP BY meter_id
+      ),
+      month_total AS (
+        SELECT meter_id, total_consumption_kl AS month_kl
+        FROM water_monthly_summary
+        WHERE summary_month = DATE_TRUNC('month', CURRENT_DATE)::date
+      )
+      SELECT
+        lr.meter_id, lr.decoded_at AS last_seen, lr.current_reading_kl,
+        lr.battery_voltage, lr.valve_closed, lr.valve_health, lr.dev_eui,
+        COALESCE(y.yesterday_kl, 0) AS yesterday_kl,
+        COALESCE(l10.last10d_kl, 0) AS last10d_kl,
+        COALESCE(m.month_kl, 0) AS month_kl
+      FROM latest_reading lr
+      LEFT JOIN yesterday y ON y.meter_id = lr.meter_id
+      LEFT JOIN last10d l10 ON l10.meter_id = lr.meter_id
+      LEFT JOIN month_total m ON m.meter_id = lr.meter_id
+    `).catch((err) => {
+      console.warn('[gis] DB telemetry query notice:', err.message);
       return { rows: [] };
     }),
   ]);
@@ -101,22 +138,32 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
   const locations = typeof locRes.data === 'object' && locRes.data !== null ? (locRes.data as Record<string, any>) : {};
   const healthList = Array.isArray(healthRes.data) ? healthRes.data : [];
 
-  // Build lookup map for meter telemetry recency from PostgreSQL
-  const dbLastSeenMap = new Map<string, string>();
+  // Build lookup map for real meter telemetry (readings, consumption, battery, valve) from PostgreSQL
+  const dbMeterDataMap = new Map<string, any>();
   if (dbTelemetryRes && Array.isArray(dbTelemetryRes.rows)) {
     dbTelemetryRes.rows.forEach((r: any) => {
-      if (r.meter_id && r.last_seen) {
-        const iso = new Date(r.last_seen).toISOString();
-        const raw = String(r.meter_id);
-        dbLastSeenMap.set(raw, iso);
-        const clean = raw.replace(/^0+/, '');
-        dbLastSeenMap.set(clean, iso);
-        dbLastSeenMap.set(clean.padStart(10, '0'), iso);
-      }
+      if (!r.meter_id) return;
+      const iso = r.last_seen ? new Date(r.last_seen).toISOString() : null;
+      const entry = {
+        lastSeen: iso,
+        currentReadingKl: r.current_reading_kl !== null ? Number(r.current_reading_kl) : null,
+        batteryVoltage: r.battery_voltage !== null ? Number(r.battery_voltage) : null,
+        valveClosed: r.valve_closed,
+        valveHealth: r.valve_health || null,
+        devEui: r.dev_eui || null,
+        yesterdayKl: Number(r.yesterday_kl) || 0,
+        last10dKl: Number(r.last10d_kl) || 0,
+        monthKl: Number(r.month_kl) || 0,
+      };
+      const raw = String(r.meter_id);
+      dbMeterDataMap.set(raw, entry);
+      const clean = raw.replace(/^0+/, '');
+      dbMeterDataMap.set(clean, entry);
+      dbMeterDataMap.set(clean.padStart(10, '0'), entry);
     });
   }
 
-  console.log(`[gis] Upstream fetch for site ${siteId}: geofences=${geofences.length}, locations=${Object.keys(locations).length}, health=${healthList.length}, dbMetersWithTelemetry=${dbLastSeenMap.size}`);
+  console.log(`[gis] Upstream fetch for site ${siteId}: geofences=${geofences.length}, locations=${Object.keys(locations).length}, health=${healthList.length}, dbMetersWithTelemetry=${dbMeterDataMap.size}`);
 
   // 1. Process Gateways
   const gateways = geofences.map((g: any) => {
@@ -196,8 +243,8 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
     const rawMeterId = String(h.meterId || h.assetId || '');
     const cleanId = rawMeterId.replace(/^0+/, '');
     const paddedId = cleanId.padStart(10, '0');
-    const dbSeen = dbLastSeenMap.get(rawMeterId) || dbLastSeenMap.get(paddedId) || dbLastSeenMap.get(cleanId);
-    const finalLastSeen = dbSeen || h.lastSeenDate || h.decodedAt || 'Never';
+    const dbData = dbMeterDataMap.get(rawMeterId) || dbMeterDataMap.get(paddedId) || dbMeterDataMap.get(cleanId);
+    const finalLastSeen = dbData?.lastSeen || h.lastSeenDate || h.decodedAt || 'Never';
 
     let recencyBucket: 'last72h' | 'last10d' | 'last30d' | 'never' = 'never';
     if (finalLastSeen && finalLastSeen !== 'Never') {
@@ -211,38 +258,50 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       }
     }
 
+    // batteryVoltage: prefer the real value from raw_telemetry_packets; only
+    // fall back to null (not a guessed number) if no reading exists yet.
+    const batteryVoltage = dbData?.batteryVoltage ?? null;
+    const valveClosed = dbData?.valveClosed ?? null;
+    const valveHealth = dbData?.valveHealth ?? null;
+
     return {
       id: h.meterId || String(h.assetId),
       assetId: h.assetId,
       meterId: h.meterId || `M-${h.assetId}`,
-      devEui: `00-24-00-60-${String(h.assetId).slice(-4).padStart(4, '0')}`,
+      devEui: h.devEui || dbData?.devEui || null,
       householdId: h.householdId || `WS/${isPuri ? 'PRI' : isCuttack ? 'CTC' : 'BMC'}/${h.assetId}`,
       householdShortId: shortId,
-      householdName: `Consumer (${shortId})`,
+      householdName: h.householdName || `Consumer (${shortId})`,
       city,
       locality: gw?.alias ? gw.alias.replace(/^Gw-[^ ]+ /i, '').replace(/[()]/g, '') : defaultLocality,
       gatewayId: h.gatewayId || (isCuttack ? '506f9800000002a0' : ''),
       gatewayAlias: gw?.alias || defaultGatewayAlias,
-      distanceMeters: Math.round(Math.random() * 400 + 150),
+      // No real distance-to-gateway calculation exists yet (needs real lat/lng
+      // math against the gateway's own coordinates) — null, not a fake number.
+      distanceMeters: null,
       lat: loc?.latitude ?? null,
       lng: loc?.longitude ?? null,
       status,
       rssi,
       snr: Math.round((rssi + 120) / 4),
       batteryStatus: h.batteryStatus === 'OK' ? 'Normal' : 'Abnormal',
-      batteryVoltage: h.batteryStatus === 'OK' ? 3.6 : 3.0,
-      batteryPercentage: h.batteryStatus === 'OK' ? 92 : 28,
-      valveStatus: 'Normal',
-      valveState: 'Open',
+      batteryVoltage,
+      // No real battery-percentage curve exists for this hardware; report
+      // voltage only rather than inventing a percentage from a boolean.
+      batteryPercentage: null,
+      valveStatus: valveHealth,
+      valveState: valveClosed === null ? null : valveClosed ? 'Closed' : 'Open',
       lastSeen: finalLastSeen,
       recencyBucket,
-      pipeDiameter: '15mm (1/2")',
-      connectionType: 'Domestic Metered',
-      installDate: '2025-06-15',
-      currentReadingM3: Math.round((h.assetId % 500) * 1.8 + 120),
-      yesterdayConsumptionL: Math.round((h.assetId % 300) + 380),
-      monthConsumptionM3: Number((((h.assetId % 100) + 120) / 10).toFixed(1)),
-      last10DaysTotalL: Math.round(((h.assetId % 300) + 380) * 9.8),
+      // No real pipe-diameter/connection-type/install-date source exists in
+      // this codebase — null rather than a fabricated constant.
+      pipeDiameter: null,
+      connectionType: null,
+      installDate: null,
+      currentReadingM3: dbData?.currentReadingKl ?? null,
+      yesterdayConsumptionL: dbData ? Math.round(dbData.yesterdayKl * 1000) : null,
+      monthConsumptionM3: dbData ? Number(dbData.monthKl.toFixed(3)) : null,
+      last10DaysTotalL: dbData ? Math.round(dbData.last10dKl * 1000) : null,
       lastSeenDate: finalLastSeen !== 'Never' ? finalLastSeen : '',
       decodedAt: finalLastSeen !== 'Never' ? finalLastSeen : '',
     };
@@ -590,8 +649,10 @@ router.post('/gateway-placement/compute', async (req, res) => {
     });
 
     const totalCovered = rawData.totalMetersCovered ?? enrichedGateways.reduce((sum, g) => sum + g.metersCoveredCount, 0);
-    const totalMeters = rawData.totalMeters ?? 15307;
-    const overallPercent = totalMeters > 0 ? Math.round((totalCovered / totalMeters) * 100) : 28;
+    // If upstream doesn't report totalMeters, we have no reliable real count
+    // for this site — report null rather than a stale hardcoded guess.
+    const totalMeters = rawData.totalMeters ?? null;
+    const overallPercent = totalMeters ? Math.round((totalCovered / totalMeters) * 100) : null;
 
     res.json({
       siteId,
