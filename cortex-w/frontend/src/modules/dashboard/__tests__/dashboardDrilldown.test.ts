@@ -3,12 +3,11 @@ import {
   calculatePercentages,
   convertLToM3,
   convertKlToM3,
-  aggregateZoneKpis,
-  aggregateGlobalKpis,
+  aggregateNodeKpis,
   validateDeviceInvariant,
 } from '../services/dashboardAggregation';
 import { dashboardDrilldownSeed } from '@/data/seed/dashboard/dashboardDrilldownSeed';
-import type { ZoneRow, DmaRow } from '../models/dashboardRows';
+import type { NodeRow } from '../models/dashboardRows';
 
 describe('Dashboard Drill-down Aggregations & Invariants', () => {
   describe('Device Invariant: Connected + Disconnected + Never Seen = Total Devices', () => {
@@ -81,83 +80,59 @@ describe('Dashboard Drill-down Aggregations & Invariants', () => {
     });
   });
 
-  describe('Hierarchical Aggregations', () => {
-    it('rolls up DMAs into Zone KPIs correctly', () => {
-      const mockDmas: DmaRow[] = [
+  describe('Hierarchical Aggregations (generic over any node depth)', () => {
+    it('rolls up child nodes (e.g. DMAs under a zone) into parent KPIs correctly', () => {
+      const mockChildren: NodeRow[] = [
         {
-          dmaId: 'dma-1',
-          dmaName: 'DMA 1',
-          zoneId: 'z-1',
-          zoneName: 'Zone 1',
-          totalDevices: 100,
-          connected: 70,
-          disconnected: 20,
-          neverSeen: 10,
-          yesterdayFlowM3: 50,
-          todayFlowM3: 40,
-          monthToDateFlowM3: 600,
+          id: 'dma-1', name: 'DMA 1', level: 3, parentId: 'zone-1', parentName: 'Zone 1',
+          hasChildren: false, meterCount: 100,
+          totalDevices: 100, connected: 70, disconnected: 20, neverSeen: 10,
+          yesterdayFlowM3: 50, todayFlowM3: 40, monthToDateFlowM3: 600,
         },
         {
-          dmaId: 'dma-2',
-          dmaName: 'DMA 2',
-          zoneId: 'z-1',
-          zoneName: 'Zone 1',
-          totalDevices: 200,
-          connected: 150,
-          disconnected: 40,
-          neverSeen: 10,
-          yesterdayFlowM3: 100,
-          todayFlowM3: 80,
-          monthToDateFlowM3: 1200,
+          id: 'dma-2', name: 'DMA 2', level: 3, parentId: 'zone-1', parentName: 'Zone 1',
+          hasChildren: false, meterCount: 200,
+          totalDevices: 200, connected: 150, disconnected: 40, neverSeen: 10,
+          yesterdayFlowM3: 100, todayFlowM3: 80, monthToDateFlowM3: 1200,
         },
       ];
 
-      const zoneKpis = aggregateZoneKpis(mockDmas);
-      expect(zoneKpis.totalDevices).toBe(300);
-      expect(zoneKpis.connected).toBe(220);
-      expect(zoneKpis.disconnected).toBe(60);
-      expect(zoneKpis.neverSeen).toBe(20);
-      expect(zoneKpis.connected + zoneKpis.disconnected + zoneKpis.neverSeen).toBe(zoneKpis.totalDevices);
-      expect(zoneKpis.yesterdayFlowM3).toBe(150);
-      expect(zoneKpis.todayFlowM3).toBe(120);
-      expect(zoneKpis.monthToDateFlowM3).toBe(1800);
+      const kpis = aggregateNodeKpis(mockChildren);
+      expect(kpis.totalDevices).toBe(300);
+      expect(kpis.connected).toBe(220);
+      expect(kpis.disconnected).toBe(60);
+      expect(kpis.neverSeen).toBe(20);
+      expect(kpis.connected + kpis.disconnected + kpis.neverSeen).toBe(kpis.totalDevices);
+      expect(kpis.yesterdayFlowM3).toBe(150);
+      expect(kpis.todayFlowM3).toBe(120);
+      expect(kpis.monthToDateFlowM3).toBe(1800);
     });
 
-    it('rolls up Zones into Global KPIs correctly', () => {
-      const mockZones: ZoneRow[] = [
+    it('rolls up root-level nodes (e.g. zones/districts) into global KPIs correctly', () => {
+      const mockRoots: NodeRow[] = [
         {
-          zoneId: 'z-1',
-          zoneName: 'Zone 1',
-          totalDevices: 300,
-          connected: 220,
-          disconnected: 60,
-          neverSeen: 20,
-          yesterdayFlowM3: 150,
-          todayFlowM3: 120,
-          monthToDateFlowM3: 1800,
+          id: 'zone-1', name: 'Zone 1', level: 1, parentId: null, parentName: null,
+          hasChildren: true, meterCount: 0,
+          totalDevices: 300, connected: 220, disconnected: 60, neverSeen: 20,
+          yesterdayFlowM3: 150, todayFlowM3: 120, monthToDateFlowM3: 1800,
         },
         {
-          zoneId: 'z-2',
-          zoneName: 'Zone 2',
-          totalDevices: 200,
-          connected: 180,
-          disconnected: 10,
-          neverSeen: 10,
-          yesterdayFlowM3: 100,
-          todayFlowM3: 90,
-          monthToDateFlowM3: 1500,
+          id: 'zone-2', name: 'Zone 2', level: 1, parentId: null, parentName: null,
+          hasChildren: true, meterCount: 0,
+          totalDevices: 200, connected: 180, disconnected: 10, neverSeen: 10,
+          yesterdayFlowM3: 100, todayFlowM3: 90, monthToDateFlowM3: 1500,
         },
       ];
 
-      const globalKpis = aggregateGlobalKpis(mockZones);
-      expect(globalKpis.totalDevices).toBe(500);
-      expect(globalKpis.connected).toBe(400);
-      expect(globalKpis.disconnected).toBe(70);
-      expect(globalKpis.neverSeen).toBe(30);
-      expect(globalKpis.connected + globalKpis.disconnected + globalKpis.neverSeen).toBe(globalKpis.totalDevices);
-      expect(globalKpis.yesterdayFlowM3).toBe(250);
-      expect(globalKpis.todayFlowM3).toBe(210);
-      expect(globalKpis.monthToDateFlowM3).toBe(3300);
+      const kpis = aggregateNodeKpis(mockRoots);
+      expect(kpis.totalDevices).toBe(500);
+      expect(kpis.connected).toBe(400);
+      expect(kpis.disconnected).toBe(70);
+      expect(kpis.neverSeen).toBe(30);
+      expect(kpis.connected + kpis.disconnected + kpis.neverSeen).toBe(kpis.totalDevices);
+      expect(kpis.yesterdayFlowM3).toBe(250);
+      expect(kpis.todayFlowM3).toBe(210);
+      expect(kpis.monthToDateFlowM3).toBe(3300);
     });
   });
 });

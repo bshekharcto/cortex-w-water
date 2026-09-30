@@ -95,11 +95,16 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
     }).catch(() => ({ status: 500, data: null })),
     pool.query(`
       WITH latest_reading AS (
+        -- Same intra-day retry-packet corruption as the per-day readings
+        -- queries: pick the most recent CALENDAR DAY per meter, then the
+        -- highest (correct) reading within that day, rather than whichever
+        -- packet happened to arrive last — a lower-valued same-day retry
+        -- would otherwise silently show as a too-low "current reading".
         SELECT DISTINCT ON (meter_id)
           meter_id, decoded_at, forward_flow_l AS current_reading_kl,
           battery_voltage, valve_closed, valve_health, dev_eui
         FROM raw_telemetry_packets
-        ORDER BY meter_id, decoded_at DESC
+        ORDER BY meter_id, date_key DESC, forward_flow_l DESC, decoded_at DESC
       ),
       yesterday AS (
         SELECT meter_id, total_consumption_kl AS yesterday_kl
@@ -490,11 +495,19 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     const meterIdForReadings = latest?.meterId || meterId;
     if (meterIdForReadings) {
       try {
+        // The device sends several retry packets per day under the same
+        // date_key with an incrementing fcnt, and some of those retries
+        // decode to a garbled, lower reading than earlier packets the same
+        // day (confirmed: a cumulative totalizer can't legitimately drop
+        // mid-day). Ordering by forward_flow_l DESC before decoded_at DESC
+        // picks the highest (correct) reading per day instead of whichever
+        // packet happened to arrive last — verified against a known-correct
+        // reference for meter 0024005170 across 10 days.
         const readingsRes = await pool.query(
           `SELECT DISTINCT ON (date_key) date_key, decoded_at, forward_flow_l
            FROM raw_telemetry_packets
            WHERE meter_id = $1
-           ORDER BY date_key DESC, decoded_at DESC
+           ORDER BY date_key DESC, forward_flow_l DESC, decoded_at DESC
            LIMIT 10`,
           [meterIdForReadings]
         );
@@ -537,6 +550,49 @@ router.get('/meter-detail/:assetId', async (req, res) => {
       });
     }
 
+    // "Yesterday's usage" from the SAME real per-day data as the chart above,
+    // not the separate upstream `/latest-meter-data` endpoint — that endpoint's
+    // `consumption` field doesn't reliably line up with calendar-day boundaries
+    // and disagreed with the real daily readings in practice. If our own
+    // telemetry store has a reading dated yesterday, that's authoritative;
+    // otherwise fall back to the upstream field rather than fabricating one.
+    const yesterdayIso = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const yesterdayRow = dailyReadings.find((r) => r.date === yesterdayIso);
+    const yesterdayConsumptionM3 = yesterdayRow ? yesterdayRow.consumptionM3 : (latest?.consumption ?? null);
+
+    // Real month-to-date consumption, computed directly from raw_telemetry_packets
+    // (the daily/monthly rollup tables exist but nothing populates them yet —
+    // see [[production-telemetry-schema-and-ingestion]] — so this sums actual
+    // day-to-day deltas instead of reading from an always-empty summary table).
+    let monthToDateM3: number | null = null;
+    if (meterIdForReadings) {
+      try {
+        const monthRes = await pool.query(
+          `WITH readings AS (
+             SELECT DISTINCT ON (date_key) date_key, date_key::date AS day, forward_flow_l
+             FROM raw_telemetry_packets
+             WHERE meter_id = $1
+               AND date_key::date >= (date_trunc('month', CURRENT_DATE)::date - INTERVAL '1 day')
+             -- same-day retry packets can decode to a garbled lower reading
+             -- than an earlier packet that day; take the highest (correct)
+             -- reading per day, not just whichever arrived last.
+             ORDER BY date_key, forward_flow_l DESC, decoded_at DESC
+           ),
+           deltas AS (
+             SELECT day, forward_flow_l - LAG(forward_flow_l) OVER (ORDER BY day) AS delta_kl
+             FROM readings
+           )
+           SELECT COALESCE(SUM(GREATEST(delta_kl, 0)), 0)::numeric AS month_kl
+           FROM deltas
+           WHERE day >= date_trunc('month', CURRENT_DATE)::date`,
+          [meterIdForReadings]
+        );
+        monthToDateM3 = monthRes.rows[0] ? Number(Number(monthRes.rows[0].month_kl).toFixed(3)) : null;
+      } catch (err: any) {
+        console.warn('[gis] Failed to compute month-to-date consumption:', err.message);
+      }
+    }
+
     res.json({
       assetId: Number(assetId),
       meterId: latest?.meterId || asset?.imeiNumber || meterId,
@@ -544,7 +600,8 @@ router.get('/meter-detail/:assetId', async (req, res) => {
       status: asset?.status || 'ACTIVE',
       latestReading: latest?.currentReading ?? null,
       readingDate: latest?.date || null,
-      consumption: latest?.consumption ?? 0,
+      consumption: yesterdayConsumptionM3 ?? 0,
+      monthToDateM3,
       batteryVoltage: latest?.batteryVoltage ?? null,
       batteryStatus: latest?.batteryStatus ?? null,
       signalRssi: latest?.rssi ?? null,

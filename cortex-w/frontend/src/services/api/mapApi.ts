@@ -24,6 +24,7 @@ export interface LiveMeterDetailResponse {
   latestReading: number | null;
   readingDate: string | null;
   consumption: number;
+  monthToDateM3: number | null;
   batteryVoltage: number | null;
   batteryStatus: string | null;
   signalRssi: number | null;

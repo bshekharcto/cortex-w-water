@@ -153,8 +153,9 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
       ? Math.round(liveDetail.consumption * 1000)
       : (meter.yesterdayConsumptionL ?? 0);
   const yesterdayM3 = Number((yesterdayL / 1000).toFixed(3));
-  const dailyAvg = meter.dailyAvgL ?? 0;
-  const monthM3 = meter.monthConsumptionM3 ?? 0;
+  // Real month-to-date total from the backend (summed from actual telemetry
+  // deltas) — never the old hardcoded per-meter constant.
+  const monthM3 = liveDetail?.monthToDateM3 ?? meter.monthConsumptionM3 ?? null;
   // Use the REAL fetched bill (from /api/billing/latest-bill/:assetId) —
   // never fabricate an estimate from a made-up rate.
   const realLatestBill = liveDetail?.latestBill;
@@ -301,16 +302,20 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             <span className="gis-kpi-small">({yesterdayM3} m³)</span>
           </div>
           <div className="gis-kpi-footer">
-            {yesterdayL > dailyAvg ? (
-              <span className="gis-trend-up">
-                +{Math.round(((yesterdayL - dailyAvg) / dailyAvg) * 100)}% vs avg
-              </span>
-            ) : yesterdayL === 0 ? (
+            {/* Compared against the real 10-day average computed below — not a
+                per-meter constant — and only when that average is meaningful. */}
+            {yesterdayL === 0 ? (
               <span className="gis-trend-zero">No Uplink Flow</span>
-            ) : (
-              <span className="gis-trend-down">
-                Nominal (-{Math.round(((dailyAvg - yesterdayL) / dailyAvg) * 100)}%)
+            ) : avg10DayL > 0 && yesterdayL > avg10DayL ? (
+              <span className="gis-trend-up">
+                +{Math.round(((yesterdayL - avg10DayL) / avg10DayL) * 100)}% vs 10-day avg
               </span>
+            ) : avg10DayL > 0 ? (
+              <span className="gis-trend-down">
+                -{Math.round(((avg10DayL - yesterdayL) / avg10DayL) * 100)}% vs 10-day avg
+              </span>
+            ) : (
+              <span className="gis-trend-zero">No baseline yet</span>
             )}
           </div>
         </div>
@@ -321,11 +326,11 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             <Calendar size={13} color="#059669" />
           </div>
           <div className="gis-kpi-val-group">
-            <span className="gis-kpi-big">{monthM3} m³</span>
-            <span className="gis-kpi-small">({Math.round(monthM3 * 1000).toLocaleString()} L)</span>
+            <span className="gis-kpi-big">{monthM3 != null ? monthM3 : '—'} {monthM3 != null ? 'm³' : ''}</span>
+            <span className="gis-kpi-small">{monthM3 != null ? `(${Math.round(monthM3 * 1000).toLocaleString()} L)` : ''}</span>
           </div>
           <div className="gis-kpi-footer">
-            <span className="gis-est-bill">Est. ₹{Number(estimatedBill).toFixed(0)}</span>
+            <span className="gis-est-bill">{estimatedBill != null ? `Est. ₹${Number(estimatedBill).toFixed(0)}` : 'No billing data'}</span>
           </div>
         </div>
 
@@ -351,8 +356,10 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             <Zap size={13} color="#4F46E5" />
           </div>
           <div className="gis-kpi-val-group">
-            <span className="gis-kpi-big">0 L/h</span>
-            <span className="gis-kpi-small">Static</span>
+            {/* No upstream or local source reports an instantaneous flow rate
+                for this hardware — say so rather than showing a fake "0 Static". */}
+            <span className="gis-kpi-big">—</span>
+            <span className="gis-kpi-small">Not available</span>
           </div>
           <div className="gis-kpi-footer">
             <span className="gis-meta-seen">Battery: {batteryVolts ?? '—'}V ({meter.batteryPercentage ?? '—'}%)</span>

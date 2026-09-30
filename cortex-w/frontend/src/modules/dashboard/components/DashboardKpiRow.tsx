@@ -1,11 +1,10 @@
 import { MapPin, Gauge, Activity, WifiOff, EyeOff, Droplets } from 'lucide-react';
 import { KpiCard } from '@/components/cards/KpiCard';
 import { formatNumber } from '@/utils/number';
-import type { DashboardScope } from '../models/dashboardScope';
 import type { DashboardKpis } from '../models/dashboardKpis';
 
 interface DashboardKpiRowProps {
-  scope: DashboardScope;
+  isLeaf: boolean; // true = currently showing meters (no "child areas" concept)
   kpis: DashboardKpis | null;
   isLoading?: boolean;
   selectedStatusFilter?: 'ALL' | 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN';
@@ -13,7 +12,7 @@ interface DashboardKpiRowProps {
 }
 
 export function DashboardKpiRow({
-  scope,
+  isLeaf,
   kpis,
   isLoading,
   selectedStatusFilter = 'ALL',
@@ -22,7 +21,7 @@ export function DashboardKpiRow({
   if (isLoading || !kpis) {
     return (
       <div className="cw-kpi-grid" style={{ marginBottom: 24 }}>
-        {[...Array(scope.level === 'DMA' ? 7 : 8)].map((_, idx) => (
+        {[...Array(isLeaf ? 7 : 8)].map((_, idx) => (
           <div
             key={idx}
             className="cw-surface cw-kpi-card"
@@ -46,23 +45,14 @@ export function DashboardKpiRow({
 
   return (
     <div className="cw-kpi-grid" style={{ marginBottom: 24 }}>
-      {/* 1. Area count: Total Zones (global) or Total DMA Zones (zone) — hidden at DMA */}
-      {scope.level === 'GLOBAL' && (
+      {/* 1. Child area count — hidden once drilled down to a leaf (meters) */}
+      {!isLeaf && (
         <KpiCard
           icon={MapPin}
           iconTone="primary"
-          label="Total Zones"
+          label="Areas Below"
           value={formatNumber(kpis.childAreaCount ?? 0)}
-          subtitle="Configured operational zones"
-        />
-      )}
-      {scope.level === 'ZONE' && (
-        <KpiCard
-          icon={MapPin}
-          iconTone="primary"
-          label="Total DMA Zones"
-          value={formatNumber(kpis.childAreaCount ?? 0)}
-          subtitle="District metered areas"
+          subtitle="Configured sub-areas"
         />
       )}
 
