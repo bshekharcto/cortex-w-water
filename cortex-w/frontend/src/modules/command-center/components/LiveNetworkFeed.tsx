@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react';
 import { Radio } from 'lucide-react';
 import { RawFrameItem } from '../types/commandCenter.types';
+import { fmt } from '../utils/format';
+import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 
 interface Props {
   frames: RawFrameItem[];
@@ -8,6 +10,7 @@ interface Props {
 }
 
 export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
+  const th = useThresholds();
   const [filter, setFilter] = useState<'ALL' | 'NORMAL' | 'WEAK' | 'DEGRADED' | 'MULTI_GW'>('ALL');
 
   const filteredFrames = useMemo(() => {
@@ -71,8 +74,8 @@ export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
               </tr>
             )}
             {filteredFrames.map((frame) => {
-              const isWeak = frame.rssi < -95;
-              const isPoor = frame.snr < -10;
+              const isWeak = isWeakRssi(th, frame.rssi);
+              const isPoor = isPoorSnr(th, frame.snr);
 
               return (
                 <tr
@@ -84,15 +87,15 @@ export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
                   <td className="cc-mono cc-cell-time">{frame.decodedAt}</td>
                   <td className="cc-cell-bold">{frame.gatewayAlias}</td>
                   <td className="cc-mono cc-cell-bold">{frame.meterId}</td>
-                  <td className="cc-mono cc-cell-mute">{frame.devEui}</td>
-                  <td className="cc-mono">{frame.fCnt}</td>
-                  <td className="cc-mono">{frame.frequency}</td>
-                  <td className="cc-mono">DR{frame.dr}</td>
+                  <td className="cc-mono cc-cell-mute">{fmt(frame.devEui)}</td>
+                  <td className="cc-mono">{fmt(frame.fCnt)}</td>
+                  <td className="cc-mono">{fmt(frame.frequency)}</td>
+                  <td className="cc-mono">{frame.dr == null ? '—' : `DR${frame.dr}`}</td>
                   <td className={`cc-mono ${isWeak ? 'cc-text-warn' : ''}`}>
-                    {frame.rssi} dBm
+                    {fmt(frame.rssi, ' dBm')}
                   </td>
                   <td className={`cc-mono ${isPoor ? 'cc-text-danger' : ''}`}>
-                    {frame.snr} dB
+                    {fmt(frame.snr, ' dB')}
                   </td>
                   <td>
                     <span className={`cc-event-badge cc-event-badge--${frame.statusEvent.toLowerCase()}`}>

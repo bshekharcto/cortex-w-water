@@ -1,9 +1,9 @@
-import { getPostgresAggregatedSummary } from '../services/telemetryDbService.js';
+import { getPostgresAggregatedSummary, resolveWindow } from '../services/telemetryDbService.js';
 
 async function main() {
   console.log('=== Starting 7-day Telemetry Ingest & PostgreSQL Aggregation ===');
   const t0 = Date.now();
-  const summary = await getPostgresAggregatedSummary(7, '2026-09-06', true);
+  const summary = await getPostgresAggregatedSummary(resolveWindow({ from: '2026-08-31', to: '2026-09-06' }), true);
   const elapsed = Date.now() - t0;
   console.log('=== Ingestion & PostgreSQL Aggregation Completed ===');
   console.log(`Total time elapsed: ${(elapsed / 1000).toFixed(1)}s`);

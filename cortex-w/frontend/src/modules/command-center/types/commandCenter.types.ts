@@ -1,3 +1,17 @@
+export interface NetworkHealthThresholds {
+  gatewayStaleMinutes: number;
+  gatewayCriticalMinutes: number;
+  meterStaleMinutes: number;
+  meterCriticalHours: number;
+  gatewayTrafficDropWarningPct: number;
+  gatewayTrafficDropCriticalPct: number;
+  rssiWeakDbm: number;
+  rssiCriticalDbm: number;
+  snrWeakDb: number;
+  snrCriticalDb: number;
+  trendMinPrevFrames: number;
+}
+
 export type GatewayState = 'reporting' | 'degraded' | 'stale' | 'no-traffic' | 'never-observed';
 export type MeterState = 'live' | 'stale' | 'silent' | 'weak-rssi' | 'poor-snr' | 'multi-gw' | 'fcnt-gap' | 'gw-changed';
 export type GatewayTabType = 'METERS' | 'FRAMES' | 'TRAFFIC' | 'RADIO';
@@ -8,40 +22,42 @@ export interface GatewayItem {
   alias: string;
   uniqueMeters: number;
   frameCount: number;
-  lastFrameText: string;
-  lastFrameDecodedAt: string;
-  avgRssi: number;
-  avgSnr: number;
-  trendText: string;
+  lastFrameDecodedAt: string | null;
+  avgRssi: number | null;
+  avgSnr: number | null;
+  /** % change in frames vs the previous equal-length period; null when not comparable. */
+  trendPct: number | null;
   status: GatewayState;
 }
 
 export interface MeterReceptionPath {
   gatewayId: string;
   alias: string;
-  rssi: number;
-  snr: number;
-  lastSeenText: string;
+  rssi: number | null;
+  snr: number | null;
+  lastSeenAt: string | null;
   isLatest: boolean;
 }
 
 export interface MeterTelemetryItem {
   meterId: string;
-  devEui: string;
+  devEui: string | null;
   lastSeenDate: string;
-  frameAge: string;
   frames1H: number;
   frames24H: number;
-  lastRssi: number;
-  lastSnr: number;
-  fCnt: number;
-  fPort: number;
-  frequency: number;
-  dr: number;
+  lastRssi: number | null;
+  lastSnr: number | null;
+  fCnt: number | null;
+  fPort: number | null;
+  frequency: number | null;
+  dr: number | null;
   adr: boolean;
   confirmed: boolean;
   otherGatewaysCount: number;
+  /** Freshness status only: exactly one of live / stale / silent. */
   statusChips: MeterState[];
+  /** Separate link-quality / reach flags (weak-rssi, poor-snr, multi-gw) used for filtering. */
+  diagnostics: MeterState[];
   gatewaysHeard: MeterReceptionPath[];
   recentFrames?: MeterFrameRecord[];
 }
@@ -66,15 +82,15 @@ export interface RawFrameItem {
   decodedAt: string;
   meterTimestamp: string;
   meterId: string;
-  devEui: string;
+  devEui: string | null;
   gatewayId: string;
   gatewayAlias: string;
-  fCnt: number;
-  fPort: number;
-  frequency: number;
-  dr: number;
-  rssi: number;
-  snr: number;
+  fCnt: number | null;
+  fPort: number | null;
+  frequency: number | null;
+  dr: number | null;
+  rssi: number | null;
+  snr: number | null;
   confirmed: boolean;
   adr: boolean;
   checksumStatus: string;
@@ -89,9 +105,9 @@ export interface NetworkKpiData {
   uniqueMetersSeen: number;
   configuredMeters: number;
   framesReceived: number;
-  framesTrend: string;
-  lastFrameAge: string;
+  framesTrendPct: number | null;
+  lastFrameAt: string | null;
   multiGatewayMeters: number;
-  avgRssi: number;
-  avgSnr: number;
+  avgRssi: number | null;
+  avgSnr: number | null;
 }

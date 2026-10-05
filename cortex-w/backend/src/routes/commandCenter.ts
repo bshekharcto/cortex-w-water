@@ -2,8 +2,7 @@ import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
-import { fetchAndAggregateTelemetry } from '../services/telemetryAggregator.js';
-import { getPostgresAggregatedSummary, getGatewayMeters, searchMeters } from '../services/telemetryDbService.js';
+import { getPostgresAggregatedSummary, getGatewayMeters, searchMeters, resolveWindow, frameStatusEvent } from '../services/telemetryDbService.js';
 import { getRoots } from '../services/siteTree.js';
 import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
 
@@ -44,24 +43,27 @@ router.all('/sync-cron', async (req, res) => {
 
 // ---------- Live Telemetry Aggregator (PostgreSQL 7-Day Default & Sub-second Feed) ----------
 
+/** Parses ?hours= | ?days= | ?from=&to= into a window resolved against the server clock. */
+function windowFromQuery(q: Record<string, any>) {
+  const num = (v: unknown) => (v === undefined || v === '' ? undefined : Number(v));
+  return resolveWindow({ hours: num(q.hours), days: num(q.days), from: q.from as string, to: q.to as string });
+}
+
 router.get('/summary', async (req, res) => {
+  let win;
   try {
-    const days = parseInt((req.query.days as string) || '7', 10);
-    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+    win = windowFromQuery(req.query);
+  } catch (err: any) {
+    return res.status(400).json({ error: 'Invalid time window', message: err.message });
+  }
+  try {
     const refresh = req.query.refresh === 'true';
     const siteId = (req.query.siteId as string) || (req.query.siteIds as string) || 'ALL';
-
-    try {
-      const pgSummary = await getPostgresAggregatedSummary(days, date, refresh, siteId);
-      return res.json(pgSummary);
-    } catch (pgErr: any) {
-      console.warn('[commandCenter] Fallback to memory aggregator:', pgErr.message);
-      const fallback = await fetchAndAggregateTelemetry(date, refresh);
-      return res.json(fallback);
-    }
+    res.json(await getPostgresAggregatedSummary(win, refresh, siteId));
   } catch (err: any) {
+    // No silent fallback to a different data source: an honest error beats plausible-looking wrong data.
     console.error('[commandCenter] Error generating telemetry summary:', err);
-    res.status(500).json({ error: 'Failed to aggregate telemetry', message: err.message });
+    res.status(503).json({ error: 'Telemetry summary unavailable', message: err.message });
   }
 });
 
@@ -85,12 +87,10 @@ router.get('/sites', async (req, res) => {
 
 router.get('/gateways/:gatewayId/meters', async (req, res) => {
   try {
-    const days = parseInt((req.query.days as string) || '7', 10);
-    const date = (req.query.date as string) || undefined;
-    res.json(await getGatewayMeters(req.params.gatewayId, days, date));
+    res.json(await getGatewayMeters(req.params.gatewayId, windowFromQuery(req.query)));
   } catch (err: any) {
     console.error('[commandCenter] Error loading gateway meters:', err);
-    res.status(500).json({ error: 'Failed to load gateway meters', message: err.message });
+    res.status(503).json({ error: 'Failed to load gateway meters', message: err.message });
   }
 });
 
@@ -98,56 +98,42 @@ router.get('/meters/search', async (req, res) => {
   try {
     const q = ((req.query.q as string) || '').trim();
     if (q.length < 3) return res.json([]);
-    const days = parseInt((req.query.days as string) || '7', 10);
-    res.json(await searchMeters(q, days, (req.query.date as string) || undefined));
+    res.json(await searchMeters(q, windowFromQuery(req.query)));
   } catch (err: any) {
     console.error('[commandCenter] Error searching meters:', err);
-    res.status(500).json({ error: 'Failed to search meters', message: err.message });
+    res.status(503).json({ error: 'Failed to search meters', message: err.message });
   }
 });
 
 router.get('/feed', async (req, res) => {
   try {
-    const limit = parseInt((req.query.limit as string) || '100', 10);
-    try {
-      const result = await pool.query(
-        'SELECT * FROM raw_telemetry_packets ORDER BY decoded_at DESC LIMIT $1',
-        [limit]
-      );
-      if (result.rows.length > 0) {
-        return res.json(
-          result.rows.map((r: any, idx: number) => ({
-            id: `feed-${r.id || idx}-${r.meter_id}`,
-            decodedAt: r.decoded_at,
-            meterTimestamp: r.meter_timestamp || r.decoded_at,
-            meterId: r.meter_id,
-            devEui: r.dev_eui,
-            gatewayId: r.gateway_id,
-            gatewayAlias: `GW-${(r.gateway_id || '').slice(-3).toUpperCase()}`,
-            fCnt: r.fcnt,
-            fPort: r.fport,
-            frequency: r.frequency,
-            dr: r.dr,
-            rssi: r.rssi,
-            snr: r.snr,
-            confirmed: r.confirmed,
-            adr: r.adr,
-            checksumStatus: r.checksum_status,
-            statusByte: r.status_byte,
-            statusEvent: r.reverse_flow > 0.05 ? 'WEAK_RSSI' : 'FRAME_RECEIVED',
-          }))
-        );
-      }
-    } catch (pgErr) {
-      // ignore and fallback
-    }
-
-    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
-    const summary = await fetchAndAggregateTelemetry(date, false);
-    res.json((summary.recentFrames || []).slice(0, limit));
+    const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '100', 10) || 100, 1), 500);
+    const result = await pool.query('SELECT * FROM raw_telemetry_packets ORDER BY decoded_at DESC LIMIT $1', [limit]);
+    res.json(
+      result.rows.map((r: any, idx: number) => ({
+        id: `feed-${r.id || idx}-${r.meter_id}`,
+        decodedAt: r.decoded_at,
+        meterTimestamp: r.meter_timestamp || r.decoded_at,
+        meterId: r.meter_id,
+        devEui: r.dev_eui,
+        gatewayId: r.gateway_id,
+        gatewayAlias: `GW-${(r.gateway_id || '').slice(-3).toUpperCase()}`,
+        fCnt: r.fcnt === -1 ? null : r.fcnt,
+        fPort: r.fport,
+        frequency: r.frequency,
+        dr: r.dr,
+        rssi: r.rssi,
+        snr: r.snr,
+        confirmed: r.confirmed,
+        adr: r.adr,
+        checksumStatus: r.checksum_status,
+        statusByte: r.status_byte,
+        statusEvent: frameStatusEvent(r),
+      }))
+    );
   } catch (err: any) {
     console.error('[commandCenter] Error getting live feed:', err);
-    res.status(500).json({ error: 'Failed to get live feed', message: err.message });
+    res.status(503).json({ error: 'Failed to get live feed', message: err.message });
   }
 });
 

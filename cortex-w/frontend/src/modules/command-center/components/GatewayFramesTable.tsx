@@ -1,4 +1,6 @@
 import { RawFrameItem } from '../types/commandCenter.types';
+import { fmt } from '../utils/format';
+import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 
 interface Props {
   frames: RawFrameItem[];
@@ -11,6 +13,7 @@ export function GatewayFramesTable({
   gatewayAlias,
   onSelectFrameMeter,
 }: Props) {
+  const th = useThresholds();
   return (
     <div className="cc-frames-view">
       <div className="cc-subfilter-bar">
@@ -46,8 +49,8 @@ export function GatewayFramesTable({
               </tr>
             )}
             {frames.map((frame) => {
-              const isWeak = frame.rssi < -95;
-              const isPoor = frame.snr < -10;
+              const isWeak = isWeakRssi(th, frame.rssi);
+              const isPoor = isPoorSnr(th, frame.snr);
 
               return (
                 <tr
@@ -57,16 +60,16 @@ export function GatewayFramesTable({
                 >
                   <td className="cc-mono">{frame.decodedAt}</td>
                   <td className="cc-mono cc-cell-bold">{frame.meterId}</td>
-                  <td className="cc-mono cc-cell-mute">{frame.devEui}</td>
-                  <td className="cc-mono">{frame.fCnt}</td>
-                  <td className="cc-mono">{frame.fPort}</td>
-                  <td className="cc-mono">{frame.frequency}</td>
-                  <td className="cc-mono">DR{frame.dr}</td>
+                  <td className="cc-mono cc-cell-mute">{fmt(frame.devEui)}</td>
+                  <td className="cc-mono">{fmt(frame.fCnt)}</td>
+                  <td className="cc-mono">{fmt(frame.fPort)}</td>
+                  <td className="cc-mono">{fmt(frame.frequency)}</td>
+                  <td className="cc-mono">{frame.dr == null ? '—' : `DR${frame.dr}`}</td>
                   <td className={`cc-mono ${isWeak ? 'cc-text-warn' : ''}`}>
-                    {frame.rssi} dBm
+                    {fmt(frame.rssi, ' dBm')}
                   </td>
                   <td className={`cc-mono ${isPoor ? 'cc-text-danger' : ''}`}>
-                    {frame.snr} dB
+                    {fmt(frame.snr, ' dB')}
                   </td>
                   <td>{frame.confirmed ? 'Yes' : 'No'}</td>
                   <td>{frame.adr ? 'Yes' : 'No'}</td>

@@ -34,8 +34,8 @@ function bucket(values: number[], bands: Band[]) {
 }
 
 export function GatewayRadioHealth({ gatewayAlias, meters }: Props) {
-  const rssi = meters.map((m) => m.lastRssi).filter((v) => Number.isFinite(v));
-  const snr = meters.map((m) => m.lastSnr).filter((v) => Number.isFinite(v));
+  const rssi = meters.map((m) => m.lastRssi).filter((v): v is number => v != null && Number.isFinite(v));
+  const snr = meters.map((m) => m.lastSnr).filter((v): v is number => v != null && Number.isFinite(v));
 
   if (meters.length === 0) {
     return <EmptyState message={`No meters have been heard through ${gatewayAlias} in this window.`} />;

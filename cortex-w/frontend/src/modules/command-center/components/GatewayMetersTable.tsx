@@ -1,5 +1,8 @@
 import { useState, useMemo } from 'react';
 import { MeterTelemetryItem } from '../types/commandCenter.types';
+import { fmt } from '../utils/format';
+import { useNow, formatAgo } from '../utils/timeAgo';
+import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 
 interface Props {
   meters: MeterTelemetryItem[];
@@ -16,6 +19,8 @@ export function GatewayMetersTable({
   selectedMeterId,
   onSelectMeter,
 }: Props) {
+  const th = useThresholds();
+  const nowMs = useNow();
   const [filter, setFilter] = useState<string>('ALL');
 
   const filteredMeters = useMemo(() => {
@@ -23,10 +28,9 @@ export function GatewayMetersTable({
     if (filter === 'LIVE') return meters.filter((m) => m.statusChips.includes('live'));
     if (filter === 'STALE') return meters.filter((m) => m.statusChips.includes('stale'));
     if (filter === 'SILENT') return meters.filter((m) => m.statusChips.includes('silent'));
-    if (filter === 'WEAK_RSSI') return meters.filter((m) => m.statusChips.includes('weak-rssi'));
-    if (filter === 'POOR_SNR') return meters.filter((m) => m.statusChips.includes('poor-snr'));
-    if (filter === 'MULTI_GW') return meters.filter((m) => m.statusChips.includes('multi-gw'));
-    if (filter === 'FCNT_GAP') return meters.filter((m) => m.statusChips.includes('fcnt-gap'));
+    if (filter === 'WEAK_RSSI') return meters.filter((m) => m.diagnostics.includes('weak-rssi'));
+    if (filter === 'POOR_SNR') return meters.filter((m) => m.diagnostics.includes('poor-snr'));
+    if (filter === 'MULTI_GW') return meters.filter((m) => m.diagnostics.includes('multi-gw'));
     return meters;
   }, [meters, filter]);
 
@@ -38,10 +42,10 @@ export function GatewayMetersTable({
           { key: 'ALL', label: 'All' },
           { key: 'LIVE', label: 'Live' },
           { key: 'STALE', label: 'Stale' },
+          { key: 'SILENT', label: 'Silent' },
           { key: 'WEAK_RSSI', label: 'Weak RSSI' },
           { key: 'POOR_SNR', label: 'Poor SNR' },
           { key: 'MULTI_GW', label: 'Multi-Gateway' },
-          { key: 'FCNT_GAP', label: 'FCnt Gap' },
         ].map((f) => (
           <button
             key={f.key}
@@ -84,8 +88,8 @@ export function GatewayMetersTable({
             )}
             {filteredMeters.map((m) => {
               const isSelected = selectedMeterId === m.meterId;
-              const isWeak = m.lastRssi < -95;
-              const isPoorSnr = m.lastSnr < -10;
+              const isWeak = isWeakRssi(th, m.lastRssi);
+              const poorSnr = isPoorSnr(th, m.lastSnr);
 
               return (
                 <tr
@@ -94,19 +98,19 @@ export function GatewayMetersTable({
                   onClick={() => onSelectMeter(m)}
                 >
                   <td className="cc-mono cc-cell-bold">{m.meterId}</td>
-                  <td className="cc-mono cc-cell-mute">{m.devEui}</td>
-                  <td>{m.frameAge}</td>
+                  <td className="cc-mono cc-cell-mute">{fmt(m.devEui)}</td>
+                  <td>{formatAgo(m.lastSeenDate, nowMs)}</td>
                   <td>{m.frames24H}</td>
                   <td className={`cc-mono ${isWeak ? 'cc-text-warn' : ''}`}>
-                    {m.lastRssi} dBm
+                    {fmt(m.lastRssi, ' dBm')}
                   </td>
-                  <td className={`cc-mono ${isPoorSnr ? 'cc-text-danger' : ''}`}>
-                    {m.lastSnr} dB
+                  <td className={`cc-mono ${poorSnr ? 'cc-text-danger' : ''}`}>
+                    {fmt(m.lastSnr, ' dB')}
                   </td>
-                  <td className="cc-mono">{m.fCnt}</td>
-                  <td className="cc-mono">{m.fPort}</td>
-                  <td className="cc-mono">{m.frequency}</td>
-                  <td className="cc-mono">DR{m.dr}</td>
+                  <td className="cc-mono">{fmt(m.fCnt)}</td>
+                  <td className="cc-mono">{fmt(m.fPort)}</td>
+                  <td className="cc-mono">{fmt(m.frequency)}</td>
+                  <td className="cc-mono">{m.dr == null ? '—' : `DR${m.dr}`}</td>
                   <td>{m.adr ? 'Yes' : 'No'}</td>
                   <td>{m.confirmed ? 'Yes' : 'No'}</td>
                   <td>

@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react';
 import { Search } from 'lucide-react';
 import { GatewayItem } from '../types/commandCenter.types';
+import { useNow, formatAgo } from '../utils/timeAgo';
+import { formatTrend } from '../utils/format';
 
 interface Props {
   gateways: GatewayItem[];
@@ -15,6 +17,7 @@ export function GatewayRail({
   onSelectGateway,
   loading,
 }: Props) {
+  const nowMs = useNow();
   const [filter, setFilter] = useState<'ALL' | 'REPORTING' | 'DEGRADED' | 'STALE' | 'NO_TRAFFIC'>('ALL');
   const [railSearch, setRailSearch] = useState('');
 
@@ -107,13 +110,13 @@ export function GatewayRail({
                   <span className="cc-rail-item-alias">{gw.alias}</span>
                 </div>
                 {gw.status === 'reporting' && (
-                  <span className="cc-badge cc-badge--fresh">{gw.lastFrameText}</span>
+                  <span className="cc-badge cc-badge--fresh">{formatAgo(gw.lastFrameDecodedAt, nowMs)}</span>
                 )}
                 {gw.status === 'degraded' && (
-                  <span className="cc-badge cc-badge--warn">{gw.trendText}</span>
+                  <span className="cc-badge cc-badge--warn">{formatTrend(gw.trendPct) || 'degraded'}</span>
                 )}
                 {gw.status === 'stale' && (
-                  <span className="cc-badge cc-badge--stale">{gw.lastFrameText}</span>
+                  <span className="cc-badge cc-badge--stale">{formatAgo(gw.lastFrameDecodedAt, nowMs)}</span>
                 )}
                 {gw.status === 'no-traffic' && (
                   <span className="cc-badge cc-badge--mute">no traffic</span>
@@ -128,7 +131,7 @@ export function GatewayRail({
                 <span className="cc-metric-meters">
                   {gw.uniqueMeters} {gw.uniqueMeters === 1 ? 'meter' : 'meters'}
                 </span>
-                {gw.avgRssi !== 0 && (
+                {gw.avgRssi != null && gw.avgSnr != null && (
                   <span className="cc-metric-radio">
                     RSSI {gw.avgRssi} · SNR {gw.avgSnr}
                   </span>

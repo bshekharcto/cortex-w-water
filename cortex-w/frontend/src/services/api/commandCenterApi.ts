@@ -4,10 +4,11 @@ import {
   MeterTelemetryItem,
   RawFrameItem,
   NetworkKpiData,
+  NetworkHealthThresholds,
 } from '@/modules/command-center/types/commandCenter.types';
 
 export interface TelemetrySummaryResponse {
-  date: string;
+  dateRange?: { fromDate: string; toDate: string; days: number; fromTs: string; toTs: string; window: string };
   generatedAt: string;
   isCached: boolean;
   kpis: NetworkKpiData & {
@@ -15,6 +16,7 @@ export interface TelemetrySummaryResponse {
     valveAbnormalCount?: number;
     reverseFlowCount?: number;
   };
+  thresholds: NetworkHealthThresholds;
   gateways: GatewayItem[];
   metersByGateway: Record<string, MeterTelemetryItem[]>;
   allMetersCount: number;
@@ -28,18 +30,41 @@ export interface TelemetrySummaryResponse {
   };
 }
 
-const LOCAL_STORAGE_CACHE_KEY_PREFIX = 'cortex_w_cc_summary_cache';
+/** Time window sent to the backend; the server resolves it against its own clock. */
+export interface WindowParams {
+  hours?: number;
+  days?: number;
+  from?: string; // YYYY-MM-DD (custom)
+  to?: string;
+}
+
+/** Stable cache key for a window (mirrors the backend's window key). */
+export function windowKey(w: WindowParams): string {
+  if (w.from && w.to) return `c_${w.from}_${w.to}`;
+  if (w.hours) return `h${w.hours}`;
+  return `d${w.days ?? 7}`;
+}
+
+function windowQuery(w: WindowParams): Record<string, string | number> {
+  if (w.from && w.to) return { from: w.from, to: w.to };
+  if (w.hours) return { hours: w.hours };
+  return { days: w.days ?? 7 };
+}
+
+const LOCAL_STORAGE_CACHE_KEY_PREFIX = 'cortex_w_cc_summary_cache_v2';
+const LOCAL_CACHE_MAX_AGE_MS = 60 * 60 * 1000;
 
 /**
- * Retrieves cached summary from localStorage for 0ms initial render
+ * Retrieves a recent cached summary from localStorage for an instant first render
+ * (never older than an hour, so a stale day can't be shown as current).
  */
-export function getLocalCachedSummary(days: number = 7, date?: string, siteId: string = 'ALL'): TelemetrySummaryResponse | null {
+export function getLocalCachedSummary(key: string, siteId: string = 'ALL'): TelemetrySummaryResponse | null {
   try {
-    const key = `${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${days}_${siteId}`;
-    const raw = localStorage.getItem(key);
+    const raw = localStorage.getItem(`${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${key}_${siteId}`);
     if (!raw) return null;
     const parsed: TelemetrySummaryResponse = JSON.parse(raw);
-    if (date && parsed.date && parsed.date !== date) return null;
+    const age = Date.now() - new Date(parsed.generatedAt).getTime();
+    if (!Number.isFinite(age) || age > LOCAL_CACHE_MAX_AGE_MS) return null;
     return parsed;
   } catch {
     return null;
@@ -49,10 +74,9 @@ export function getLocalCachedSummary(days: number = 7, date?: string, siteId: s
 /**
  * Persists summary to localStorage for subsequent instant loads
  */
-export function setLocalCachedSummary(summary: TelemetrySummaryResponse, days: number = 7, siteId: string = 'ALL'): void {
+export function setLocalCachedSummary(summary: TelemetrySummaryResponse, key: string, siteId: string = 'ALL'): void {
   try {
-    const key = `${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${days}_${siteId}`;
-    localStorage.setItem(key, JSON.stringify(summary));
+    localStorage.setItem(`${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${key}_${siteId}`, JSON.stringify(summary));
   } catch (err) {
     // In case localStorage is full or restricted, gracefully ignore
     console.warn('[commandCenterApi] LocalStorage cache write failed:', err);
@@ -70,13 +94,11 @@ export async function fetchSites(): Promise<Array<{ id: string; name: string }>>
  * Fetches the aggregated live telemetry summary from the BFF backend
  */
 export async function fetchCommandCenterSummary(
-  days: number = 7,
-  date?: string,
+  win: WindowParams,
   refresh: boolean = false,
   siteId: string = 'ALL'
 ): Promise<TelemetrySummaryResponse> {
-  const query: Record<string, string | number | boolean> = { days };
-  if (date) query.date = date;
+  const query: Record<string, string | number | boolean> = { ...windowQuery(win) };
   if (refresh) query.refresh = true;
   if (siteId && siteId !== 'ALL') query.siteId = siteId;
 
@@ -85,8 +107,7 @@ export async function fetchCommandCenterSummary(
     query,
   });
 
-  // Save to client cache keyed by days and siteId
-  setLocalCachedSummary(data, days, siteId);
+  setLocalCachedSummary(data, windowKey(win), siteId);
   return data;
 }
 
@@ -106,20 +127,19 @@ export async function fetchLiveTelemetryFeed(
 /**
  * Latest frame per meter for one gateway (loaded on selection; not part of the summary payload)
  */
-export async function fetchGatewayMeters(gatewayId: string, days: number = 7, date?: string): Promise<MeterTelemetryItem[]> {
+export async function fetchGatewayMeters(gatewayId: string, win: WindowParams): Promise<MeterTelemetryItem[]> {
   return apiRequest<MeterTelemetryItem[]>(`/command-center/gateways/${encodeURIComponent(gatewayId)}/meters`, {
     method: 'GET',
-    query: { days, ...(date ? { date } : {}) },
+    query: windowQuery(win),
   });
 }
 
 export async function searchMeters(
   q: string,
-  days: number = 7,
-  date?: string
+  win: WindowParams
 ): Promise<Array<{ gatewayId: string; meter: MeterTelemetryItem }>> {
   return apiRequest(`/command-center/meters/search`, {
     method: 'GET',
-    query: { q, days, ...(date ? { date } : {}) },
+    query: { q, ...windowQuery(win) },
   });
 }

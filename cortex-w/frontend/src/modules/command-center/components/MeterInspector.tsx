@@ -1,6 +1,9 @@
 import { Copy, X, Check } from 'lucide-react';
 import { useState } from 'react';
 import { MeterTelemetryItem } from '../types/commandCenter.types';
+import { fmt } from '../utils/format';
+import { useNow, formatAgo } from '../utils/timeAgo';
+import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 
 interface Props {
   meter: MeterTelemetryItem;
@@ -8,6 +11,8 @@ interface Props {
 }
 
 export function MeterInspector({ meter, onClose }: Props) {
+  const th = useThresholds();
+  const nowMs = useNow();
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   const copyToClipboard = (text: string, field: string) => {
@@ -34,10 +39,10 @@ export function MeterInspector({ meter, onClose }: Props) {
             </button>
           </div>
           <div className="cc-inspector-deveui-row">
-            <span className="cc-mono cc-cell-mute">DevEUI {meter.devEui}</span>
+            <span className="cc-mono cc-cell-mute">DevEUI {fmt(meter.devEui)}</span>
             <button
               className="cc-copy-btn"
-              onClick={() => copyToClipboard(meter.devEui, 'devEui')}
+              onClick={() => copyToClipboard(meter.devEui ?? '', 'devEui')}
               title="Copy DevEUI"
             >
               {copiedField === 'devEui' ? <Check size={13} /> : <Copy size={13} />}
@@ -52,7 +57,7 @@ export function MeterInspector({ meter, onClose }: Props) {
 
       <div className="cc-inspector-badges-row">
         <span className="cc-chip cc-chip--live">LIVE</span>
-        <span className="cc-inspector-freshness">Last seen {meter.frameAge}</span>
+        <span className="cc-inspector-freshness">Last seen {formatAgo(meter.lastSeenDate, nowMs)}</span>
       </div>
 
       {/* Latest Frame Details Card */}
@@ -69,24 +74,24 @@ export function MeterInspector({ meter, onClose }: Props) {
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">FCnt</span>
-            <span className="cc-v cc-mono">{meter.fCnt}</span>
+            <span className="cc-v cc-mono">{fmt(meter.fCnt)}</span>
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">FPort</span>
-            <span className="cc-v cc-mono">{meter.fPort}</span>
+            <span className="cc-v cc-mono">{fmt(meter.fPort)}</span>
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">Frequency</span>
-            <span className="cc-v cc-mono">{meter.frequency} MHz</span>
+            <span className="cc-v cc-mono">{fmt(meter.frequency, ' MHz')}</span>
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">Data Rate</span>
-            <span className="cc-v cc-mono">DR{meter.dr}</span>
+            <span className="cc-v cc-mono">{meter.dr == null ? '—' : `DR${meter.dr}`}</span>
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">RSSI / SNR</span>
             <span className="cc-v cc-mono">
-              {meter.lastRssi} dBm · {meter.lastSnr} dB
+              {fmt(meter.lastRssi, ' dBm')} · {fmt(meter.lastSnr, ' dB')}
             </span>
           </div>
           <div className="cc-kv-row">
@@ -120,9 +125,9 @@ export function MeterInspector({ meter, onClose }: Props) {
                 {path.isLatest && <span className="cc-latest-badge">LATEST</span>}
               </div>
               <div className="cc-gw-path-metrics">
-                <span className="cc-mono">{path.rssi} dBm</span>
-                <span className="cc-mono">{path.snr} dB</span>
-                <span className="cc-cell-mute">{path.lastSeenText}</span>
+                <span className="cc-mono">{fmt(path.rssi, ' dBm')}</span>
+                <span className="cc-mono">{fmt(path.snr, ' dB')}</span>
+                <span className="cc-cell-mute">{formatAgo(path.lastSeenAt, nowMs)}</span>
               </div>
             </div>
           ))}
@@ -140,15 +145,19 @@ export function MeterInspector({ meter, onClose }: Props) {
           ) : (
             <span className="cc-diag-chip cc-diag-chip--mute">Single Gateway Reach</span>
           )}
-          {meter.lastRssi >= -95 ? (
+          {meter.lastRssi == null ? (
+            <span className="cc-diag-chip cc-diag-chip--mute">RSSI unavailable</span>
+          ) : !isWeakRssi(th, meter.lastRssi) ? (
             <span className="cc-diag-chip cc-diag-chip--good">Strong Signal Link</span>
           ) : (
             <span className="cc-diag-chip cc-diag-chip--warn">Weak RSSI Alert</span>
           )}
-          {meter.lastSnr >= 0 ? (
-            <span className="cc-diag-chip cc-diag-chip--good">Clean RF SNR</span>
+          {meter.lastSnr == null ? (
+            <span className="cc-diag-chip cc-diag-chip--mute">SNR unavailable</span>
+          ) : !isPoorSnr(th, meter.lastSnr) ? (
+            <span className="cc-diag-chip cc-diag-chip--good">SNR within limits</span>
           ) : (
-            <span className="cc-diag-chip cc-diag-chip--warn">Marginal RF Noise</span>
+            <span className="cc-diag-chip cc-diag-chip--warn">Poor SNR</span>
           )}
           <span className="cc-diag-chip cc-diag-chip--good">Normal FCnt Progression</span>
         </div>

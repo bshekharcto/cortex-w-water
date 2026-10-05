@@ -1,6 +1,7 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
+import { ThresholdsProvider, WindowLabelProvider } from '../utils/thresholds';
 import '../styles/commandCenter.css';
 
 // Components
@@ -22,6 +23,8 @@ import {
   fetchSites,
   fetchGatewayMeters,
   searchMeters,
+  windowKey,
+  WindowParams,
   getLocalCachedSummary,
   TelemetrySummaryResponse,
 } from '@/services/api/commandCenterApi';
@@ -32,11 +35,30 @@ import {
   RawFrameItem,
 } from '../types/commandCenter.types';
 
-const TARGET_DATE = new Date().toISOString().slice(0, 10);
+const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+const defaultCustomRange = () => ({
+  from: isoDay(new Date(Date.now() - 6 * 86400000)),
+  to: isoDay(new Date()),
+});
+
+function toWindowParams(range: TimeWindow, custom: { from: string; to: string }): WindowParams {
+  switch (range) {
+    case '1H': return { hours: 1 };
+    case '6H': return { hours: 6 };
+    case '24H': return { hours: 24 };
+    case '30D': return { days: 30 };
+    case 'CUSTOM': return { from: custom.from, to: custom.to };
+    default: return { days: 7 };
+  }
+}
 
 export function CommandCenterPage() {
   const [activeMode, setActiveMode] = useState<'Gateways' | 'Meters'>('Gateways');
   const [timeRange, setTimeRange] = useState<TimeWindow>('7D');
+  const [customRange, setCustomRange] = useState(defaultCustomRange);
+  const win = useMemo(() => toWindowParams(timeRange, customRange), [timeRange, customRange]);
+  const winKey = windowKey(win);
+  const customValid = timeRange !== 'CUSTOM' || (!!customRange.from && !!customRange.to && customRange.from <= customRange.to);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGatewayId, setSelectedGatewayId] = useState<string | null>(null);
   const [gatewayTab, setGatewayTab] = useState<GatewayTabType>('METERS');
@@ -68,7 +90,7 @@ export function CommandCenterPage() {
 
   // Live Summary State with 0ms Stale-While-Revalidate from LocalStorage Cache
   const [summaryData, setSummaryData] = useState<TelemetrySummaryResponse | null>(() => {
-    return getLocalCachedSummary(7, TARGET_DATE, 'ALL') || null;
+    return getLocalCachedSummary('d7', 'ALL');
   });
   const [isSyncing, setIsSyncing] = useState<boolean>(!summaryData);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -76,24 +98,37 @@ export function CommandCenterPage() {
   const [metersLoading, setMetersLoading] = useState(false);
   const [metersError, setMetersError] = useState<string | null>(null);
 
-  // Background fetch routine (supports 1H, 6H, 24H, 7D, 30D and site filtering)
+  // Only the newest request may update the page (a slow earlier window/site must not overwrite it)
+  const requestSeq = useRef(0);
+
+  // Background fetch routine (windows are resolved on the server clock; nothing date-specific is sent)
   const loadSummary = useCallback(async (forceRefresh = false) => {
+    if (!customValid) return;
+    const seq = ++requestSeq.current;
     setIsSyncing(true);
     try {
-      const days = timeRange === '30D' ? 30 : timeRange === '7D' ? 7 : timeRange === '24H' ? 1 : 1;
-      const live = await fetchCommandCenterSummary(days, TARGET_DATE, forceRefresh, selectedSiteId);
+      const live = await fetchCommandCenterSummary(win, forceRefresh, selectedSiteId);
+      if (seq !== requestSeq.current) return;
       setSummaryData(live);
       setSyncError(null);
       setSecondsAgo(0);
     } catch (err) {
+      if (seq !== requestSeq.current) return;
       console.warn('[CommandCenter] Live summary sync failed:', err);
       setSyncError(err instanceof Error ? err.message : 'Telemetry service unavailable');
     } finally {
-      setIsSyncing(false);
+      if (seq === requestSeq.current) setIsSyncing(false);
     }
-  }, [timeRange, selectedSiteId]);
+  }, [win, selectedSiteId, customValid]);
 
-  // Sync on mount or when timeRange or selectedSiteId changes
+  // Window or site changed: drop the previous selection's data (show a recent local cache if we have one)
+  useEffect(() => {
+    setSummaryData(getLocalCachedSummary(winKey, selectedSiteId));
+    setSyncError(null);
+    setSelectedMeter(null);
+  }, [winKey, selectedSiteId]);
+
+  // Sync on mount or when the window or site changes
   useEffect(() => {
     loadSummary(false);
   }, [loadSummary]);
@@ -125,7 +160,8 @@ export function CommandCenterPage() {
 
   // Ensure an active gateway is selected once gateways are known
   useEffect(() => {
-    if (!selectedGatewayId && currentGateways.length > 0) {
+    if (currentGateways.length === 0) return;
+    if (!selectedGatewayId || !currentGateways.some((g) => g.gatewayId === selectedGatewayId)) {
       setSelectedGatewayId(currentGateways[0].gatewayId);
     }
   }, [currentGateways, selectedGatewayId]);
@@ -135,19 +171,17 @@ export function CommandCenterPage() {
     return summaryData?.kpis ?? null;
   }, [summaryData]);
 
-  const days = timeRange === '30D' ? 30 : timeRange === '7D' ? 7 : 1;
-
   // Meters are loaded per gateway on selection (the summary no longer embeds ~10k meters)
   useEffect(() => {
     setMetersByGatewayMap({});
-  }, [days, selectedSiteId]);
+  }, [winKey, selectedSiteId]);
 
   useEffect(() => {
     if (!selectedGatewayId || metersByGatewayMap[selectedGatewayId]) return;
     let cancelled = false;
     setMetersLoading(true);
     setMetersError(null);
-    fetchGatewayMeters(selectedGatewayId, days, TARGET_DATE)
+    fetchGatewayMeters(selectedGatewayId, win)
       .then((list) => {
         if (!cancelled) setMetersByGatewayMap((prev) => ({ ...prev, [selectedGatewayId]: list }));
       })
@@ -160,25 +194,12 @@ export function CommandCenterPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedGatewayId, days, metersByGatewayMap]);
+  }, [selectedGatewayId, win, metersByGatewayMap]);
 
   // Derived Raw Frames for live feed and tables
   const allFrames = useMemo<RawFrameItem[]>(() => {
     return summaryData?.recentFrames ?? [];
   }, [summaryData]);
-
-  // Time window filter for frames
-  const timeFilteredFrames = useMemo(() => {
-    if (timeRange === '24H' || timeRange === '7D' || timeRange === 'CUSTOM') {
-      return allFrames;
-    }
-    const now = Date.now();
-    const cutoffMs = timeRange === '1H' ? 3600 * 1000 : 6 * 3600 * 1000;
-    return allFrames.filter((f) => {
-      const t = new Date(f.decodedAt).getTime();
-      return !isNaN(t) && now - t <= cutoffMs;
-    });
-  }, [allFrames, timeRange]);
 
   // Currently selected gateway item
   const currentGateway = useMemo(() => {
@@ -194,9 +215,9 @@ export function CommandCenterPage() {
 
   // Frames received by selected gateway
   const currentFrames = useMemo(() => {
-    if (!selectedGatewayId) return timeFilteredFrames;
-    return timeFilteredFrames.filter((f) => f.gatewayId === selectedGatewayId);
-  }, [selectedGatewayId, timeFilteredFrames]);
+    if (!selectedGatewayId) return allFrames;
+    return allFrames.filter((f) => f.gatewayId === selectedGatewayId);
+  }, [selectedGatewayId, allFrames]);
 
   // Handle selecting a meter from table or feed
   const handleSelectMeter = (meter: MeterTelemetryItem) => {
@@ -211,7 +232,7 @@ export function CommandCenterPage() {
         return;
       }
     }
-    searchMeters(meterId, days, TARGET_DATE)
+    searchMeters(meterId, win)
       .then((hits) => {
         const hit = hits.find((h) => h.meter.meterId === meterId);
         if (hit) setSelectedMeter(hit.meter);
@@ -235,7 +256,7 @@ export function CommandCenterPage() {
     }
     // Meter ID / DevEUI lookup (server-side; meters aren't preloaded)
     if (q.length >= 3) {
-      searchMeters(q, days, TARGET_DATE)
+      searchMeters(q, win)
         .then((hits) => {
           if (hits.length === 0) return;
           setSelectedGatewayId(hits[0].gatewayId);
@@ -246,7 +267,11 @@ export function CommandCenterPage() {
     }
   };
 
+  const windowLabel = timeRange === 'CUSTOM' ? 'custom range' : timeRange;
+
   return (
+    <ThresholdsProvider value={summaryData?.thresholds ?? null}>
+    <WindowLabelProvider value={windowLabel}>
     <div className="cc-container">
       {/* Top Command Bar with Live Stream Sync Status */}
       <CommandCenterToolbar
@@ -254,6 +279,8 @@ export function CommandCenterPage() {
         onTabChange={setActiveMode}
         timeRange={timeRange}
         onTimeRangeChange={setTimeRange}
+        customRange={customRange}
+        onCustomRangeChange={setCustomRange}
         searchQuery={searchQuery}
         onSearchChange={handleSearch}
         onRefresh={handleManualRefresh}
@@ -377,6 +404,8 @@ export function CommandCenterPage() {
         onSelectMeter={handleSelectMeterById}
       />
     </div>
+    </WindowLabelProvider>
+    </ThresholdsProvider>
   );
 }
 

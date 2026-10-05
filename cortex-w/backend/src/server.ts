@@ -152,10 +152,26 @@ async function runMigrations() {
 
       const sql = readFileSync(migrationPath, "utf-8");
 
-      await pool.query(sql);
+      // Use a dedicated connection with a lock timeout: if another session (e.g. a long-running
+      // ingestion insert) holds a conflicting lock on a table, give up quickly instead of hanging
+      // server startup forever. The schema statements are idempotent, so skipping is safe.
+      const client = await pool.connect();
+      try {
+        await client.query("SET lock_timeout = '5s'");
+        await client.query(sql);
+      } finally {
+        client.release();
+      }
 
       console.log(`[db] Ran migration: ${file}`);
     } catch (err: any) {
+      if (err.code === "55P03" || err.message?.includes("lock timeout")) {
+        console.warn(
+          `[db] Skipped ${file}: table is locked by another session (will re-check on next start)`
+        );
+        continue;
+      }
+
       // ON CONFLICT DO NOTHING makes reruns safe.
       // Some schema statements can still report already-existing
       // database objects, so handle those safely.

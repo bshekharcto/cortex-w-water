@@ -1,5 +1,7 @@
 import { X } from 'lucide-react';
 import { GatewayItem, GatewayTabType } from '../types/commandCenter.types';
+import { useNow, formatAgo } from '../utils/timeAgo';
+import { useWindowLabel } from '../utils/thresholds';
 
 interface Props {
   gateway: GatewayItem;
@@ -14,6 +16,8 @@ export function SelectedGatewayHeader({
   onTabChange,
   onClearSelection,
 }: Props) {
+  const windowLabel = useWindowLabel();
+  const nowMs = useNow();
   const statusBadge =
     gateway.status === 'reporting'
       ? 'cc-status-pill--green'
@@ -50,13 +54,13 @@ export function SelectedGatewayHeader({
         </span>
         <span className="cc-gw-meta-sep">·</span>
         <span className="cc-gw-meta-item">
-          <strong>{gateway.frameCount}</strong> frames (24h)
+          <strong>{gateway.frameCount}</strong> frames ({windowLabel})
         </span>
         <span className="cc-gw-meta-sep">·</span>
         <span className="cc-gw-meta-item">
-          Last frame: <strong>{gateway.lastFrameText}</strong>
+          Last frame: <strong>{formatAgo(gateway.lastFrameDecodedAt, nowMs)}</strong>
         </span>
-        {gateway.avgRssi !== 0 && (
+        {gateway.avgRssi != null && gateway.avgSnr != null && (
           <>
             <span className="cc-gw-meta-sep">·</span>
             <span className="cc-gw-meta-item">

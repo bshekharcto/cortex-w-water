@@ -1,4 +1,4 @@
-import { ingestDateIntoPostgres, getPostgresAggregatedSummary } from './telemetryDbService.js';
+import { ingestDateIntoPostgres, getPostgresAggregatedSummary, resolveWindow } from './telemetryDbService.js';
 import { pool } from '../db/pool.js';
 
 let isSyncing = false;
@@ -91,13 +91,12 @@ export async function syncLatestTelemetry(customDates?: string[]): Promise<SyncR
       }
     }
 
-    // Pre-warm the cache for 7D and 30D fleet views using SQL aggregation ONLY (skip re-ingestion)
-    for (const date of [todayStr, '2026-09-06']) {
+    // Pre-warm the fleet-wide caches for the standard windows using SQL aggregation ONLY (skip re-ingestion)
+    for (const req of [{ hours: 1 }, { hours: 6 }, { hours: 24 }, { days: 7 }, { days: 30 }]) {
       try {
-        await getPostgresAggregatedSummary(7, date, true, 'ALL', true);
-        await getPostgresAggregatedSummary(30, date, true, 'ALL', true);
+        await getPostgresAggregatedSummary(resolveWindow(req), true, 'ALL', true);
       } catch (cacheErr: any) {
-        console.warn(`[telemetrySync] Cache pre-warm note for ${date}:`, cacheErr.message);
+        console.warn(`[telemetrySync] Cache pre-warm note for ${JSON.stringify(req)}:`, cacheErr.message);
       }
     }
 

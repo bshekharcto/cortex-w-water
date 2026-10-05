@@ -6,6 +6,8 @@ interface Props {
   onTabChange: (tab: 'Gateways' | 'Meters') => void;
   timeRange: TimeWindow;
   onTimeRangeChange: (range: TimeWindow) => void;
+  customRange: { from: string; to: string };
+  onCustomRangeChange: (r: { from: string; to: string }) => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   onRefresh: () => void;
@@ -21,6 +23,8 @@ export function CommandCenterToolbar({
   onTabChange,
   timeRange,
   onTimeRangeChange,
+  customRange,
+  onCustomRangeChange,
   searchQuery,
   onSearchChange,
   onRefresh,
@@ -96,6 +100,27 @@ export function CommandCenterToolbar({
               </button>
             ))}
           </div>
+
+          {timeRange === 'CUSTOM' && (
+            <div className="cc-time-group" title="Custom range (UTC dates, max 90 days)">
+              <input
+                type="date"
+                className="cc-global-search"
+                style={{ width: 130 }}
+                value={customRange.from}
+                max={customRange.to || undefined}
+                onChange={(e) => onCustomRangeChange({ ...customRange, from: e.target.value })}
+              />
+              <input
+                type="date"
+                className="cc-global-search"
+                style={{ width: 130 }}
+                value={customRange.to}
+                min={customRange.from || undefined}
+                onChange={(e) => onCustomRangeChange({ ...customRange, to: e.target.value })}
+              />
+            </div>
+          )}
 
           <div
             className={`cc-sync-pill ${isSyncing ? '' : 'cc-sync-pill--live'}`}

@@ -1,4 +1,8 @@
 import { NetworkKpiData } from '../types/commandCenter.types';
+import { fmt } from '../utils/format';
+import { useNow, formatAgo } from '../utils/timeAgo';
+import { formatTrend } from '../utils/format';
+import { useWindowLabel } from '../utils/thresholds';
 
 interface Props {
   kpis?: NetworkKpiData | null;
@@ -6,6 +10,8 @@ interface Props {
 }
 
 export function NetworkKpiStrip({ kpis, loading }: Props) {
+  const windowLabel = useWindowLabel();
+  const nowMs = useNow();
   if (loading && !kpis) {
     return (
       <div className="cc-kpi-grid">
@@ -69,11 +75,15 @@ export function NetworkKpiStrip({ kpis, loading }: Props) {
       <div className="cc-kpi-card">
         <div className="cc-kpi-top">
           <span className="cc-kpi-dot cc-kpi-dot--blue" />
-          <span className="cc-kpi-label">FRAMES RECEIVED (24H)</span>
+          <span className="cc-kpi-label">FRAMES RECEIVED ({windowLabel})</span>
         </div>
         <div className="cc-kpi-value-row">
           <span className="cc-kpi-val">{kpis.framesReceived.toLocaleString()}</span>
-          <span className="cc-kpi-trend cc-kpi-trend--up">{kpis.framesTrend}</span>
+          {formatTrend(kpis.framesTrendPct) && (
+            <span className={`cc-kpi-trend ${(kpis.framesTrendPct ?? 0) >= 0 ? 'cc-kpi-trend--up' : 'cc-kpi-trend--down'}`}>
+              {formatTrend(kpis.framesTrendPct)}
+            </span>
+          )}
         </div>
       </div>
 
@@ -84,7 +94,7 @@ export function NetworkKpiStrip({ kpis, loading }: Props) {
           <span className="cc-kpi-label">LAST NETWORK FRAME</span>
         </div>
         <div className="cc-kpi-value-row">
-          <span className="cc-kpi-val cc-kpi-val--sm">{kpis.lastFrameAge}</span>
+          <span className="cc-kpi-val cc-kpi-val--sm">{formatAgo(kpis.lastFrameAt, nowMs)}</span>
         </div>
       </div>
 
@@ -107,9 +117,9 @@ export function NetworkKpiStrip({ kpis, loading }: Props) {
           <span className="cc-kpi-label">AVG RSSI / SNR</span>
         </div>
         <div className="cc-kpi-value-row">
-          <span className="cc-kpi-val cc-kpi-val--sm">{kpis.avgRssi}</span>
+          <span className="cc-kpi-val cc-kpi-val--sm">{fmt(kpis.avgRssi)}</span>
           <span className="cc-kpi-unit">dBm</span>
-          <span className="cc-kpi-sub">· {kpis.avgSnr} dB</span>
+          <span className="cc-kpi-sub">· {fmt(kpis.avgSnr, ' dB')}</span>
         </div>
       </div>
     </div>
