@@ -20,6 +20,8 @@ import { LiveNetworkFeed } from '../components/LiveNetworkFeed';
 import {
   fetchCommandCenterSummary,
   fetchSites,
+  fetchGatewayMeters,
+  searchMeters,
   getLocalCachedSummary,
   TelemetrySummaryResponse,
 } from '@/services/api/commandCenterApi';
@@ -47,13 +49,21 @@ export function CommandCenterPage() {
     { id: 'ALL', name: 'All Sites (Fleet)' },
   ]);
 
-  // Load available sites from backend
+  // Load available sites from backend; refresh periodically and on tab focus so new sites appear
   useEffect(() => {
-    fetchSites().then((res) => {
-      if (res && res.length > 0) {
-        setSites(res);
-      }
-    }).catch(() => {});
+    const loadSites = () =>
+      fetchSites()
+        .then((res) => {
+          if (res && res.length > 0) setSites(res);
+        })
+        .catch(() => {});
+    loadSites();
+    const id = setInterval(loadSites, 60000);
+    window.addEventListener('focus', loadSites);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('focus', loadSites);
+    };
   }, []);
 
   // Live Summary State with 0ms Stale-While-Revalidate from LocalStorage Cache
@@ -62,6 +72,9 @@ export function CommandCenterPage() {
   });
   const [isSyncing, setIsSyncing] = useState<boolean>(!summaryData);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [metersByGatewayMap, setMetersByGatewayMap] = useState<Record<string, MeterTelemetryItem[]>>({});
+  const [metersLoading, setMetersLoading] = useState(false);
+  const [metersError, setMetersError] = useState<string | null>(null);
 
   // Background fetch routine (supports 1H, 6H, 24H, 7D, 30D and site filtering)
   const loadSummary = useCallback(async (forceRefresh = false) => {
@@ -122,10 +135,32 @@ export function CommandCenterPage() {
     return summaryData?.kpis ?? null;
   }, [summaryData]);
 
-  // Derived Meters by Gateway
-  const metersByGatewayMap = useMemo(() => {
-    return summaryData?.metersByGateway ?? {};
-  }, [summaryData]);
+  const days = timeRange === '30D' ? 30 : timeRange === '7D' ? 7 : 1;
+
+  // Meters are loaded per gateway on selection (the summary no longer embeds ~10k meters)
+  useEffect(() => {
+    setMetersByGatewayMap({});
+  }, [days, selectedSiteId]);
+
+  useEffect(() => {
+    if (!selectedGatewayId || metersByGatewayMap[selectedGatewayId]) return;
+    let cancelled = false;
+    setMetersLoading(true);
+    setMetersError(null);
+    fetchGatewayMeters(selectedGatewayId, days, TARGET_DATE)
+      .then((list) => {
+        if (!cancelled) setMetersByGatewayMap((prev) => ({ ...prev, [selectedGatewayId]: list }));
+      })
+      .catch((err) => {
+        if (!cancelled) setMetersError(err instanceof Error ? err.message : 'Failed to load meters');
+      })
+      .finally(() => {
+        if (!cancelled) setMetersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedGatewayId, days, metersByGatewayMap]);
 
   // Derived Raw Frames for live feed and tables
   const allFrames = useMemo<RawFrameItem[]>(() => {
@@ -169,7 +204,6 @@ export function CommandCenterPage() {
   };
 
   const handleSelectMeterById = (meterId: string) => {
-    // Look up in metersByGatewayMap
     for (const gwId of Object.keys(metersByGatewayMap)) {
       const found = metersByGatewayMap[gwId].find((m) => m.meterId === meterId);
       if (found) {
@@ -177,6 +211,12 @@ export function CommandCenterPage() {
         return;
       }
     }
+    searchMeters(meterId, days, TARGET_DATE)
+      .then((hits) => {
+        const hit = hits.find((h) => h.meter.meterId === meterId);
+        if (hit) setSelectedMeter(hit.meter);
+      })
+      .catch(() => {});
   };
 
   // Global search handler
@@ -193,19 +233,16 @@ export function CommandCenterPage() {
       setGatewayTab('METERS');
       return;
     }
-    // Check meter id or deveui across all gateways
-    for (const gwId of Object.keys(metersByGatewayMap)) {
-      const m = metersByGatewayMap[gwId].find(
-        (meter) =>
-          meter.meterId.toLowerCase().includes(query) ||
-          meter.devEui.toLowerCase().includes(query)
-      );
-      if (m) {
-        setSelectedGatewayId(gwId);
-        setSelectedMeter(m);
-        setGatewayTab('METERS');
-        return;
-      }
+    // Meter ID / DevEUI lookup (server-side; meters aren't preloaded)
+    if (q.length >= 3) {
+      searchMeters(q, days, TARGET_DATE)
+        .then((hits) => {
+          if (hits.length === 0) return;
+          setSelectedGatewayId(hits[0].gatewayId);
+          setSelectedMeter(hits[0].meter);
+          setGatewayTab('METERS');
+        })
+        .catch(() => {});
     }
   };
 
@@ -279,6 +316,8 @@ export function CommandCenterPage() {
 
               {gatewayTab === 'METERS' && (
                 <GatewayMetersTable
+                  loading={metersLoading && !metersByGatewayMap[currentGateway.gatewayId]}
+                  error={metersError}
                   meters={currentMeters}
                   selectedMeterId={selectedMeter?.meterId || null}
                   onSelectMeter={handleSelectMeter}

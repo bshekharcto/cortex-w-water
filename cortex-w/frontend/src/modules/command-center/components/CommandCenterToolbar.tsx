@@ -65,20 +65,11 @@ export function CommandCenterToolbar({
             value={selectedSiteId}
             onChange={(e) => onSiteChange?.(e.target.value)}
           >
-            {sites && sites.length > 0 ? (
-              sites.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.id === 'ALL' ? 'All Sites (Fleet)' : `Site: ${s.name} (${s.id})`}
-                </option>
-              ))
-            ) : (
-              <>
-                <option value="ALL">All Sites (Fleet)</option>
-                <option value="6394">Site: BHUBANESWAR (6394)</option>
-                <option value="6916">Site: Cuttack (6916)</option>
-                <option value="6906">Site: Puri (6906)</option>
-              </>
-            )}
+            {(sites && sites.length > 0 ? sites : [{ id: 'ALL', name: 'All Sites' }]).map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.id === 'ALL' ? 'All Sites (Fleet)' : `Site: ${s.name} (${s.id})`}
+              </option>
+            ))}
           </select>
         </div>
 

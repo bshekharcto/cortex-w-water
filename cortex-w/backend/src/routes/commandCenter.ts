@@ -3,7 +3,8 @@ import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { fetchAndAggregateTelemetry } from '../services/telemetryAggregator.js';
-import { getPostgresAggregatedSummary } from '../services/telemetryDbService.js';
+import { getPostgresAggregatedSummary, getGatewayMeters, searchMeters } from '../services/telemetryDbService.js';
+import { getRoots } from '../services/siteTree.js';
 import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
 
 const router = Router();
@@ -61,6 +62,47 @@ router.get('/summary', async (req, res) => {
   } catch (err: any) {
     console.error('[commandCenter] Error generating telemetry summary:', err);
     res.status(500).json({ error: 'Failed to aggregate telemetry', message: err.message });
+  }
+});
+
+// Live top-level sites from the real site hierarchy (same source as the Dashboard),
+// so newly added sites appear without a code or DB change.
+router.get('/sites', async (req, res) => {
+  try {
+    const roots = await getRoots(req.headers.authorization);
+    let sites = roots.map((r) => ({ id: String(r.id), name: r.name }));
+    if (sites.length === 0) {
+      const local = await pool.query('SELECT id, name FROM sites ORDER BY name');
+      sites = local.rows.map((r: any) => ({ id: String(r.id), name: r.name }));
+    }
+    sites.sort((a, b) => a.name.localeCompare(b.name));
+    res.json([{ id: 'ALL', name: 'All Sites' }, ...sites]);
+  } catch (err: any) {
+    console.error('[commandCenter] Error loading sites:', err);
+    res.status(500).json({ error: 'Failed to load sites', message: err.message });
+  }
+});
+
+router.get('/gateways/:gatewayId/meters', async (req, res) => {
+  try {
+    const days = parseInt((req.query.days as string) || '7', 10);
+    const date = (req.query.date as string) || undefined;
+    res.json(await getGatewayMeters(req.params.gatewayId, days, date));
+  } catch (err: any) {
+    console.error('[commandCenter] Error loading gateway meters:', err);
+    res.status(500).json({ error: 'Failed to load gateway meters', message: err.message });
+  }
+});
+
+router.get('/meters/search', async (req, res) => {
+  try {
+    const q = ((req.query.q as string) || '').trim();
+    if (q.length < 3) return res.json([]);
+    const days = parseInt((req.query.days as string) || '7', 10);
+    res.json(await searchMeters(q, days, (req.query.date as string) || undefined));
+  } catch (err: any) {
+    console.error('[commandCenter] Error searching meters:', err);
+    res.status(500).json({ error: 'Failed to search meters', message: err.message });
   }
 });
 

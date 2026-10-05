@@ -63,7 +63,7 @@ export function setLocalCachedSummary(summary: TelemetrySummaryResponse, days: n
  * Fetches the available sites
  */
 export async function fetchSites(): Promise<Array<{ id: string; name: string }>> {
-  return apiRequest<Array<{ id: string; name: string }>>('/sites', { method: 'GET' });
+  return apiRequest<Array<{ id: string; name: string }>>('/command-center/sites', { method: 'GET' });
 }
 
 /**
@@ -100,5 +100,26 @@ export async function fetchLiveTelemetryFeed(
   return apiRequest<RawFrameItem[]>('/command-center/feed', {
     method: 'GET',
     query: { ...(date ? { date } : {}), limit },
+  });
+}
+
+/**
+ * Latest frame per meter for one gateway (loaded on selection; not part of the summary payload)
+ */
+export async function fetchGatewayMeters(gatewayId: string, days: number = 7, date?: string): Promise<MeterTelemetryItem[]> {
+  return apiRequest<MeterTelemetryItem[]>(`/command-center/gateways/${encodeURIComponent(gatewayId)}/meters`, {
+    method: 'GET',
+    query: { days, ...(date ? { date } : {}) },
+  });
+}
+
+export async function searchMeters(
+  q: string,
+  days: number = 7,
+  date?: string
+): Promise<Array<{ gatewayId: string; meter: MeterTelemetryItem }>> {
+  return apiRequest(`/command-center/meters/search`, {
+    method: 'GET',
+    query: { q, days, ...(date ? { date } : {}) },
   });
 }

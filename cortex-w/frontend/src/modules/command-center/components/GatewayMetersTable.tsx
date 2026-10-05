@@ -3,12 +3,16 @@ import { MeterTelemetryItem } from '../types/commandCenter.types';
 
 interface Props {
   meters: MeterTelemetryItem[];
+  loading?: boolean;
+  error?: string | null;
   selectedMeterId: string | null;
   onSelectMeter: (meter: MeterTelemetryItem) => void;
 }
 
 export function GatewayMetersTable({
   meters,
+  loading,
+  error,
   selectedMeterId,
   onSelectMeter,
 }: Props) {
@@ -74,7 +78,7 @@ export function GatewayMetersTable({
             {filteredMeters.length === 0 && (
               <tr>
                 <td colSpan={99} style={{ padding: 24, textAlign: 'center', opacity: 0.7 }}>
-                  No meters match.
+                  {loading ? 'Loading meters…' : error ? `Could not load meters (${error}).` : 'No meters match.'}
                 </td>
               </tr>
             )}
