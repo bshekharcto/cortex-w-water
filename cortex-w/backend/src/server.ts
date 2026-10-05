@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import compression from "compression";
 import { existsSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -32,6 +33,11 @@ app.use(
     credentials: true,
   }),
 );
+
+// Gzip/brotli-negotiated compression — the dashboard's upstream DMA-report
+// responses embed full per-DMA meter arrays and were being proxied through
+// uncompressed; this shrinks them substantially over the wire for free.
+app.use(compression());
 
 app.use(express.json());
 

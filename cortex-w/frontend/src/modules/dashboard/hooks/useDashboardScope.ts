@@ -1,37 +1,22 @@
 import { useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import type { DashboardScope } from '../models/dashboardScope';
 
-function humanize(str?: string): string {
-  if (!str) return '';
-  return str
-    .replace(/^demo-|^zone-|^dma-/, '')
-    .replace(/-/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-export function useDashboardScope(resolvedNames?: { zoneName?: string; dmaName?: string }): DashboardScope {
-  const { zoneId, dmaId } = useParams<{ zoneId?: string; dmaId?: string }>();
+/**
+ * Reads the current node id out of the URL. The route is a single splat
+ * (/app/dashboard/*), so however many real levels deep the user has
+ * navigated, this just returns the last segment — the id to fetch children
+ * (or meters) for. Depth-agnostic by construction: there's no fixed
+ * zoneId/dmaId param pair to run out of.
+ */
+export function useDashboardScope(): { currentNodeId: string | null; pathIds: string[] } {
+  const params = useParams();
+  const splat = (params['*'] as string) || '';
 
   return useMemo(() => {
-    if (zoneId && dmaId) {
-      return {
-        level: 'DMA',
-        zoneId,
-        zoneName: resolvedNames?.zoneName || humanize(zoneId),
-        dmaId,
-        dmaName: resolvedNames?.dmaName || humanize(dmaId),
-      };
-    }
-
-    if (zoneId) {
-      return {
-        level: 'ZONE',
-        zoneId,
-        zoneName: resolvedNames?.zoneName || humanize(zoneId),
-      };
-    }
-
-    return { level: 'GLOBAL' };
-  }, [zoneId, dmaId, resolvedNames?.zoneName, resolvedNames?.dmaName]);
+    const pathIds = splat.split('/').map((s) => s.trim()).filter(Boolean);
+    return {
+      pathIds,
+      currentNodeId: pathIds.length > 0 ? pathIds[pathIds.length - 1] : null,
+    };
+  }, [splat]);
 }

@@ -167,12 +167,15 @@ router.get('/:id/detail', async (req, res) => {
     const meterIdForReadings = matchedMeter?.meterId;
     if (meterIdForReadings) {
       try {
-        // One reading per unique calendar day (the latest reading of that day), last 10 unique days
+        // One reading per unique calendar day (the highest reading of that
+        // day, not just the latest-arriving one — same-day retry packets
+        // can decode to a garbled lower value than an earlier packet that
+        // day, confirmed against a known-correct reference), last 10 unique days
         const readingsRes = await pool.query(
           `SELECT DISTINCT ON (date_key) date_key, decoded_at, forward_flow_l
            FROM raw_telemetry_packets
            WHERE meter_id = $1
-           ORDER BY date_key DESC, decoded_at DESC
+           ORDER BY date_key DESC, forward_flow_l DESC, decoded_at DESC
            LIMIT 10`,
           [meterIdForReadings]
         );

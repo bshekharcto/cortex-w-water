@@ -44,9 +44,11 @@ export function AppRouter() {
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
             {/* GLOBAL TOOLS */}
-            <Route path="/app/dashboard" element={<DashboardPage />} />
-            <Route path="/app/dashboard/zone/:zoneId" element={<DashboardPage />} />
-            <Route path="/app/dashboard/zone/:zoneId/dma/:dmaId" element={<DashboardPage />} />
+            {/* Single splat route: the real site hierarchy is variable-depth
+                (district -> zone -> DMA today, possibly deeper later), so
+                the path is a generic list of real node ids rather than
+                fixed :zoneId/:dmaId params. */}
+            <Route path="/app/dashboard/*" element={<DashboardPage />} />
             <Route element={<CommandCenterDarkScope />}>
               <Route path="/app/command-center" element={<CommandCenterPage />} />
               <Route path="/app/command-center/gateways/:gatewayId" element={<CommandCenterPage />} />

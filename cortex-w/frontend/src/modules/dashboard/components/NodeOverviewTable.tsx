@@ -1,21 +1,23 @@
 import { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { ChevronDown, ChevronUp, ArrowUpDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronUp, ArrowUpDown, ChevronLeft, ChevronRight, ChevronRight as DrillIcon } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
 import { formatNumber } from '@/utils/number';
-import type { DmaRow } from '../models/dashboardRows';
+import type { NodeRow } from '../models/dashboardRows';
 
-interface DmaOverviewTableProps {
-  dmas: DmaRow[];
-  zoneId: string;
+interface NodeOverviewTableProps {
+  nodes: NodeRow[];
   isLoading?: boolean;
+  onSelectNode: (node: NodeRow) => void;
 }
 
-type SortField = 'dmaName' | 'totalDevices' | 'connected' | 'disconnected' | 'neverSeen' | 'yesterdayFlowM3' | 'todayFlowM3' | 'monthToDateFlowM3';
+type SortField = 'name' | 'totalDevices' | 'connected' | 'disconnected' | 'neverSeen' | 'yesterdayFlowM3' | 'todayFlowM3' | 'monthToDateFlowM3';
 
-export function DmaOverviewTable({ dmas, zoneId, isLoading }: DmaOverviewTableProps) {
-  const nav = useNavigate();
-  const [sortField, setSortField] = useState<SortField>('dmaName');
+// Generic overview table for any level of the real site hierarchy — the
+// same component renders the root list, a zone's children, a DMA's
+// children, or whatever a future deeper level looks like, since a NodeRow
+// carries no level-specific fields.
+export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOverviewTableProps) {
+  const [sortField, setSortField] = useState<SortField>('name');
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [page, setPage] = useState<number>(0);
   const pageSize = 10;
@@ -29,11 +31,11 @@ export function DmaOverviewTable({ dmas, zoneId, isLoading }: DmaOverviewTablePr
     }
   };
 
-  const sortedDmas = useMemo(() => {
-    const list = [...dmas];
+  const sortedNodes = useMemo(() => {
+    const list = [...nodes];
     list.sort((a, b) => {
-      let vA = a[sortField];
-      let vB = b[sortField];
+      let vA: any = sortField === 'name' ? a.name : a[sortField];
+      let vB: any = sortField === 'name' ? b.name : b[sortField];
       if (typeof vA === 'string') {
         vA = vA.toLowerCase();
         vB = (vB as string).toLowerCase();
@@ -43,13 +45,13 @@ export function DmaOverviewTable({ dmas, zoneId, isLoading }: DmaOverviewTablePr
       return 0;
     });
     return list;
-  }, [dmas, sortField, sortAsc]);
+  }, [nodes, sortField, sortAsc]);
 
-  const totalPages = Math.ceil(sortedDmas.length / pageSize) || 1;
-  const pagedDmas = useMemo(() => {
+  const totalPages = Math.ceil(sortedNodes.length / pageSize) || 1;
+  const pagedNodes = useMemo(() => {
     const start = page * pageSize;
-    return sortedDmas.slice(start, start + pageSize);
-  }, [sortedDmas, page, pageSize]);
+    return sortedNodes.slice(start, start + pageSize);
+  }, [sortedNodes, page, pageSize]);
 
   const renderSortIcon = (field: SortField) => {
     if (sortField !== field) return <ArrowUpDown size={12} style={{ opacity: 0.4, marginLeft: 4 }} />;
@@ -60,21 +62,21 @@ export function DmaOverviewTable({ dmas, zoneId, isLoading }: DmaOverviewTablePr
     return (
       <div className="cw-surface" style={{ padding: 32, textAlign: 'center' }}>
         <div className="cw-spinner" style={{ margin: '0 auto 12px auto' }} />
-        <p style={{ color: 'var(--cw-text-muted)' }}>Loading DMA overview...</p>
+        <p style={{ color: 'var(--cw-text-muted)' }}>Loading area overview...</p>
       </div>
     );
   }
 
-  if (dmas.length === 0) {
-    return <EmptyState message="No DMA records found for this zone." />;
+  if (nodes.length === 0) {
+    return <EmptyState message="No records found for this area." />;
   }
 
   return (
     <section className="cw-section">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <h2 className="cw-section-title" style={{ margin: 0 }}>DMA Overview</h2>
+        <h2 className="cw-section-title" style={{ margin: 0 }}>Area Overview</h2>
         <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-          Showing {sortedDmas.length} {sortedDmas.length === 1 ? 'DMA' : 'DMAs'}
+          Showing {sortedNodes.length} {sortedNodes.length === 1 ? 'area' : 'areas'}
         </span>
       </div>
 
@@ -82,8 +84,8 @@ export function DmaOverviewTable({ dmas, zoneId, isLoading }: DmaOverviewTablePr
         <table className="cw-table">
           <thead>
             <tr>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('dmaName')}>
-                <div style={{ display: 'flex', alignItems: 'center' }}>DMA {renderSortIcon('dmaName')}</div>
+              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('name')}>
+                <div style={{ display: 'flex', alignItems: 'center' }}>Area {renderSortIcon('name')}</div>
               </th>
               <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('totalDevices')}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Devices {renderSortIcon('totalDevices')}</div>
@@ -107,47 +109,51 @@ export function DmaOverviewTable({ dmas, zoneId, isLoading }: DmaOverviewTablePr
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Monthly Flow (m³) {renderSortIcon('monthToDateFlowM3')}</div>
               </th>
               <th>Last Updated</th>
+              <th style={{ width: 32 }} />
             </tr>
           </thead>
           <tbody>
-            {pagedDmas.map((d) => {
-              const connPct = d.totalDevices > 0 ? ((d.connected / d.totalDevices) * 100).toFixed(1) : '0';
-              const discPct = d.totalDevices > 0 ? ((d.disconnected / d.totalDevices) * 100).toFixed(1) : '0';
-              const neverPct = d.totalDevices > 0 ? ((d.neverSeen / d.totalDevices) * 100).toFixed(1) : '0';
+            {pagedNodes.map((n) => {
+              const connPct = n.totalDevices > 0 ? ((n.connected / n.totalDevices) * 100).toFixed(1) : '0';
+              const discPct = n.totalDevices > 0 ? ((n.disconnected / n.totalDevices) * 100).toFixed(1) : '0';
+              const neverPct = n.totalDevices > 0 ? ((n.neverSeen / n.totalDevices) * 100).toFixed(1) : '0';
 
               return (
                 <tr
-                  key={d.dmaId}
+                  key={n.id}
                   className="cw-table-row--clickable"
-                  onClick={() => nav(`/app/dashboard/zone/${zoneId}/dma/${d.dmaId}`)}
-                  title={`Drill down into ${d.dmaName}`}
+                  onClick={() => onSelectNode(n)}
+                  title={n.hasChildren ? `Drill down into ${n.name}` : `View meters in ${n.name}`}
                 >
                   <td style={{ fontWeight: 600, color: 'var(--cw-primary)' }}>
-                    {d.dmaName}
+                    {n.name}
                   </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatNumber(d.totalDevices)}
+                    {formatNumber(n.totalDevices)}
                   </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--cw-green)' }}>
-                    {formatNumber(d.connected)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({connPct}%)</span>
+                    {formatNumber(n.connected)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({connPct}%)</span>
                   </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--cw-orange)' }}>
-                    {formatNumber(d.disconnected)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({discPct}%)</span>
+                    {formatNumber(n.disconnected)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({discPct}%)</span>
                   </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--cw-red)' }}>
-                    {formatNumber(d.neverSeen)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({neverPct}%)</span>
+                    {formatNumber(n.neverSeen)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({neverPct}%)</span>
                   </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatNumber(d.yesterdayFlowM3)}
+                    {formatNumber(n.yesterdayFlowM3)}
                   </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatNumber(d.todayFlowM3)}
+                    {formatNumber(n.todayFlowM3)}
                   </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatNumber(d.monthToDateFlowM3)}
+                    {formatNumber(n.monthToDateFlowM3)}
                   </td>
                   <td style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-                    {d.dataTimestamp ? new Date(d.dataTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live'}
+                    {n.dataTimestamp ? new Date(n.dataTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live'}
+                  </td>
+                  <td style={{ textAlign: 'center', color: 'var(--cw-text-muted)' }}>
+                    <DrillIcon size={14} />
                   </td>
                 </tr>
               );

@@ -1,5 +1,5 @@
 import type { DashboardKpis } from '../models/dashboardKpis';
-import type { ZoneRow, DmaRow, MeterRow } from '../models/dashboardRows';
+import type { NodeRow, MeterRow } from '../models/dashboardRows';
 
 /**
  * Converts flow values from various units to m³
@@ -64,9 +64,11 @@ export function calculatePercentages(
 }
 
 /**
- * Aggregates Global KPIs from an array of ZoneRows
+ * Aggregates KPIs from a list of child nodes — works at any depth (root
+ * sites, zones, DMAs, or whatever level cog-core-api's real hierarchy adds
+ * next), since a NodeRow's shape doesn't depend on which level it's at.
  */
-export function aggregateGlobalKpis(zones: ZoneRow[]): DashboardKpis {
+export function aggregateNodeKpis(nodes: NodeRow[]): DashboardKpis {
   let totalDevices = 0;
   let connected = 0;
   let disconnected = 0;
@@ -76,16 +78,16 @@ export function aggregateGlobalKpis(zones: ZoneRow[]): DashboardKpis {
   let monthToDateFlowM3 = 0;
   let latestTimestamp: string | undefined = undefined;
 
-  for (const z of zones) {
-    totalDevices += z.totalDevices;
-    connected += z.connected;
-    disconnected += z.disconnected;
-    neverSeen += z.neverSeen;
-    yesterdayFlowM3 += z.yesterdayFlowM3;
-    todayFlowM3 += z.todayFlowM3;
-    monthToDateFlowM3 += z.monthToDateFlowM3;
-    if (z.dataTimestamp && (!latestTimestamp || z.dataTimestamp > latestTimestamp)) {
-      latestTimestamp = z.dataTimestamp;
+  for (const n of nodes) {
+    totalDevices += n.totalDevices;
+    connected += n.connected;
+    disconnected += n.disconnected;
+    neverSeen += n.neverSeen;
+    yesterdayFlowM3 += n.yesterdayFlowM3;
+    todayFlowM3 += n.todayFlowM3;
+    monthToDateFlowM3 += n.monthToDateFlowM3;
+    if (n.dataTimestamp && (!latestTimestamp || n.dataTimestamp > latestTimestamp)) {
+      latestTimestamp = n.dataTimestamp;
     }
   }
 
@@ -103,7 +105,7 @@ export function aggregateGlobalKpis(zones: ZoneRow[]): DashboardKpis {
   );
 
   return {
-    childAreaCount: zones.length, // "Total Zones"
+    childAreaCount: nodes.length,
     totalDevices,
     connected,
     disconnected,
@@ -119,64 +121,13 @@ export function aggregateGlobalKpis(zones: ZoneRow[]): DashboardKpis {
 }
 
 /**
- * Aggregates Zone KPIs from an array of DmaRows
+ * Aggregates KPIs from a list of meters — used at a real leaf node (one
+ * with no further children), where the "child rows" are individual meters
+ * instead of sub-nodes.
  */
-export function aggregateZoneKpis(dmas: DmaRow[]): DashboardKpis {
-  let totalDevices = 0;
-  let connected = 0;
-  let disconnected = 0;
-  let neverSeen = 0;
-  let yesterdayFlowM3 = 0;
-  let todayFlowM3 = 0;
-  let monthToDateFlowM3 = 0;
-  let latestTimestamp: string | undefined = undefined;
-
-  for (const d of dmas) {
-    totalDevices += d.totalDevices;
-    connected += d.connected;
-    disconnected += d.disconnected;
-    neverSeen += d.neverSeen;
-    yesterdayFlowM3 += d.yesterdayFlowM3;
-    todayFlowM3 += d.todayFlowM3;
-    monthToDateFlowM3 += d.monthToDateFlowM3;
-    if (d.dataTimestamp && (!latestTimestamp || d.dataTimestamp > latestTimestamp)) {
-      latestTimestamp = d.dataTimestamp;
-    }
-  }
-
-  if (neverSeen === 0 && (connected + disconnected) < totalDevices) {
-    neverSeen = totalDevices - (connected + disconnected);
-  }
-
-  const { connectedPct, disconnectedPct, neverSeenPct } = computePercentages(
-    connected,
-    disconnected,
-    neverSeen,
-    totalDevices
-  );
-
-  return {
-    childAreaCount: dmas.length, // "Total DMA Zones"
-    totalDevices,
-    connected,
-    disconnected,
-    neverSeen,
-    connectedPct,
-    disconnectedPct,
-    neverSeenPct,
-    yesterdayFlowM3: Number(yesterdayFlowM3.toFixed(2)),
-    todayFlowM3: Number(todayFlowM3.toFixed(2)),
-    monthToDateFlowM3: Number(monthToDateFlowM3.toFixed(2)),
-    dataTimestamp: latestTimestamp || new Date().toISOString(),
-  };
-}
-
-/**
- * Aggregates DMA KPIs from an array of MeterRows
- */
-export function aggregateDmaKpis(
+export function aggregateMeterKpis(
   meters: MeterRow[],
-  dmaFlowTotals?: { yesterdayFlowM3?: number; todayFlowM3?: number; monthToDateFlowM3?: number }
+  flowTotals?: { yesterdayFlowM3?: number; todayFlowM3?: number; monthToDateFlowM3?: number }
 ): DashboardKpis {
   const totalDevices = meters.length;
   let connected = 0;
@@ -202,7 +153,7 @@ export function aggregateDmaKpis(
   );
 
   return {
-    // childAreaCount is omitted at DMA level as per spec
+    // childAreaCount is omitted at leaf/meter level — there's nothing "under" a meter
     totalDevices,
     connected,
     disconnected,
@@ -210,9 +161,9 @@ export function aggregateDmaKpis(
     connectedPct,
     disconnectedPct,
     neverSeenPct,
-    yesterdayFlowM3: dmaFlowTotals?.yesterdayFlowM3 ?? 0,
-    todayFlowM3: dmaFlowTotals?.todayFlowM3 ?? 0,
-    monthToDateFlowM3: dmaFlowTotals?.monthToDateFlowM3 ?? 0,
+    yesterdayFlowM3: flowTotals?.yesterdayFlowM3 ?? 0,
+    todayFlowM3: flowTotals?.todayFlowM3 ?? 0,
+    monthToDateFlowM3: flowTotals?.monthToDateFlowM3 ?? 0,
     dataTimestamp: latestTimestamp || new Date().toISOString(),
   };
 }

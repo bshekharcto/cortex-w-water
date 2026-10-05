@@ -1,54 +1,60 @@
 import { useState, useMemo, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { RotateCcw, AlertTriangle } from 'lucide-react';
 import { FilterBar } from '@/components/filters/FilterBar';
 import { DashboardBreadcrumb } from '../components/DashboardBreadcrumb';
 import { DashboardKpiRow } from '../components/DashboardKpiRow';
-import { ZoneOverviewTable } from '../components/ZoneOverviewTable';
-import { DmaOverviewTable } from '../components/DmaOverviewTable';
-import { DmaMeterTable } from '../components/DmaMeterTable';
+import { NodeOverviewTable } from '../components/NodeOverviewTable';
+import { NodeMeterTable } from '../components/NodeMeterTable';
 import { MeterHistoryDrawer } from '@/modules/gis/shared/MeterHistoryDrawer';
 import type { GisMeter } from '@/modules/gis/shared/gisData';
-import type { MeterRow } from '../models/dashboardRows';
+import type { MeterRow, NodeRow } from '../models/dashboardRows';
 import { useDashboardScope } from '../hooks/useDashboardScope';
-import { useDashboardKpis } from '../hooks/useDashboardKpis';
-import { useZoneRows } from '../hooks/useZoneRows';
-import { useDmaRows } from '../hooks/useDmaRows';
-import { useDmaMeterRows } from '../hooks/useDmaMeterRows';
+import { useNodeAncestors } from '../hooks/useNodeAncestors';
+import { useNodeChildren } from '../hooks/useNodeChildren';
+import { useNodeMeters } from '../hooks/useNodeMeters';
+import { aggregateNodeKpis, aggregateMeterKpis } from '../services/dashboardAggregation';
 import '@/modules/gis/shared/gis.css';
 
-function meterRowToGisMeter(row: MeterRow): GisMeter {
+function meterRowToGisMeter(row: MeterRow, locality: string): GisMeter {
   return {
-    id: row.deviceId,
-    assetId: Number(row.consumerId) || 1,
-    meterId: row.meterId || row.deviceId,
-    devEui: row.deviceId,
-    householdId: row.consumerId || row.deviceId,
-    householdShortId: row.consumerId || row.deviceId,
+    id: row.meterId || row.devEui || undefined,
+    // Real upstream asset id — this is what the drawer uses to fetch live
+    // meter detail. Never guess it; an absent id means the drawer can't
+    // fetch live data and should say so, not silently show the wrong meter.
+    assetId: row.assetId ?? undefined,
+    meterId: row.meterId,
+    // Real dev_eui looked up from synced Postgres telemetry by the backend —
+    // null (never fabricated) if this meter hasn't synced any packets yet.
+    devEui: row.devEui || null,
+    householdId: row.consumerId || row.meterId,
+    householdShortId: row.consumerId || row.meterId,
     householdName: row.consumerName || 'Consumer',
-    locality: `${row.zoneName} - ${row.dmaName}`,
-    lat: 20.2961,
-    lng: 85.8245,
-    gatewayId: 'GW-01',
-    gatewayAlias: 'Gateway 1',
-    distanceMeters: 120,
-    rssi: -85,
-    snr: 9.0,
+    locality,
+    // Everything below is an honest "unknown" placeholder until the drawer's
+    // live fetch (keyed on the real assetId above) resolves — never a
+    // plausible-looking fabricated number.
+    lat: null,
+    lng: null,
+    gatewayId: '',
+    gatewayAlias: '',
+    distanceMeters: null,
+    rssi: null,
+    snr: null,
     status: row.connectivityStatus === 'CONNECTED' ? 'active' : row.connectivityStatus === 'DISCONNECTED' ? 'weak' : 'silent',
-    batteryStatus: 'Normal',
-    batteryVoltage: 3.6,
-    batteryPercentage: 92,
-    valveStatus: 'Normal',
-    valveState: 'Open',
-    lastSeen: row.latestReadingAt ? new Date(row.latestReadingAt).toLocaleString() : 'Recent',
-    pipeDiameter: row.meterSize || '15mm',
-    connectionType: row.meterType || 'Domestic',
-    currentReadingM3: row.totalizerM3 || 0,
-    yesterdayConsumptionL: 420,
-    todayConsumptionL: 0,
-    monthConsumptionM3: 14.2,
-    dailyAvgL: 410,
-    flowRateLph: 0,
+    batteryStatus: null,
+    batteryVoltage: null,
+    batteryPercentage: null,
+    valveStatus: null,
+    valveState: null,
+    lastSeen: row.latestReadingAt ? new Date(row.latestReadingAt).toLocaleString() : null,
+    pipeDiameter: row.meterSize || null,
+    connectionType: row.meterType || null,
+    currentReadingM3: row.totalizerM3 ?? null,
+    yesterdayConsumptionL: null,
+    monthConsumptionM3: null,
+    dailyAvgL: null,
+    currentFlowRateLph: null,
     alerts: [],
     last10DaysReadings: [],
   } as unknown as GisMeter;
@@ -60,65 +66,56 @@ export function DashboardPage() {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN'>('ALL');
   const [selectedMeter, setSelectedMeter] = useState<MeterRow | null>(null);
 
-  const { zoneId, dmaId } = useParams<{ zoneId?: string; dmaId?: string }>();
+  // The current node id is just the last segment of the real URL path
+  // (/app/dashboard/<id>/<id>/...) — however many real levels deep that is.
+  const { currentNodeId, pathIds } = useDashboardScope();
 
-  // Derive initial scope from URL params
-  const rawScope = useDashboardScope();
+  // Real root-to-current name chain, resolved fresh from the live site tree
+  // every time — correct on a deep link or refresh, not just on in-app clicks.
+  const { ancestors, isLoading: ancestorsLoading } = useNodeAncestors(currentNodeId);
+  const parentId = ancestors.length > 1 ? ancestors[ancestors.length - 2].id : null;
 
-  // Load data sources by scope
+  // Children of the current node (or the real top-level sites at the root).
   const {
-    zones,
-    rawZones,
-    isLoading: zonesLoading,
-    error: zonesError,
-    refetch: refetchZones,
-  } = useZoneRows(rawScope.level === 'GLOBAL' ? searchQuery : '');
+    nodes: childNodes,
+    rawNodes: rawChildNodes,
+    isLoading: childrenLoading,
+    error: childrenError,
+    refetch: refetchChildren,
+  } = useNodeChildren(currentNodeId, searchQuery);
 
-  const {
-    dmas,
-    rawDmas,
-    isLoading: dmasLoading,
-    error: dmasError,
-    refetch: refetchDmas,
-  } = useDmaRows(zoneId || '', rawScope.level === 'ZONE' ? searchQuery : '');
+  // A node with zero children, once loaded, is a real leaf — show its
+  // meters instead of a further drill-down table.
+  const isLeafView = currentNodeId !== null && !childrenLoading && rawChildNodes.length === 0;
 
   const {
     meters,
     isLoading: metersLoading,
     error: metersError,
     refetch: refetchMeters,
-  } = useDmaMeterRows(
-    zoneId || '',
-    dmaId || '',
-    rawScope.level === 'DMA' ? searchQuery : '',
-    rawScope.level === 'DMA' ? statusFilter : 'ALL'
+  } = useNodeMeters(isLeafView ? currentNodeId : null, searchQuery, statusFilter);
+
+  // A leaf's own totals (yesterday/today/month flow) live on its row in its
+  // PARENT's children list, not on the (empty) call to itself — so at a
+  // leaf, also fetch the sibling list to recover them for the KPI row.
+  const { rawNodes: siblingNodes } = useNodeChildren(parentId, '', isLeafView && parentId !== null);
+  const currentNodeTotals = useMemo<NodeRow | undefined>(
+    () => siblingNodes.find((n) => n.id === currentNodeId),
+    [siblingNodes, currentNodeId]
   );
 
-  // Resolve human-readable names for Breadcrumb
-  const resolvedZoneName = useMemo(() => {
-    if (!zoneId) return undefined;
-    const found = rawZones.find((z) => z.zoneId === zoneId);
-    return found?.zoneName;
-  }, [zoneId, rawZones]);
+  const kpis = useMemo(() => {
+    if (isLeafView) {
+      return aggregateMeterKpis(meters, {
+        yesterdayFlowM3: currentNodeTotals?.yesterdayFlowM3 ?? 0,
+        todayFlowM3: currentNodeTotals?.todayFlowM3 ?? 0,
+        monthToDateFlowM3: currentNodeTotals?.monthToDateFlowM3 ?? 0,
+      });
+    }
+    return aggregateNodeKpis(rawChildNodes);
+  }, [isLeafView, meters, currentNodeTotals, rawChildNodes]);
 
-  const resolvedDmaName = useMemo(() => {
-    if (!dmaId) return undefined;
-    const found = rawDmas.find((d) => d.dmaId === dmaId);
-    return found?.dmaName;
-  }, [dmaId, rawDmas]);
-
-  const scope = useDashboardScope({
-    zoneName: resolvedZoneName,
-    dmaName: resolvedDmaName,
-  });
-
-  // Fetch hierarchical KPIs matching active scope
-  const {
-    kpis,
-    isLoading: kpisLoading,
-    error: kpisError,
-    refetch: refetchKpis,
-  } = useDashboardKpis(scope);
+  const isLoading = currentNodeId === null ? childrenLoading : childrenLoading || (isLeafView && metersLoading) || ancestorsLoading;
 
   const handleResetFilters = useCallback(() => {
     setSearchQuery('');
@@ -126,37 +123,33 @@ export function DashboardPage() {
   }, []);
 
   const handleRetryAll = () => {
-    refetchKpis();
-    if (scope.level === 'GLOBAL') refetchZones();
-    if (scope.level === 'ZONE') refetchDmas();
-    if (scope.level === 'DMA') refetchMeters();
+    refetchChildren();
+    if (isLeafView) refetchMeters();
   };
 
-  // Search input placeholder contextualized to active scope
-  const searchPlaceholder = useMemo(() => {
-    switch (scope.level) {
-      case 'GLOBAL':
-        return 'Search zones...';
-      case 'ZONE':
-        return `Search DMAs in ${scope.zoneName}...`;
-      case 'DMA':
-        return 'Search device ID, meter ID, consumer, address...';
-      default:
-        return 'Search...';
-    }
-  }, [scope]);
+  const handleSelectNode = (node: NodeRow) => {
+    nav(`/app/dashboard/${[...pathIds, node.id].join('/')}`);
+  };
 
-  const activeError = kpisError || (scope.level === 'GLOBAL' && zonesError) || (scope.level === 'ZONE' && dmasError) || (scope.level === 'DMA' && metersError);
+  const searchPlaceholder = isLeafView
+    ? 'Search device ID, meter ID, consumer, address...'
+    : currentNodeId === null
+    ? 'Search areas...'
+    : `Search areas in ${ancestors[ancestors.length - 1]?.name || ''}...`;
+
+  const activeError = childrenError || (isLeafView && metersError) || undefined;
+
+  const currentLocality = ancestors.map((n) => n.name).join(' - ') || 'Dashboard';
 
   const gisMeter = useMemo(() => {
     if (!selectedMeter) return null;
-    return meterRowToGisMeter(selectedMeter);
-  }, [selectedMeter]);
+    return meterRowToGisMeter(selectedMeter, currentLocality);
+  }, [selectedMeter, currentLocality]);
 
   return (
     <div>
       {/* 1. Breadcrumb navigation */}
-      <DashboardBreadcrumb scope={scope} />
+      <DashboardBreadcrumb path={ancestors} />
 
       {/* 2. Error Banner if data fetch fails */}
       {activeError && (
@@ -186,24 +179,24 @@ export function DashboardPage() {
             <button className="cw-btn" onClick={handleRetryAll} style={{ fontSize: '0.85rem', padding: '6px 12px' }}>
               <RotateCcw size={14} style={{ marginRight: 4 }} /> Retry
             </button>
-            {scope.level !== 'GLOBAL' && (
+            {currentNodeId !== null && (
               <button
                 className="cw-btn"
                 onClick={() => nav('/app/dashboard')}
                 style={{ fontSize: '0.85rem', padding: '6px 12px' }}
               >
-                Return to All Zones
+                Return to All Areas
               </button>
             )}
           </div>
         </div>
       )}
 
-      {/* 3. 7-Card KPI Row */}
+      {/* 3. KPI Row */}
       <DashboardKpiRow
-        scope={scope}
+        isLeaf={isLeafView}
         kpis={kpis}
-        isLoading={kpisLoading}
+        isLoading={isLoading}
         selectedStatusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
       />
@@ -216,7 +209,7 @@ export function DashboardPage() {
           searchPlaceholder={searchPlaceholder}
           onReset={searchQuery || statusFilter !== 'ALL' ? handleResetFilters : undefined}
         >
-          {scope.level === 'DMA' && (
+          {isLeafView && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <label htmlFor="dashboard-status-filter" style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)', whiteSpace: 'nowrap' }}>
                 Status:
@@ -246,19 +239,17 @@ export function DashboardPage() {
       </section>
 
       {/* 5. Scope-specific Data Table */}
-      {scope.level === 'GLOBAL' && (
-        <ZoneOverviewTable zones={zones} isLoading={zonesLoading} />
-      )}
-
-      {scope.level === 'ZONE' && (
-        <DmaOverviewTable dmas={dmas} zoneId={scope.zoneId} isLoading={dmasLoading} />
-      )}
-
-      {scope.level === 'DMA' && (
-        <DmaMeterTable
+      {isLeafView ? (
+        <NodeMeterTable
           meters={meters}
           isLoading={metersLoading}
           onSelectMeter={(meter) => setSelectedMeter(meter)}
+        />
+      ) : (
+        <NodeOverviewTable
+          nodes={childNodes}
+          isLoading={childrenLoading}
+          onSelectNode={handleSelectNode}
         />
       )}
 

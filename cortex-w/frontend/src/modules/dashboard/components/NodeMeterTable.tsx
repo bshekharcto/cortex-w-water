@@ -5,25 +5,27 @@ import { StatusBadge } from '@/components/status/StatusBadge';
 import { formatNumber } from '@/utils/number';
 import type { MeterRow } from '../models/dashboardRows';
 
-interface DmaMeterTableProps {
+interface NodeMeterTableProps {
   meters: MeterRow[];
   isLoading?: boolean;
   onSelectMeter: (meter: MeterRow) => void;
 }
 
 type SortField =
-  | 'deviceId'
+  | 'devEui'
   | 'meterId'
-  | 'meterType'
   | 'consumerId'
   | 'consumerName'
-  | 'meterSize'
   | 'totalizerM3'
   | 'latestReadingAt'
   | 'connectivityStatus';
 
-export function DmaMeterTable({ meters, isLoading, onSelectMeter }: DmaMeterTableProps) {
-  const [sortField, setSortField] = useState<SortField>('deviceId');
+// Renders the meter list for whichever real leaf node the user has drilled
+// into. The breadcrumb above already shows the full ancestor chain, so this
+// table doesn't repeat "Zone"/"DMA" columns — those were tied to the old
+// fixed 2-level model and don't generalize to arbitrary depth anyway.
+export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTableProps) {
+  const [sortField, setSortField] = useState<SortField>('devEui');
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [page, setPage] = useState<number>(0);
   const pageSize = 15;
@@ -40,8 +42,17 @@ export function DmaMeterTable({ meters, isLoading, onSelectMeter }: DmaMeterTabl
   const sortedMeters = useMemo(() => {
     const list = [...meters];
     list.sort((a, b) => {
-      let vA: any = a[sortField] ?? '';
-      let vB: any = b[sortField] ?? '';
+      let vA: any = a[sortField];
+      let vB: any = b[sortField];
+      const aEmpty = vA === null || vA === undefined || vA === '';
+      const bEmpty = vB === null || vB === undefined || vB === '';
+      // Missing values (e.g. a meter with no synced dev_eui yet) always sort
+      // last, regardless of sort direction — so "has real data" naturally
+      // comes before "nothing to show yet" rather than empty strings
+      // collating before real ones alphabetically.
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
       if (typeof vA === 'string') {
         vA = vA.toLowerCase();
         vB = (vB as string).toLowerCase();
@@ -87,7 +98,7 @@ export function DmaMeterTable({ meters, isLoading, onSelectMeter }: DmaMeterTabl
   }
 
   if (meters.length === 0) {
-    return <EmptyState message="No meter devices matched your criteria for this DMA." />;
+    return <EmptyState message="No meter devices matched your criteria for this area." />;
   }
 
   return (
@@ -103,17 +114,11 @@ export function DmaMeterTable({ meters, isLoading, onSelectMeter }: DmaMeterTabl
         <table className="cw-table">
           <thead>
             <tr>
-              <th>Zone</th>
-              <th>DMA</th>
-              <th>Sub-DMA (1km Gateway Radius)</th>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('deviceId')}>
-                <div style={{ display: 'flex', alignItems: 'center' }}>Device ID {renderSortIcon('deviceId')}</div>
+              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('devEui')}>
+                <div style={{ display: 'flex', alignItems: 'center' }}>Dev EUI {renderSortIcon('devEui')}</div>
               </th>
               <th style={{ cursor: 'pointer' }} onClick={() => handleSort('meterId')}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>Meter ID {renderSortIcon('meterId')}</div>
-              </th>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('meterType')}>
-                <div style={{ display: 'flex', alignItems: 'center' }}>Type {renderSortIcon('meterType')}</div>
               </th>
               <th style={{ cursor: 'pointer' }} onClick={() => handleSort('consumerId')}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>Consumer ID {renderSortIcon('consumerId')}</div>
@@ -122,9 +127,6 @@ export function DmaMeterTable({ meters, isLoading, onSelectMeter }: DmaMeterTabl
                 <div style={{ display: 'flex', alignItems: 'center' }}>Consumer Name {renderSortIcon('consumerName')}</div>
               </th>
               <th>Address</th>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('meterSize')}>
-                <div style={{ display: 'flex', alignItems: 'center' }}>Size {renderSortIcon('meterSize')}</div>
-              </th>
               <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('totalizerM3')}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Totalizer (m³) {renderSortIcon('totalizerM3')}</div>
               </th>
@@ -140,44 +142,20 @@ export function DmaMeterTable({ meters, isLoading, onSelectMeter }: DmaMeterTabl
           <tbody>
             {pagedMeters.map((m) => (
               <tr
-                key={m.deviceId}
+                key={m.meterId}
                 className="cw-table-row--clickable"
                 onClick={() => onSelectMeter(m)}
-                title={`Open 360° telemetry history for ${m.meterId || m.deviceId}`}
+                title={`Open 360° telemetry history for ${m.meterId || m.devEui || 'this meter'}`}
               >
-                <td style={{ color: 'var(--cw-text-muted)', fontSize: '0.85rem' }}>{m.zoneName}</td>
-                <td style={{ color: 'var(--cw-text-muted)', fontSize: '0.85rem' }}>{m.dmaName}</td>
-                <td style={{ fontSize: '0.85rem' }}>
-                  {m.subDmaName ? (
-                    <div>
-                      <span style={{ fontWeight: 500 }}>{m.subDmaName}</span>
-                      {m.distanceMeters !== undefined && (
-                        <span
-                          style={{
-                            display: 'block',
-                            fontSize: '0.75rem',
-                            color: m.isWithin1km ? 'var(--cw-green, #16a34a)' : 'var(--cw-text-muted)',
-                          }}
-                        >
-                          {m.distanceMeters}m ({m.isWithin1km ? '≤1 km radius' : '>1 km nearest'})
-                        </span>
-                      )}
-                    </div>
-                  ) : (
-                    '—'
-                  )}
-                </td>
                 <td style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--cw-primary)' }}>
-                  {m.deviceId}
+                  {m.devEui || '—'}
                 </td>
                 <td style={{ fontWeight: 600 }}>{m.meterId || '—'}</td>
-                <td style={{ fontSize: '0.85rem' }}>{m.meterType || 'Domestic'}</td>
                 <td style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>{m.consumerId || '—'}</td>
                 <td style={{ fontWeight: 500 }}>{m.consumerName || '—'}</td>
                 <td style={{ fontSize: '0.85rem', maxWidth: 180, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={m.address || '—'}>
                   {m.address || '—'}
                 </td>
-                <td style={{ fontSize: '0.85rem' }}>{m.meterSize || '15mm'}</td>
                 <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
                   {m.totalizerM3 !== undefined ? formatNumber(m.totalizerM3) : '—'}
                 </td>

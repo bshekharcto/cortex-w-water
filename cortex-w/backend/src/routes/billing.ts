@@ -216,11 +216,15 @@ router.get('/:id/detail', async (req, res) => {
     const meterIdForReadings = matchedGisMeter?.meterId || matchedBill.meterId;
     if (meterIdForReadings) {
       try {
+        // Same-day retry packets can decode to a garbled lower reading than
+        // an earlier packet that day (confirmed against a known-correct
+        // reference); take the highest reading per day, not just whichever
+        // packet arrived last.
         const readingsRes = await pool.query(
           `SELECT DISTINCT ON (date_key) date_key, decoded_at, forward_flow_l
            FROM raw_telemetry_packets
            WHERE meter_id = $1
-           ORDER BY date_key DESC, decoded_at DESC
+           ORDER BY date_key DESC, forward_flow_l DESC, decoded_at DESC
            LIMIT 10`,
           [meterIdForReadings]
         );
