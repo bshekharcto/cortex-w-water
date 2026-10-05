@@ -1,15 +1,17 @@
 import { useState, useMemo } from 'react';
 import { Radio } from 'lucide-react';
 import { RawFrameItem } from '../types/commandCenter.types';
-import { fmt } from '../utils/format';
+import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle } from '../utils/format';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 
 interface Props {
   frames: RawFrameItem[];
   onSelectMeter: (meterId: string) => void;
+  /** Unique meters seen in the selected window (from the summary KPIs). */
+  meterCount?: number | null;
 }
 
-export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
+export function LiveNetworkFeed({ frames, onSelectMeter, meterCount }: Props) {
   const th = useThresholds();
   const [filter, setFilter] = useState<'ALL' | 'NORMAL' | 'WEAK' | 'DEGRADED' | 'MULTI_GW'>('ALL');
 
@@ -17,7 +19,7 @@ export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
     if (filter === 'NORMAL') return frames.filter((f) => f.statusEvent === 'FRAME_RECEIVED');
     if (filter === 'WEAK') return frames.filter((f) => f.statusEvent === 'WEAK_RSSI' || f.statusEvent === 'POOR_LINK');
     if (filter === 'DEGRADED') return frames.filter((f) => f.statusEvent === 'DEGRADED' || f.statusEvent === 'POOR_LINK');
-    if (filter === 'MULTI_GW') return frames.filter((f) => f.statusEvent === 'MULTI_GW');
+    if (filter === 'MULTI_GW') return frames.filter((f) => f.multiGateway === true);
     return frames;
   }, [frames, filter]);
 
@@ -27,7 +29,9 @@ export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
         <div className="cc-feed-title-wrap">
           <Radio size={14} className="cc-live-pulse-icon" />
           <span className="cc-feed-title">LIVE NETWORK TELEMETRY FEED</span>
-          <span className="cc-feed-status-tag">2,532 meters reporting</span>
+          {meterCount != null && (
+            <span className="cc-feed-status-tag">{meterCount.toLocaleString()} unique meters seen</span>
+          )}
         </div>
 
         <div className="cc-feed-filters">
@@ -53,12 +57,12 @@ export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
         <table className="cc-telemetry-table cc-feed-table">
           <thead>
             <tr>
-              <th>Time (UTC)</th>
+              <th>Time ({localTzLabel()})</th>
               <th>Gateway</th>
               <th>Meter ID</th>
               <th>DevEUI</th>
               <th>FCnt</th>
-              <th>Freq</th>
+              <th>Freq (MHz)</th>
               <th>DR</th>
               <th>RSSI</th>
               <th>SNR</th>
@@ -84,12 +88,19 @@ export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
                   onClick={() => onSelectMeter(frame.meterId)}
                   title={`Click to inspect Meter ${frame.meterId}`}
                 >
-                  <td className="cc-mono cc-cell-time">{frame.decodedAt}</td>
-                  <td className="cc-cell-bold">{frame.gatewayAlias}</td>
+                  <td className="cc-mono cc-cell-time" title={utcTitle(frame.decodedAt)}>{formatLocalTime(frame.decodedAt)}</td>
+                  <td className="cc-cell-bold">
+                    {frame.gatewayAlias}
+                    {frame.multiGateway && (
+                      <span className="cc-pill-multi" style={{ marginLeft: 6 }} title="Heard by more than one gateway">
+                        MULTI
+                      </span>
+                    )}
+                  </td>
                   <td className="cc-mono cc-cell-bold">{frame.meterId}</td>
                   <td className="cc-mono cc-cell-mute">{fmt(frame.devEui)}</td>
                   <td className="cc-mono">{fmt(frame.fCnt)}</td>
-                  <td className="cc-mono">{fmt(frame.frequency)}</td>
+                  <td className="cc-mono">{formatFrequency(frame.frequency)}</td>
                   <td className="cc-mono">{frame.dr == null ? '—' : `DR${frame.dr}`}</td>
                   <td className={`cc-mono ${isWeak ? 'cc-text-warn' : ''}`}>
                     {fmt(frame.rssi, ' dBm')}

@@ -142,12 +142,22 @@ export function startTelemetrySyncScheduler(intervalMs: number = 15 * 60 * 1000)
     )} mins)`
   );
 
-  // Initial sync delayed by 5 seconds to let database migrations complete
-  setTimeout(() => {
-    console.log('[telemetrySyncScheduler] Running initial telemetry sync on startup...');
-    syncLatestTelemetry().catch((err) => {
-      console.warn('[telemetrySyncScheduler] Initial sync warning:', err.message);
-    });
+  // On startup, sync only if the store is stale. Restarting the dev server (tsx watch restarts on every
+  // save) must not re-ingest each time; the interval below keeps data fresh otherwise.
+  setTimeout(async () => {
+    try {
+      const res = await pool.query('SELECT MAX(decoded_at) AS latest FROM raw_telemetry_packets');
+      const latest: Date | null = res.rows[0]?.latest ?? null;
+      const ageMs = latest ? Date.now() - new Date(latest).getTime() : Infinity;
+      if (ageMs < intervalMs) {
+        console.log('[telemetrySyncScheduler] Store is fresh; skipping startup sync.');
+        return;
+      }
+      console.log('[telemetrySyncScheduler] Store is stale; running startup telemetry sync...');
+      await syncLatestTelemetry();
+    } catch (err: any) {
+      console.warn('[telemetrySyncScheduler] Startup sync check warning:', err.message);
+    }
   }, 5000);
 
   // Recurring background interval

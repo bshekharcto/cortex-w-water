@@ -10,6 +10,7 @@ import { NetworkKpiStrip } from '../components/NetworkKpiStrip';
 import { GatewayRail } from '../components/GatewayRail';
 import { SelectedGatewayHeader } from '../components/SelectedGatewayHeader';
 import { GatewayMetersTable } from '../components/GatewayMetersTable';
+import { FleetMetersTable } from '../components/FleetMetersTable';
 import { GatewayFramesTable } from '../components/GatewayFramesTable';
 import { GatewayTrafficChart } from '../components/GatewayTrafficChart';
 import { GatewayRadioHealth } from '../components/GatewayRadioHealth';
@@ -34,6 +35,8 @@ import {
   MeterTelemetryItem,
   RawFrameItem,
 } from '../types/commandCenter.types';
+
+const AUTO_REFRESH_SECONDS = 45;
 
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 const defaultCustomRange = () => ({
@@ -64,6 +67,21 @@ export function CommandCenterPage() {
   const [gatewayTab, setGatewayTab] = useState<GatewayTabType>('METERS');
   const [selectedMeter, setSelectedMeter] = useState<MeterTelemetryItem | null>(null);
   const [secondsAgo, setSecondsAgo] = useState(0);
+  const [autoRefresh, setAutoRefresh] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('cortex_w_cc_auto_refresh') !== 'off';
+    } catch {
+      return true;
+    }
+  });
+  const handleAutoRefreshChange = (on: boolean) => {
+    setAutoRefresh(on);
+    try {
+      localStorage.setItem('cortex_w_cc_auto_refresh', on ? 'on' : 'off');
+    } catch {
+      // storage unavailable; the toggle still works for this session
+    }
+  };
 
   // Dynamic Site Selector State
   const [selectedSiteId, setSelectedSiteId] = useState<string>('ALL');
@@ -139,15 +157,24 @@ export function CommandCenterPage() {
       setSecondsAgo((prev) => prev + 1);
     }, 1000);
 
-    const autoSync = setInterval(() => {
-      loadSummary(false);
-    }, 45000);
+    // Auto refresh: only while enabled and the tab is visible (no background polling of a hidden tab)
+    const autoSync = autoRefresh
+      ? setInterval(() => {
+          if (!document.hidden) loadSummary(false);
+        }, AUTO_REFRESH_SECONDS * 1000)
+      : null;
+
+    const onVisible = () => {
+      if (autoRefresh && !document.hidden) loadSummary(false);
+    };
+    document.addEventListener('visibilitychange', onVisible);
 
     return () => {
       clearInterval(ticker);
-      clearInterval(autoSync);
+      if (autoSync) clearInterval(autoSync);
+      document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [loadSummary]);
+  }, [loadSummary, autoRefresh]);
 
   const handleManualRefresh = () => {
     loadSummary(true);
@@ -159,9 +186,18 @@ export function CommandCenterPage() {
   }, [summaryData]);
 
   // Ensure an active gateway is selected once gateways are known
+  // Auto-select a gateway once on first load. After that, "no selection" is a deliberate choice (the
+  // All Gateways overview) and must not be overridden; only a selection that no longer exists
+  // (e.g. after switching site) falls back to the first gateway.
+  const autoSelected = useRef(false);
   useEffect(() => {
     if (currentGateways.length === 0) return;
-    if (!selectedGatewayId || !currentGateways.some((g) => g.gatewayId === selectedGatewayId)) {
+    if (!autoSelected.current) {
+      autoSelected.current = true;
+      setSelectedGatewayId((prev) => prev ?? currentGateways[0].gatewayId);
+      return;
+    }
+    if (selectedGatewayId && !currentGateways.some((g) => g.gatewayId === selectedGatewayId)) {
       setSelectedGatewayId(currentGateways[0].gatewayId);
     }
   }, [currentGateways, selectedGatewayId]);
@@ -250,6 +286,7 @@ export function CommandCenterPage() {
       (g) => g.alias.toLowerCase().includes(query) || g.gatewayId.toLowerCase().includes(query)
     );
     if (gw) {
+      setActiveMode('Gateways');
       setSelectedGatewayId(gw.gatewayId);
       setGatewayTab('METERS');
       return;
@@ -259,6 +296,7 @@ export function CommandCenterPage() {
       searchMeters(q, win)
         .then((hits) => {
           if (hits.length === 0) return;
+          setActiveMode('Gateways');
           setSelectedGatewayId(hits[0].gatewayId);
           setSelectedMeter(hits[0].meter);
           setGatewayTab('METERS');
@@ -289,6 +327,9 @@ export function CommandCenterPage() {
         sites={sites}
         selectedSiteId={selectedSiteId}
         onSiteChange={setSelectedSiteId}
+        autoRefresh={autoRefresh}
+        onAutoRefreshChange={handleAutoRefreshChange}
+        autoRefreshSeconds={AUTO_REFRESH_SECONDS}
       />
 
       {syncError && (
@@ -320,9 +361,11 @@ export function CommandCenterPage() {
         {/* Left Navigator: Gateway Rail with Live Status */}
         <GatewayRail
           gateways={currentGateways}
-          selectedGatewayId={selectedGatewayId}
+          // In Meters mode no gateway is "current", so clicking one always opens it (never toggles it off)
+          selectedGatewayId={activeMode === 'Meters' ? null : selectedGatewayId}
           loading={isSyncing && !summaryData}
           onSelectGateway={(id) => {
+            setActiveMode('Gateways');
             setSelectedGatewayId(id);
             if (id) {
               setGatewayTab('METERS');
@@ -332,7 +375,14 @@ export function CommandCenterPage() {
 
         {/* Center: Selected Gateway Workspace OR All-Gateway Overview */}
         <main className="cc-center-workspace">
-          {currentGateway ? (
+          {activeMode === 'Meters' ? (
+            <FleetMetersTable
+              win={win}
+              siteId={selectedSiteId}
+              selectedMeterId={selectedMeter?.meterId || null}
+              onSelectMeter={handleSelectMeter}
+            />
+          ) : currentGateway ? (
             <>
               <SelectedGatewayHeader
                 gateway={currentGateway}
@@ -363,6 +413,8 @@ export function CommandCenterPage() {
                 <GatewayTrafficChart
                   allGateways={currentGateways}
                   hourlyActivity={summaryData?.hourlyActivity}
+                  hourlyByGateway={summaryData?.hourlyByGateway}
+                  selectedGateway={{ gatewayId: currentGateway.gatewayId, alias: currentGateway.alias }}
                 />
               )}
 
@@ -402,6 +454,7 @@ export function CommandCenterPage() {
       <LiveNetworkFeed
         frames={allFrames}
         onSelectMeter={handleSelectMeterById}
+        meterCount={currentKpis?.uniqueMetersSeen ?? null}
       />
     </div>
     </WindowLabelProvider>

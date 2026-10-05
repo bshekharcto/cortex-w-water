@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ResponsiveContainer,
   BarChart,
@@ -13,15 +13,23 @@ import { GatewayItem } from '../types/commandCenter.types';
 interface Props {
   allGateways: GatewayItem[];
   hourlyActivity?: Array<{ hour: string; count: number }>;
+  hourlyByGateway?: Record<string, Array<{ hour: string; count: number }>>;
+  selectedGateway?: { gatewayId: string; alias: string } | null;
 }
 
 export function GatewayTrafficChart({
   allGateways,
   hourlyActivity,
+  hourlyByGateway,
+  selectedGateway,
 }: Props) {
+  const [scope, setScope] = useState<'GATEWAY' | 'ALL'>('GATEWAY');
+  const gwSeries = selectedGateway ? hourlyByGateway?.[selectedGateway.gatewayId] : undefined;
+  const showGateway = scope === 'GATEWAY' && !!selectedGateway;
+  const series = showGateway ? gwSeries ?? [] : hourlyActivity;
   const chartData = useMemo(
-    () => (hourlyActivity ?? []).map((h) => ({ time: h.hour, frames: h.count })),
-    [hourlyActivity]
+    () => (series ?? []).map((h) => ({ time: h.hour, frames: h.count })),
+    [series]
   );
   const totalObserved = allGateways.reduce((sum, gw) => sum + gw.uniqueMeters, 0);
   const topGateways = [...allGateways]
@@ -37,9 +45,25 @@ export function GatewayTrafficChart({
       <div className="cc-card cc-chart-card">
         <div className="cc-card-header">
           <span className="cc-card-title">
-            UPLINK ACTIVITY (ALL GATEWAYS) — HOURLY
+            UPLINK ACTIVITY ({showGateway ? selectedGateway!.alias.toUpperCase() : 'ALL GATEWAYS'}) — HOURLY, UTC
           </span>
           <div className="cc-chart-legend">
+            {selectedGateway && (
+              <>
+                <button
+                  className={`cc-subfilter-chip ${scope === 'GATEWAY' ? 'cc-subfilter-chip--active' : ''}`}
+                  onClick={() => setScope('GATEWAY')}
+                >
+                  This gateway
+                </button>
+                <button
+                  className={`cc-subfilter-chip ${scope === 'ALL' ? 'cc-subfilter-chip--active' : ''}`}
+                  onClick={() => setScope('ALL')}
+                >
+                  All gateways
+                </button>
+              </>
+            )}
             <span className="cc-legend-item">
               <span className="cc-legend-dot cc-legend-dot--blue" /> frames
             </span>
@@ -49,7 +73,7 @@ export function GatewayTrafficChart({
         <div className="cc-chart-wrapper">
           {chartData.length === 0 ? (
             <div className="cc-card-meta" style={{ padding: 24, textAlign: 'center' }}>
-              No hourly activity available.
+              {showGateway ? 'This gateway has no frames in the selected window.' : 'No hourly activity available.'}
             </div>
           ) : (
           <ResponsiveContainer width="100%" height={160}>

@@ -16,6 +16,9 @@ interface Props {
   sites?: Array<{ id: string; name: string }>;
   selectedSiteId?: string;
   onSiteChange?: (siteId: string) => void;
+  autoRefresh: boolean;
+  onAutoRefreshChange: (on: boolean) => void;
+  autoRefreshSeconds: number;
 }
 
 export function CommandCenterToolbar({
@@ -33,6 +36,9 @@ export function CommandCenterToolbar({
   sites,
   selectedSiteId = 'ALL',
   onSiteChange,
+  autoRefresh,
+  onAutoRefreshChange,
+  autoRefreshSeconds,
 }: Props) {
   return (
     <div className="cc-toolbar-section">
@@ -130,8 +136,23 @@ export function CommandCenterToolbar({
             <span>{isSyncing ? 'Syncing stream...' : 'Live Feed'}</span>
           </div>
 
-          <div className="cc-live-badge" title="Auto refresh active (every 30s)">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoRefresh}
+            className={`cc-live-badge cc-live-badge--toggle ${autoRefresh ? '' : 'cc-live-badge--off'}`}
+            onClick={() => onAutoRefreshChange(!autoRefresh)}
+            title={
+              autoRefresh
+                ? `Auto refresh ON (every ${autoRefreshSeconds}s). Click to pause.`
+                : 'Auto refresh OFF. Click to resume.'
+            }
+          >
             <span className="cc-live-dot" />
+            <span>Auto {autoRefresh ? 'ON' : 'OFF'}</span>
+          </button>
+
+          <div className="cc-live-badge" title="Time since the last successful refresh">
             <span>Updated {lastUpdatedText}</span>
           </div>
 

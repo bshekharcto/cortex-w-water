@@ -42,6 +42,8 @@ export interface TelemetrySummary {
   allMetersCount: number;
   recentFrames: any[];
   hourlyActivity: Array<{ hour: string; count: number }>;
+  /** Same hourly (UTC hour-of-day) counts, split per gateway. */
+  hourlyByGateway: Record<string, Array<{ hour: string; count: number }>>;
   radioHealth: {
     avgRssi: number | null;
     avgSnr: number | null;
@@ -146,7 +148,19 @@ export interface UpstreamGatewaySummary {
  * affected by our ingestion cap, and it handles gateways that hear meters from several sites.
  * 'ALL' expands to every top-level site in the live hierarchy, so new sites are included automatically.
  */
+const gatewaySummaryCache = new Map<string, { at: number; data: UpstreamGatewaySummary }>();
+const GATEWAY_SUMMARY_TTL_MS = 60_000;
+
 async function fetchGatewayMeterSummary(siteId: string, fromDate: string, toDate: string): Promise<UpstreamGatewaySummary | null> {
+  const cacheKey = `${siteId || 'ALL'}|${fromDate}|${toDate}`;
+  const hit = gatewaySummaryCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < GATEWAY_SUMMARY_TTL_MS) return hit.data;
+  const fresh = await fetchGatewayMeterSummaryUncached(siteId, fromDate, toDate);
+  if (fresh) gatewaySummaryCache.set(cacheKey, { at: Date.now(), data: fresh });
+  return fresh;
+}
+
+async function fetchGatewayMeterSummaryUncached(siteId: string, fromDate: string, toDate: string): Promise<UpstreamGatewaySummary | null> {
   try {
     let siteIds = siteId;
     if (!siteId || siteId === 'ALL') {
@@ -172,7 +186,21 @@ async function fetchGatewayMeterSummary(siteId: string, fromDate: string, toDate
 /**
  * Ingests a single day's packets into PostgreSQL raw_telemetry_packets
  */
-export async function ingestDateIntoPostgres(date: string): Promise<number> {
+const inflightIngests = new Map<string, Promise<number>>();
+
+/**
+ * Ingests one date into PostgreSQL. Concurrent calls for the same date share a single run, so two
+ * people pressing Refresh (or a refresh during a scheduled sync) never run duplicate long inserts.
+ */
+export function ingestDateIntoPostgres(date: string): Promise<number> {
+  const running = inflightIngests.get(date);
+  if (running) return running;
+  const run = ingestDateUnlocked(date).finally(() => inflightIngests.delete(date));
+  inflightIngests.set(date, run);
+  return run;
+}
+
+async function ingestDateUnlocked(date: string): Promise<number> {
   const token = await getAuthToken();
   let insertedTotal = 0;
   let cursor: string | undefined = undefined;
@@ -277,49 +305,6 @@ export async function ingestDateIntoPostgres(date: string): Promise<number> {
   }
 
   return insertedTotal;
-}
-
-/**
- * Ensures the past N days of telemetry are stored in PostgreSQL
- */
-export async function ensureDaysIngested(
-  days: number = 7,
-  referenceDate?: string,
-  forceDateIngestion: boolean = false
-): Promise<{ datesIngested: string[]; totalPackets: number }> {
-  const ref = referenceDate ? new Date(referenceDate) : new Date();
-  const dates: string[] = [];
-
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(ref);
-    d.setUTCDate(ref.getUTCDate() - i);
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  const todayStr = new Date().toISOString().slice(0, 10);
-  let totalPackets = 0;
-
-  for (const date of dates) {
-    const checkRes = await pool.query(
-      'SELECT COUNT(*)::int as count FROM raw_telemetry_packets WHERE date_key = $1',
-      [date]
-    );
-    const count = checkRes.rows[0]?.count ?? 0;
-
-    // Past dates don't change unless forced: if already ingested, keep it!
-    if (!forceDateIngestion && count > 0 && date < todayStr) {
-      totalPackets += count;
-      continue;
-    }
-
-    // Ingest date
-    console.log(`[telemetryDb] Ingesting date ${date} into PostgreSQL (current count: ${count})...`);
-    const added = await ingestDateIntoPostgres(date);
-    console.log(`[telemetryDb] Date ${date} ingested: +${added} packets.`);
-    totalPackets += count + added;
-  }
-
-  return { datesIngested: dates, totalPackets };
 }
 
 const inflightRebuilds = new Map<string, Promise<unknown>>();
@@ -463,6 +448,70 @@ export async function searchMeters(q: string, win: TelemetryWindow) {
   return items.map((meter, i) => ({ gatewayId: res.rows[i].gateway_id, meter }));
 }
 
+export type MeterStatusFilter = 'live' | 'stale' | 'silent';
+
+/**
+ * Fleet-wide meter list for the Meters view: each meter's latest frame (via whichever gateway heard it last),
+ * optionally scoped to a site, searched, filtered by freshness status, and paginated server-side.
+ */
+export async function listFleetMeters(opts: {
+  win: TelemetryWindow;
+  siteId: string;
+  q?: string;
+  status?: MeterStatusFilter;
+  limit: number;
+  offset: number;
+}) {
+  const { win, siteId } = opts;
+  const scoped = !!siteId && siteId !== 'ALL';
+  let siteGateways: string[] | null = null;
+  if (scoped) {
+    const up = await fetchGatewayMeterSummary(siteId, win.fromDate, win.toDate);
+    if (!up) throw new Error('Site gateway summary is unavailable from the upstream API');
+    siteGateways = up.perGateway.map((g) => g.gatewayId);
+  }
+
+  const params: any[] = [win.fromDate, win.toDate, win.fromTs, win.toTs];
+  const inner: string[] = ['date_key >= $1', 'date_key <= $2', 'decoded_at >= $3', 'decoded_at <= $4'];
+  if (siteGateways) {
+    params.push(siteGateways);
+    inner.push(`gateway_id = ANY($${params.length}::text[])`);
+  }
+  const q = (opts.q ?? '').trim();
+  if (q) {
+    params.push(`%${q}%`);
+    inner.push(`(meter_id ILIKE $${params.length} OR dev_eui ILIKE $${params.length})`);
+  }
+
+  // Freshness status is measured against the window's end (capped at now), same as the per-gateway tags
+  const refMs = referenceMs(win);
+  const outer: string[] = [];
+  if (opts.status) {
+    const dayAgo = new Date(refMs - T.meterStaleMinutes * 60000).toISOString();
+    const silentAt = new Date(refMs - T.meterCriticalHours * 3600000).toISOString();
+    if (opts.status === 'live') { params.push(dayAgo); outer.push(`decoded_at > $${params.length}`); }
+    else if (opts.status === 'stale') { params.push(dayAgo, silentAt); outer.push(`decoded_at <= $${params.length - 1} AND decoded_at > $${params.length}`); }
+    else { params.push(silentAt); outer.push(`decoded_at <= $${params.length}`); }
+  }
+  params.push(opts.limit, opts.offset);
+
+  const res = await pool.query(
+    `WITH latest AS (
+       SELECT DISTINCT ON (meter_id) ${LATEST_FRAME_COLUMNS}
+       FROM raw_telemetry_packets
+       WHERE ${inner.join(' AND ')}
+       ORDER BY meter_id, decoded_at DESC
+     )
+     SELECT *, COUNT(*) OVER()::int AS total FROM latest
+     ${outer.length ? 'WHERE ' + outer.join(' AND ') : ''}
+     ORDER BY decoded_at DESC, meter_id
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+  const items = await buildMeterItems(res.rows, win);
+  return { total: res.rows[0]?.total ?? 0, limit: opts.limit, offset: opts.offset, items };
+}
+
 /**
  * Aggregates telemetry across N days (default 7 or 30 days) directly in PostgreSQL!
  */
@@ -504,20 +553,17 @@ export async function getPostgresAggregatedSummary(
     }
   }
 
-  // 2. Telemetry ingestion:
-  // If user requested manual refresh, await latest date ingestion so response is immediately fresh!
-  if (forceRefresh && !skipIngestion) {
+  // 2. Ingestion is NOT triggered by ordinary page requests (that caused overlapping long inserts and
+  // lock pile-ups). Data arrives via the scheduled sync; only an explicit manual Refresh pulls today's
+  // packets on demand, and only when the window actually includes today.
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  if (forceRefresh && !skipIngestion && toDate === todayUtc) {
     try {
-      console.log(`[telemetryDb] Manual refresh requested: awaiting latest packets for ${toDate}...`);
+      console.log(`[telemetryDb] Manual refresh requested: pulling latest packets for ${toDate}...`);
       await ingestDateIntoPostgres(toDate);
     } catch (ingestErr: any) {
       console.warn('[telemetryDb] Refresh ingestion warning:', ingestErr.message);
     }
-  } else if (!skipIngestion) {
-    // Otherwise kick off non-blocking background ingestion
-    ensureDaysIngested(days, toDate).catch((err) =>
-      console.warn('[telemetryDb] Background ingestion note:', err.message)
-    );
   }
 
   // 3. Run all aggregations concurrently (each round trip to the remote DB is ~250ms)
@@ -582,11 +628,10 @@ export async function getPostgresAggregatedSummary(
       ORDER BY unique_meters DESC, frame_count DESC
     `, range),
     pool.query(`
-      SELECT TO_CHAR(decoded_at, 'HH24:00') as hour_str, COUNT(*)::int as count
+      SELECT gateway_id, TO_CHAR(decoded_at, 'HH24:00') as hour_str, COUNT(*)::int as count
       FROM raw_telemetry_packets
       WHERE date_key >= $1 AND date_key <= $2 AND decoded_at >= $3 AND decoded_at <= $4 ${siteFilter}
-      GROUP BY hour_str
-      ORDER BY hour_str ASC
+      GROUP BY gateway_id, hour_str
     `, range),
     pool.query(`SELECT * FROM raw_telemetry_packets WHERE date_key >= $1 AND date_key <= $2 AND decoded_at >= $3 AND decoded_at <= $4 ${siteFilter} ORDER BY decoded_at DESC LIMIT 100`, range),
     // Previous equal-length period, for trends
@@ -653,21 +698,37 @@ export async function getPostgresAggregatedSummary(
   // Meters are loaded per gateway on demand (see getGatewayMeters) to keep this payload small.
   const metersByGateway: Record<string, any[]> = {};
 
-  const hourlyActivityMap = new Map<string, number>();
-  for (let h = 0; h < 24; h++) {
-    hourlyActivityMap.set(`${String(h).padStart(2, '0')}:00`, 0);
-  }
+  // Hourly (UTC hour-of-day) frame counts: per gateway, and the fleet total summed from them
+  const hourSlots = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
+  const perGatewayHours = new Map<string, Map<string, number>>();
+  const totalHours = new Map<string, number>(hourSlots.map((h) => [h, 0]));
   for (const r of hourlyRes.rows) {
-    hourlyActivityMap.set(r.hour_str, r.count);
+    const m = perGatewayHours.get(r.gateway_id) ?? new Map<string, number>(hourSlots.map((h) => [h, 0]));
+    m.set(r.hour_str, (m.get(r.hour_str) ?? 0) + r.count);
+    perGatewayHours.set(r.gateway_id, m);
+    totalHours.set(r.hour_str, (totalHours.get(r.hour_str) ?? 0) + r.count);
   }
-  const hourlyActivity = Array.from(hourlyActivityMap.entries()).map(([hour, count]) => ({
-    hour,
-    count,
-  }));
+  const toSeries = (m: Map<string, number>) => hourSlots.map((hour) => ({ hour, count: m.get(hour) ?? 0 }));
+  const hourlyActivity = toSeries(totalHours);
+  const hourlyByGateway: Record<string, Array<{ hour: string; count: number }>> = {};
+  for (const [gw, m] of perGatewayHours) hourlyByGateway[gw] = toSeries(m);
 
   const radioRow = kpiRow;
 
+  // Meters in the feed that more than one gateway heard in this window (any gateway, not site-scoped)
+  const feedMeterIds = [...new Set<string>(framesRes.rows.map((r: any) => r.meter_id))];
+  const multiRes = feedMeterIds.length
+    ? await pool.query(
+        `SELECT meter_id FROM raw_telemetry_packets
+         WHERE meter_id = ANY($1::text[]) AND date_key >= $2 AND date_key <= $3 AND decoded_at >= $4 AND decoded_at <= $5
+         GROUP BY meter_id HAVING COUNT(DISTINCT gateway_id) > 1`,
+        [feedMeterIds, fromDate, toDate, fromTs, toTs]
+      )
+    : { rows: [] as any[] };
+  const feedMultiGw = new Set<string>(multiRes.rows.map((r: any) => r.meter_id));
+
   const recentFrames = framesRes.rows.map((r: any, idx: number) => ({
+    multiGateway: feedMultiGw.has(r.meter_id),
     id: `pg-frame-${idx}-${r.meter_id}`,
     decodedAt: r.decoded_at,
     meterTimestamp: r.meter_timestamp || r.decoded_at,
@@ -714,6 +775,7 @@ export async function getPostgresAggregatedSummary(
     allMetersCount: (win.subDay ? undefined : upstreamSummary?.totalUniqueMeters) ?? kpiRow.unique_meters_seen ?? 0,
     recentFrames,
     hourlyActivity,
+    hourlyByGateway,
     radioHealth: {
       avgRssi: kpiRow.avg_rssi ?? null,
       avgSnr: kpiRow.avg_snr ?? null,

@@ -1,7 +1,7 @@
 import { Copy, X, Check } from 'lucide-react';
 import { useState } from 'react';
 import { MeterTelemetryItem } from '../types/commandCenter.types';
-import { fmt } from '../utils/format';
+import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle } from '../utils/format';
 import { useNow, formatAgo } from '../utils/timeAgo';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 
@@ -70,7 +70,7 @@ export function MeterInspector({ meter, onClose }: Props) {
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">Decoded At</span>
-            <span className="cc-v cc-mono">{meter.lastSeenDate.slice(11, 23)} UTC</span>
+            <span className="cc-v cc-mono" title={utcTitle(meter.lastSeenDate)}>{formatLocalTime(meter.lastSeenDate)} {localTzLabel()}</span>
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">FCnt</span>
@@ -82,7 +82,7 @@ export function MeterInspector({ meter, onClose }: Props) {
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">Frequency</span>
-            <span className="cc-v cc-mono">{fmt(meter.frequency, ' MHz')}</span>
+            <span className="cc-v cc-mono">{formatFrequency(meter.frequency, true)}</span>
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">Data Rate</span>

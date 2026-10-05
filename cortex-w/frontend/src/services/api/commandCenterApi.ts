@@ -22,6 +22,7 @@ export interface TelemetrySummaryResponse {
   allMetersCount: number;
   recentFrames: RawFrameItem[];
   hourlyActivity: Array<{ hour: string; count: number }>;
+  hourlyByGateway?: Record<string, Array<{ hour: string; count: number }>>;
   radioHealth: {
     avgRssi: number;
     avgSnr: number;
@@ -142,4 +143,31 @@ export async function searchMeters(
     method: 'GET',
     query: { q, ...windowQuery(win) },
   });
+}
+
+export type MeterStatusFilter = 'live' | 'stale' | 'silent';
+
+export interface FleetMetersPage {
+  total: number;
+  limit: number;
+  offset: number;
+  items: MeterTelemetryItem[];
+}
+
+/**
+ * Fleet-wide meter list (each meter's latest frame), server-side searched, filtered and paginated.
+ */
+export async function fetchFleetMeters(opts: {
+  win: WindowParams;
+  siteId: string;
+  q?: string;
+  status?: MeterStatusFilter;
+  limit?: number;
+  offset?: number;
+}): Promise<FleetMetersPage> {
+  const query: Record<string, string | number> = { ...windowQuery(opts.win), limit: opts.limit ?? 100, offset: opts.offset ?? 0 };
+  if (opts.siteId && opts.siteId !== 'ALL') query.siteId = opts.siteId;
+  if (opts.q) query.q = opts.q;
+  if (opts.status) query.status = opts.status;
+  return apiRequest<FleetMetersPage>('/command-center/meters', { method: 'GET', query });
 }

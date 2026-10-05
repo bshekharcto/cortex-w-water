@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
-import { getPostgresAggregatedSummary, getGatewayMeters, searchMeters, resolveWindow, frameStatusEvent } from '../services/telemetryDbService.js';
+import { getPostgresAggregatedSummary, getGatewayMeters, searchMeters, listFleetMeters, resolveWindow, frameStatusEvent } from '../services/telemetryDbService.js';
 import { getRoots } from '../services/siteTree.js';
 import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
 
@@ -91,6 +91,27 @@ router.get('/gateways/:gatewayId/meters', async (req, res) => {
   } catch (err: any) {
     console.error('[commandCenter] Error loading gateway meters:', err);
     res.status(503).json({ error: 'Failed to load gateway meters', message: err.message });
+  }
+});
+
+router.get('/meters', async (req, res) => {
+  let win;
+  try {
+    win = windowFromQuery(req.query);
+  } catch (err: any) {
+    return res.status(400).json({ error: 'Invalid time window', message: err.message });
+  }
+  try {
+    const status = ['live', 'stale', 'silent'].includes(req.query.status as string)
+      ? (req.query.status as 'live' | 'stale' | 'silent')
+      : undefined;
+    const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '100', 10) || 100, 1), 200);
+    const offset = Math.max(parseInt((req.query.offset as string) || '0', 10) || 0, 0);
+    const siteId = (req.query.siteId as string) || 'ALL';
+    res.json(await listFleetMeters({ win, siteId, q: req.query.q as string, status, limit, offset }));
+  } catch (err: any) {
+    console.error('[commandCenter] Error listing meters:', err);
+    res.status(503).json({ error: 'Failed to list meters', message: err.message });
   }
 });
 

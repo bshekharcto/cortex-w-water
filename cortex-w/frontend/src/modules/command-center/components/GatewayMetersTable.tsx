@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
 import { MeterTelemetryItem } from '../types/commandCenter.types';
-import { fmt } from '../utils/format';
+import { fmt, formatFrequency } from '../utils/format';
 import { useNow, formatAgo } from '../utils/timeAgo';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
+import { useVirtualRows } from '../utils/useVirtualRows';
 
 interface Props {
   meters: MeterTelemetryItem[];
@@ -34,6 +35,9 @@ export function GatewayMetersTable({
     return meters;
   }, [meters, filter]);
 
+  // Only the visible slice of rows is rendered (the busiest gateway has ~1,700 meters)
+  const v = useVirtualRows(filteredMeters.length, `${filter}|${meters[0]?.meterId ?? ''}|${meters.length}`);
+
   return (
     <div className="cc-meters-view">
       <div className="cc-subfilter-bar">
@@ -58,8 +62,8 @@ export function GatewayMetersTable({
         <span className="cc-subfilter-count">({filteredMeters.length} meters)</span>
       </div>
 
-      <div className="cc-table-scroll-container">
-        <table className="cc-telemetry-table">
+      <div className="cc-table-scroll-container cc-table-scroll-container--tall" ref={v.containerRef} onScroll={v.onScroll}>
+        <table className="cc-telemetry-table cc-telemetry-table--virtual">
           <thead>
             <tr>
               <th>Meter ID</th>
@@ -86,7 +90,12 @@ export function GatewayMetersTable({
                 </td>
               </tr>
             )}
-            {filteredMeters.map((m) => {
+            {v.padTop > 0 && (
+              <tr aria-hidden="true">
+                <td colSpan={99} style={{ height: v.padTop, padding: 0, border: 0 }} />
+              </tr>
+            )}
+            {filteredMeters.slice(v.start, v.end).map((m) => {
               const isSelected = selectedMeterId === m.meterId;
               const isWeak = isWeakRssi(th, m.lastRssi);
               const poorSnr = isPoorSnr(th, m.lastSnr);
@@ -109,7 +118,7 @@ export function GatewayMetersTable({
                   </td>
                   <td className="cc-mono">{fmt(m.fCnt)}</td>
                   <td className="cc-mono">{fmt(m.fPort)}</td>
-                  <td className="cc-mono">{fmt(m.frequency)}</td>
+                  <td className="cc-mono">{formatFrequency(m.frequency)}</td>
                   <td className="cc-mono">{m.dr == null ? '—' : `DR${m.dr}`}</td>
                   <td>{m.adr ? 'Yes' : 'No'}</td>
                   <td>{m.confirmed ? 'Yes' : 'No'}</td>
@@ -132,6 +141,11 @@ export function GatewayMetersTable({
                 </tr>
               );
             })}
+            {v.padBottom > 0 && (
+              <tr aria-hidden="true">
+                <td colSpan={99} style={{ height: v.padBottom, padding: 0, border: 0 }} />
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

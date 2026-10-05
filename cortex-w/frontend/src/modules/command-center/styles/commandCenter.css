@@ -1161,3 +1161,41 @@
     transform: scale(0.85);
   }
 }
+
+/* ---------- Virtualized tables (rows are exactly 40px so spacer math stays exact) ---------- */
+.cc-telemetry-table--virtual {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.cc-telemetry-table--virtual tbody td {
+  box-sizing: border-box;
+  height: 40px;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cc-table-scroll-container--tall {
+  max-height: 560px;
+}
+.cc-live-badge--toggle {
+  cursor: pointer;
+  background: transparent;
+  font: inherit;
+}
+.cc-live-badge--off .cc-live-dot {
+  background: #64748B;
+  animation: none;
+}
+.cc-fleet-search {
+  background: #0A0F1D;
+  border: 1px solid #1E293B;
+  border-radius: 4px;
+  color: #E2E8F0;
+  font-size: 12px;
+  padding: 4px 8px;
+  min-width: 220px;
+}
+.cc-load-more {
+  align-self: center;
+}

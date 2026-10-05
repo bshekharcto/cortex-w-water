@@ -96,6 +96,8 @@ export interface RawFrameItem {
   checksumStatus: string;
   statusByte: number;
   statusEvent: 'FRAME_RECEIVED' | 'WEAK_RSSI' | 'POOR_LINK' | 'MULTI_GW' | 'DEGRADED';
+  /** True when more than one gateway heard this frame's meter in the selected window. */
+  multiGateway?: boolean;
 }
 
 export interface NetworkKpiData {

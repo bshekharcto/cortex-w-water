@@ -1,5 +1,5 @@
 import { RawFrameItem } from '../types/commandCenter.types';
-import { fmt } from '../utils/format';
+import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle } from '../utils/format';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 
 interface Props {
@@ -25,7 +25,7 @@ export function GatewayFramesTable({
         <table className="cc-telemetry-table">
           <thead>
             <tr>
-              <th>Decoded At (UTC)</th>
+              <th>Decoded At ({localTzLabel()})</th>
               <th>Meter ID</th>
               <th>DevEUI</th>
               <th>FCnt</th>
@@ -58,12 +58,12 @@ export function GatewayFramesTable({
                   className="cc-table-row"
                   onClick={() => onSelectFrameMeter(frame.meterId)}
                 >
-                  <td className="cc-mono">{frame.decodedAt}</td>
+                  <td className="cc-mono" title={utcTitle(frame.decodedAt)}>{formatLocalTime(frame.decodedAt)}</td>
                   <td className="cc-mono cc-cell-bold">{frame.meterId}</td>
                   <td className="cc-mono cc-cell-mute">{fmt(frame.devEui)}</td>
                   <td className="cc-mono">{fmt(frame.fCnt)}</td>
                   <td className="cc-mono">{fmt(frame.fPort)}</td>
-                  <td className="cc-mono">{fmt(frame.frequency)}</td>
+                  <td className="cc-mono">{formatFrequency(frame.frequency)}</td>
                   <td className="cc-mono">{frame.dr == null ? '—' : `DR${frame.dr}`}</td>
                   <td className={`cc-mono ${isWeak ? 'cc-text-warn' : ''}`}>
                     {fmt(frame.rssi, ' dBm')}
