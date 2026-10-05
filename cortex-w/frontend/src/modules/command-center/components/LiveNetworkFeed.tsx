@@ -63,6 +63,13 @@ export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
             </tr>
           </thead>
           <tbody>
+            {filteredFrames.length === 0 && (
+              <tr>
+                <td colSpan={99} style={{ padding: 24, textAlign: 'center', opacity: 0.7 }}>
+                  No frames to show.
+                </td>
+              </tr>
+            )}
             {filteredFrames.map((frame) => {
               const isWeak = frame.rssi < -95;
               const isPoor = frame.snr < -10;

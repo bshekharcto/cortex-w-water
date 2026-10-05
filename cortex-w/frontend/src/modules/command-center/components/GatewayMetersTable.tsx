@@ -71,6 +71,13 @@ export function GatewayMetersTable({
             </tr>
           </thead>
           <tbody>
+            {filteredMeters.length === 0 && (
+              <tr>
+                <td colSpan={99} style={{ padding: 24, textAlign: 'center', opacity: 0.7 }}>
+                  No meters match.
+                </td>
+              </tr>
+            )}
             {filteredMeters.map((m) => {
               const isSelected = selectedMeterId === m.meterId;
               const isWeak = m.lastRssi < -95;

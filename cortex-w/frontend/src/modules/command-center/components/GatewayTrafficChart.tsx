@@ -8,30 +8,22 @@ import {
   Tooltip,
   CartesianGrid,
 } from 'recharts';
-import { HOURLY_UPLINK_ACTIVITY } from '../repository/commandCenterData';
 import { GatewayItem } from '../types/commandCenter.types';
 
 interface Props {
-  gatewayAlias?: string;
   allGateways: GatewayItem[];
   hourlyActivity?: Array<{ hour: string; count: number }>;
 }
 
 export function GatewayTrafficChart({
-  gatewayAlias = 'All Gateways',
   allGateways,
   hourlyActivity,
 }: Props) {
-  const chartData = useMemo(() => {
-    if (hourlyActivity && hourlyActivity.length > 0) {
-      return hourlyActivity.map((h) => ({
-        time: h.hour,
-        normal: h.count,
-        degraded: Math.floor(h.count * 0.04),
-      }));
-    }
-    return HOURLY_UPLINK_ACTIVITY;
-  }, [hourlyActivity]);
+  const chartData = useMemo(
+    () => (hourlyActivity ?? []).map((h) => ({ time: h.hour, frames: h.count })),
+    [hourlyActivity]
+  );
+  const totalObserved = allGateways.reduce((sum, gw) => sum + gw.uniqueMeters, 0);
   const topGateways = [...allGateways]
     .filter((gw) => gw.uniqueMeters > 0)
     .sort((a, b) => b.uniqueMeters - a.uniqueMeters)
@@ -45,19 +37,21 @@ export function GatewayTrafficChart({
       <div className="cc-card cc-chart-card">
         <div className="cc-card-header">
           <span className="cc-card-title">
-            UPLINK ACTIVITY ({gatewayAlias.toUpperCase()}) — 24H
+            UPLINK ACTIVITY (ALL GATEWAYS) — HOURLY
           </span>
           <div className="cc-chart-legend">
             <span className="cc-legend-item">
-              <span className="cc-legend-dot cc-legend-dot--red" /> degraded / weak
-            </span>
-            <span className="cc-legend-item">
-              <span className="cc-legend-dot cc-legend-dot--blue" /> normal frames
+              <span className="cc-legend-dot cc-legend-dot--blue" /> frames
             </span>
           </div>
         </div>
 
         <div className="cc-chart-wrapper">
+          {chartData.length === 0 ? (
+            <div className="cc-card-meta" style={{ padding: 24, textAlign: 'center' }}>
+              No hourly activity available.
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height={160}>
             <BarChart
               data={chartData}
@@ -81,10 +75,10 @@ export function GatewayTrafficChart({
                   color: '#fff',
                 }}
               />
-              <Bar dataKey="normal" stackId="a" fill="#3B82F6" radius={[0, 0, 0, 0]} />
-              <Bar dataKey="degraded" stackId="a" fill="#EF4444" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="frames" fill="#3B82F6" radius={[2, 2, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
+          )}
         </div>
       </div>
 
@@ -92,7 +86,7 @@ export function GatewayTrafficChart({
       <div className="cc-card cc-chart-card">
         <div className="cc-card-header">
           <span className="cc-card-title">TOP GATEWAYS — UNIQUE METERS</span>
-          <span className="cc-card-meta">of 2,532 observed</span>
+          <span className="cc-card-meta">of {totalObserved.toLocaleString()} gateway-meter links</span>
         </div>
 
         <div className="cc-bars-container">

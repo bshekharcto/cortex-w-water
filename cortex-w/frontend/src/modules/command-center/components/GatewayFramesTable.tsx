@@ -38,6 +38,13 @@ export function GatewayFramesTable({
             </tr>
           </thead>
           <tbody>
+            {frames.length === 0 && (
+              <tr>
+                <td colSpan={99} style={{ padding: 24, textAlign: 'center', opacity: 0.7 }}>
+                  No frames received through this gateway in the loaded sample.
+                </td>
+              </tr>
+            )}
             {frames.map((frame) => {
               const isWeak = frame.rssi < -95;
               const isPoor = frame.snr < -10;

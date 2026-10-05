@@ -63,30 +63,7 @@ export function setLocalCachedSummary(summary: TelemetrySummaryResponse, days: n
  * Fetches the available sites
  */
 export async function fetchSites(): Promise<Array<{ id: string; name: string }>> {
-  try {
-    const res = await apiRequest<Array<{ id: string; name: string }>>('/sites', {
-      method: 'GET',
-    });
-    if (Array.isArray(res) && res.length > 0) return res;
-    return [
-      { id: 'ALL', name: 'All Sites' },
-      { id: '6394', name: 'BHUBANESWAR' },
-      { id: '6916', name: 'Cuttack' },
-      { id: '6906', name: 'Puri' },
-      { id: '6907', name: 'SCS College' },
-      { id: '6908', name: 'Baliapunda' },
-    ];
-  } catch (err) {
-    console.warn('[commandCenterApi] Failed to fetch sites, using fallback:', err);
-    return [
-      { id: 'ALL', name: 'All Sites' },
-      { id: '6394', name: 'BHUBANESWAR' },
-      { id: '6916', name: 'Cuttack' },
-      { id: '6906', name: 'Puri' },
-      { id: '6907', name: 'SCS College' },
-      { id: '6908', name: 'Baliapunda' },
-    ];
-  }
+  return apiRequest<Array<{ id: string; name: string }>>('/sites', { method: 'GET' });
 }
 
 /**
