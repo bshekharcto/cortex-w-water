@@ -27,9 +27,10 @@ function meterRowToGisMeter(row: MeterRow, locality: string): GisMeter {
     // Real dev_eui looked up from synced Postgres telemetry by the backend —
     // null (never fabricated) if this meter hasn't synced any packets yet.
     devEui: row.devEui || null,
-    householdId: row.consumerId || row.meterId,
-    householdShortId: row.consumerId || row.meterId,
-    householdName: row.consumerName || 'Consumer',
+    // Real consumer details only; the drawer shows "—" for what the feed lacks.
+    householdId: row.consumerId || '',
+    householdShortId: row.consumerId || '',
+    householdName: row.consumerName || '',
     locality,
     // Everything below is an honest "unknown" placeholder until the drawer's
     // live fetch (keyed on the real assetId above) resolves — never a
@@ -41,7 +42,10 @@ function meterRowToGisMeter(row: MeterRow, locality: string): GisMeter {
     distanceMeters: null,
     rssi: null,
     snr: null,
+    // `status` only picks the badge colour (green / amber / red); the badge
+    // TEXT is the real connectivity status below, not an invented RF state.
     status: row.connectivityStatus === 'CONNECTED' ? 'active' : row.connectivityStatus === 'DISCONNECTED' ? 'weak' : 'silent',
+    connectivityStatus: row.connectivityStatus,
     batteryStatus: null,
     batteryVoltage: null,
     batteryPercentage: null,

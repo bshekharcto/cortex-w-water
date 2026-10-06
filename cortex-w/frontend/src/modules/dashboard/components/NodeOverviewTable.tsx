@@ -1,8 +1,9 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, ChevronLeft, ChevronRight, ChevronRight as DrillIcon } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
 import { formatNumber } from '@/utils/number';
 import type { NodeRow } from '../models/dashboardRows';
+import { formatDateTimeCell } from '../services/formatTimestamp';
 
 interface NodeOverviewTableProps {
   nodes: NodeRow[];
@@ -23,6 +24,7 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
   const pageSize = 10;
 
   const handleSort = (field: SortField) => {
+    setPage(0);
     if (sortField === field) {
       setSortAsc(!sortAsc);
     } else {
@@ -48,10 +50,16 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
   }, [nodes, sortField, sortAsc]);
 
   const totalPages = Math.ceil(sortedNodes.length / pageSize) || 1;
+  // A new list (search, another node) starts at page 1, and the index is
+  // clamped as a backstop so it can never point past the last page.
+  useEffect(() => {
+    setPage(0);
+  }, [nodes]);
+  const currentPage = Math.min(page, totalPages - 1);
   const pagedNodes = useMemo(() => {
-    const start = page * pageSize;
+    const start = currentPage * pageSize;
     return sortedNodes.slice(start, start + pageSize);
-  }, [sortedNodes, page, pageSize]);
+  }, [sortedNodes, currentPage, pageSize]);
 
   const renderSortIcon = (field: SortField) => {
     if (sortField !== field) return <ArrowUpDown size={12} style={{ opacity: 0.4, marginLeft: 4 }} />;
@@ -150,7 +158,7 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
                     {formatNumber(n.monthToDateFlowM3)}
                   </td>
                   <td style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-                    {n.dataTimestamp ? new Date(n.dataTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live'}
+                    {formatDateTimeCell(n.dataTimestamp)}
                   </td>
                   <td style={{ textAlign: 'center', color: 'var(--cw-text-muted)' }}>
                     <DrillIcon size={14} />
@@ -166,19 +174,19 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
           <button
             className="cw-icon-btn"
-            disabled={page === 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={currentPage === 0}
+            onClick={() => setPage(Math.max(0, currentPage - 1))}
             style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
           >
             <ChevronLeft size={16} /> Prev
           </button>
           <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-            Page {page + 1} of {totalPages}
+            Page {currentPage + 1} of {totalPages}
           </span>
           <button
             className="cw-icon-btn"
-            disabled={page >= totalPages - 1}
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+            disabled={currentPage >= totalPages - 1}
+            onClick={() => setPage(Math.min(totalPages - 1, currentPage + 1))}
             style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
           >
             Next <ChevronRight size={16} />

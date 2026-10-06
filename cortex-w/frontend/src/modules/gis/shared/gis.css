@@ -1304,5 +1304,20 @@
   width: fit-content;
 }
 
-
-
+/* Placeholder shown in place of a value while live meter detail is loading */
+.gis-skeleton {
+  display: inline-block;
+  vertical-align: middle;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #E2E8F0 25%, #F1F5F9 50%, #E2E8F0 75%);
+  background-size: 200% 100%;
+  animation: gis-skeleton-shimmer 1.2s ease-in-out infinite;
+}
+.gis-bar-track > .gis-skeleton {
+  display: block;
+  align-self: flex-end;
+}
+@keyframes gis-skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}

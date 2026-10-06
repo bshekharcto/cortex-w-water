@@ -27,10 +27,22 @@ const app = express();
 // Middleware
 // ============================================================
 
+// Browser origins allowed to call this API cross-origin come from CORS_ORIGIN
+// (comma-separated; "*" = any, development only). Requests with no Origin
+// header (same-origin, curl, server-to-server) are always let through, and a
+// disallowed origin simply gets no CORS headers, so its browser blocks it.
+// Auth is a bearer token, not a cookie, so credentialed CORS isn't needed.
+const allowedOrigins = config.CORS_ORIGIN.split(',')
+  .map((o) => o.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+const allowAnyOrigin = allowedOrigins.includes('*');
+
 app.use(
   cors({
-    origin: true,
-    credentials: true,
+    origin: (origin, callback) => {
+      if (!origin || allowAnyOrigin) return callback(null, true);
+      return callback(null, allowedOrigins.includes(origin));
+    },
   }),
 );
 

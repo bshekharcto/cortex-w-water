@@ -38,8 +38,8 @@ export async function getAuthToken(providedHeader?: string): Promise<string> {
   try {
     const loginRes = await proxyUpstream('POST', '/api/auth/login', {
       body: {
-        username: process.env.UPSTREAM_SERVICE_USERNAME || 'WATCOAdmin',
-        password: process.env.UPSTREAM_SERVICE_PASSWORD || 'AdminWatco',
+        username: config.UPSTREAM_SERVICE_USERNAME,
+        password: config.UPSTREAM_SERVICE_PASSWORD,
       },
     });
     const token =

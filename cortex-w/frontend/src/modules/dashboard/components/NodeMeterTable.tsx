@@ -1,9 +1,10 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, ChevronLeft, ChevronRight, Eye } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
 import { StatusBadge } from '@/components/status/StatusBadge';
 import { formatNumber } from '@/utils/number';
 import type { MeterRow } from '../models/dashboardRows';
+import { formatDateTimeCell } from '../services/formatTimestamp';
 
 interface NodeMeterTableProps {
   meters: MeterRow[];
@@ -31,6 +32,7 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
   const pageSize = 15;
 
   const handleSort = (field: SortField) => {
+    setPage(0);
     if (sortField === field) {
       setSortAsc(!sortAsc);
     } else {
@@ -65,10 +67,16 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
   }, [meters, sortField, sortAsc]);
 
   const totalPages = Math.ceil(sortedMeters.length / pageSize) || 1;
+  // A new list (search, status filter, another node) starts at page 1, and the
+  // index is clamped as a backstop so it can never point past the last page.
+  useEffect(() => {
+    setPage(0);
+  }, [meters]);
+  const currentPage = Math.min(page, totalPages - 1);
   const pagedMeters = useMemo(() => {
-    const start = page * pageSize;
+    const start = currentPage * pageSize;
     return sortedMeters.slice(start, start + pageSize);
-  }, [sortedMeters, page, pageSize]);
+  }, [sortedMeters, currentPage, pageSize]);
 
   const renderSortIcon = (field: SortField) => {
     if (sortField !== field) return <ArrowUpDown size={12} style={{ opacity: 0.4, marginLeft: 4 }} />;
@@ -160,7 +168,7 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
                   {m.totalizerM3 != null ? formatNumber(m.totalizerM3) : '—'}
                 </td>
                 <td style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-                  {m.latestReadingAt ? new Date(m.latestReadingAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                  {formatDateTimeCell(m.latestReadingAt)}
                 </td>
                 <td>
                   <StatusBadge status={getBadgeStatus(m.connectivityStatus)} />
@@ -188,19 +196,19 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
           <button
             className="cw-icon-btn"
-            disabled={page === 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={currentPage === 0}
+            onClick={() => setPage(Math.max(0, currentPage - 1))}
             style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
           >
             <ChevronLeft size={16} /> Prev
           </button>
           <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-            Page {page + 1} of {totalPages}
+            Page {currentPage + 1} of {totalPages}
           </span>
           <button
             className="cw-icon-btn"
-            disabled={page >= totalPages - 1}
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+            disabled={currentPage >= totalPages - 1}
+            onClick={() => setPage(Math.min(totalPages - 1, currentPage + 1))}
             style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
           >
             Next <ChevronRight size={16} />
