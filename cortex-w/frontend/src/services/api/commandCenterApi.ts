@@ -11,24 +11,14 @@ export interface TelemetrySummaryResponse {
   dateRange?: { fromDate: string; toDate: string; days: number; fromTs: string; toTs: string; window: string };
   generatedAt: string;
   isCached: boolean;
-  kpis: NetworkKpiData & {
-    batteryAbnormalCount?: number;
-    valveAbnormalCount?: number;
-    reverseFlowCount?: number;
-  };
+  kpis: NetworkKpiData;
   thresholds: NetworkHealthThresholds;
+  /** True while a manual Refresh is still pulling fresh packets in the background. */
+  refreshing?: boolean;
   gateways: GatewayItem[];
-  metersByGateway: Record<string, MeterTelemetryItem[]>;
-  allMetersCount: number;
   recentFrames: RawFrameItem[];
   hourlyActivity: Array<{ hour: string; count: number }>;
   hourlyByGateway?: Record<string, Array<{ hour: string; count: number }>>;
-  radioHealth: {
-    avgRssi: number;
-    avgSnr: number;
-    rssiBuckets: { excellent: number; good: number; fair: number; poor: number };
-    snrBuckets: { excellent: number; good: number; fair: number; poor: number };
-  };
 }
 
 /** Time window sent to the backend; the server resolves it against its own clock. */
@@ -108,22 +98,10 @@ export async function fetchCommandCenterSummary(
     query,
   });
 
-  setLocalCachedSummary(data, windowKey(win), siteId);
+  setLocalCachedSummary({ ...data, refreshing: false }, windowKey(win), siteId);
   return data;
 }
 
-/**
- * Fetches the latest live frame feed
- */
-export async function fetchLiveTelemetryFeed(
-  date?: string,
-  limit: number = 100
-): Promise<RawFrameItem[]> {
-  return apiRequest<RawFrameItem[]>('/command-center/feed', {
-    method: 'GET',
-    query: { ...(date ? { date } : {}), limit },
-  });
-}
 
 /**
  * Latest frame per meter for one gateway (loaded on selection; not part of the summary payload)
@@ -152,6 +130,8 @@ export interface FleetMetersPage {
   limit: number;
   offset: number;
   items: MeterTelemetryItem[];
+  /** Values present in the window/site, for the DR and frequency dropdowns. */
+  facets: { dr: number[]; frequency: number[] };
 }
 
 /**
@@ -162,6 +142,9 @@ export async function fetchFleetMeters(opts: {
   siteId: string;
   q?: string;
   status?: MeterStatusFilter;
+  dr?: number;
+  frequency?: number;
+  confirmed?: boolean;
   limit?: number;
   offset?: number;
 }): Promise<FleetMetersPage> {
@@ -169,5 +152,39 @@ export async function fetchFleetMeters(opts: {
   if (opts.siteId && opts.siteId !== 'ALL') query.siteId = opts.siteId;
   if (opts.q) query.q = opts.q;
   if (opts.status) query.status = opts.status;
+  if (opts.dr !== undefined) query.dr = opts.dr;
+  if (opts.frequency !== undefined) query.frequency = opts.frequency;
+  if (opts.confirmed !== undefined) query.confirmed = String(opts.confirmed);
   return apiRequest<FleetMetersPage>('/command-center/meters', { method: 'GET', query });
+}
+
+export interface FramesPage {
+  total: number;
+  limit: number;
+  offset: number;
+  items: RawFrameItem[];
+}
+
+/** Newest frames received through one gateway in the window (paginated, newest first). */
+export async function fetchGatewayFrames(
+  gatewayId: string,
+  win: WindowParams,
+  opts: { limit?: number; offset?: number } = {}
+): Promise<FramesPage> {
+  return apiRequest<FramesPage>(`/command-center/gateways/${encodeURIComponent(gatewayId)}/frames`, {
+    method: 'GET',
+    query: { ...windowQuery(win), limit: opts.limit ?? 100, offset: opts.offset ?? 0 },
+  });
+}
+
+/** Frames from one meter in the window, across every gateway that heard it (paginated, newest first). */
+export async function fetchMeterFrames(
+  meterId: string,
+  win: WindowParams,
+  opts: { limit?: number; offset?: number } = {}
+): Promise<FramesPage> {
+  return apiRequest<FramesPage>(`/command-center/meters/${encodeURIComponent(meterId)}/frames`, {
+    method: 'GET',
+    query: { ...windowQuery(win), limit: opts.limit ?? 20, offset: opts.offset ?? 0 },
+  });
 }

@@ -9,12 +9,13 @@ export interface TelemetrySummary {
   generatedAt: string;
   source: 'postgresql';
   thresholds: NetworkHealthThresholds;
+  /** True while a manual Refresh is still pulling and rebuilding in the background. Added per response, never cached. */
+  refreshing?: boolean;
   kpis: {
     gatewaysWithTraffic: number;
     totalConfiguredGateways: number;
     noRecentTrafficGateways: number;
     uniqueMetersSeen: number;
-    configuredMeters: number;
     framesReceived: number;
     /** % change in frames vs the previous equal-length period; null when it can't be compared honestly. */
     framesTrendPct: number | null;
@@ -22,9 +23,6 @@ export interface TelemetrySummary {
     multiGatewayMeters: number;
     avgRssi: number | null;
     avgSnr: number | null;
-    batteryAbnormalCount: number;
-    valveAbnormalCount: number;
-    reverseFlowCount: number;
   };
   gateways: Array<{
     gatewayId: string;
@@ -38,18 +36,10 @@ export interface TelemetrySummary {
     trendPct: number | null;
     status: 'reporting' | 'degraded' | 'stale' | 'no-traffic';
   }>;
-  metersByGateway: Record<string, any[]>;
-  allMetersCount: number;
   recentFrames: any[];
   hourlyActivity: Array<{ hour: string; count: number }>;
   /** Same hourly (UTC hour-of-day) counts, split per gateway. */
   hourlyByGateway: Record<string, Array<{ hour: string; count: number }>>;
-  radioHealth: {
-    avgRssi: number | null;
-    avgSnr: number | null;
-    rssiBuckets: { excellent: number; good: number; fair: number; poor: number };
-    snrBuckets: { excellent: number; good: number; fair: number; poor: number };
-  };
 }
 
 export interface TelemetryWindow {
@@ -309,6 +299,33 @@ async function ingestDateUnlocked(date: string): Promise<number> {
 
 const inflightRebuilds = new Map<string, Promise<unknown>>();
 
+let activeRefreshJobs = 0;
+
+/** True while a manual Refresh (pull today's packets, then rebuild the summary) is still running. */
+export function isRefreshing(): boolean {
+  return activeRefreshJobs > 0;
+}
+
+/**
+ * Manual Refresh without making the user wait: pulls today's packets and then rebuilds this window/site's
+ * summary in the background. Callers answer immediately from stored data and let the page poll
+ * `isRefreshing()`. Only meaningful when the window includes today; one job runs at a time.
+ */
+export function startManualRefresh(win: TelemetryWindow, siteId: string): boolean {
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  if (win.toDate !== todayUtc) return false;
+  if (activeRefreshJobs > 0) return true; // already running; the caller just keeps polling
+  activeRefreshJobs++;
+  ingestDateIntoPostgres(todayUtc)
+    .catch((err: any) => console.warn('[telemetryDb] Refresh ingestion warning:', err.message))
+    .then(() => getPostgresAggregatedSummary(win, true, siteId))
+    .catch((err: any) => console.warn('[telemetryDb] Refresh rebuild warning:', err.message))
+    .finally(() => {
+      activeRefreshJobs--;
+    });
+  return true;
+}
+
 /** Frame-level link quality from the shared thresholds (not water flow). */
 export function frameStatusEvent(r: { rssi: number | null; snr: number | null }): 'FRAME_RECEIVED' | 'WEAK_RSSI' | 'POOR_LINK' {
   if ((r.rssi != null && r.rssi < T.rssiCriticalDbm) || (r.snr != null && r.snr < T.snrCriticalDb)) return 'POOR_LINK';
@@ -331,8 +348,10 @@ const LATEST_FRAME_COLUMNS = `meter_id, gateway_id, dev_eui, decoded_at,
 /**
  * Turns each meter's latest frame (through a given gateway) into the Command Center meter item, with
  * real per-window frame counts, every gateway that heard the meter, and diagnostics from the shared thresholds.
+ * `scope` decides what the frame counts mean: 'gateway' = frames through the row's gateway (per-gateway table),
+ * 'meter' = frames from the meter through any gateway (fleet list, search).
  */
-async function buildMeterItems(rows: any[], win: TelemetryWindow) {
+async function buildMeterItems(rows: any[], win: TelemetryWindow, scope: 'gateway' | 'meter' = 'gateway') {
   if (rows.length === 0) return [];
   const meterIds = rows.map((r) => r.meter_id);
   const refMs = referenceMs(win);
@@ -368,7 +387,11 @@ async function buildMeterItems(rows: any[], win: TelemetryWindow) {
     heard.set(h.meter_id, list);
   }
   const counts = new Map<string, { f1h: number; f24h: number }>();
-  for (const c of countRes.rows) counts.set(`${c.meter_id}|${c.gateway_id}`, { f1h: c.f1h, f24h: c.f24h });
+  for (const c of countRes.rows) {
+    const key = scope === 'gateway' ? `${c.meter_id}|${c.gateway_id}` : c.meter_id;
+    const prev = counts.get(key) ?? { f1h: 0, f24h: 0 };
+    counts.set(key, { f1h: prev.f1h + c.f1h, f24h: prev.f24h + c.f24h });
+  }
 
   return rows.map((m) => {
     const paths = (heard.get(m.meter_id) ?? [{ meter_id: m.meter_id, gateway_id: m.gateway_id, rssi: m.rssi, snr: m.snr, decoded_at: m.decoded_at }])
@@ -383,7 +406,7 @@ async function buildMeterItems(rows: any[], win: TelemetryWindow) {
     if (m.rssi != null && m.rssi < T.rssiWeakDbm) diagnostics.push('weak-rssi');
     if (m.snr != null && m.snr < T.snrWeakDb) diagnostics.push('poor-snr');
     if (paths.length > 1) diagnostics.push('multi-gw');
-    const c = counts.get(`${m.meter_id}|${m.gateway_id}`);
+    const c = counts.get(scope === 'gateway' ? `${m.meter_id}|${m.gateway_id}` : m.meter_id);
 
     return {
       meterId: m.meter_id,
@@ -395,7 +418,7 @@ async function buildMeterItems(rows: any[], win: TelemetryWindow) {
       lastSnr: m.snr,
       fCnt: m.fcnt === -1 ? null : m.fcnt,
       fPort: m.fport,
-      frequency: m.frequency,
+      frequency: m.frequency == null ? null : Number(m.frequency), // BIGINT arrives as a string
       dr: m.dr,
       adr: m.adr,
       confirmed: m.confirmed,
@@ -444,8 +467,79 @@ export async function searchMeters(q: string, win: TelemetryWindow) {
      LIMIT 20`,
     [`%${q}%`, win.fromDate, win.toDate, win.fromTs, win.toTs]
   );
-  const items = await buildMeterItems(res.rows, win);
+  const items = await buildMeterItems(res.rows, win, 'meter');
   return items.map((meter, i) => ({ gatewayId: res.rows[i].gateway_id, meter }));
+}
+
+/** One raw packet row -> the frame shape the Command Center renders. */
+function mapFrameRow(r: any, idx: number, multi: Set<string>) {
+  return {
+    multiGateway: multi.has(r.meter_id),
+    id: r.id != null ? `pk-${r.id}` : `pg-frame-${idx}-${r.meter_id}`,
+    decodedAt: r.decoded_at,
+    meterTimestamp: r.meter_timestamp || r.decoded_at,
+    meterId: r.meter_id,
+    devEui: r.dev_eui,
+    gatewayId: r.gateway_id,
+    gatewayAlias: getGatewayAlias(r.gateway_id),
+    fCnt: r.fcnt === -1 ? null : r.fcnt,
+    fPort: r.fport,
+    frequency: r.frequency == null ? null : Number(r.frequency),
+    dr: r.dr,
+    rssi: r.rssi,
+    snr: r.snr,
+    confirmed: r.confirmed,
+    adr: r.adr,
+    checksumStatus: r.checksum_status,
+    statusByte: r.status_byte,
+    statusEvent: frameStatusEvent(r),
+  };
+}
+
+/** Of these meters, the ones that more than one gateway heard in the window (any gateway, not site-scoped). */
+async function findMultiGatewayMeters(meterIds: string[], win: TelemetryWindow): Promise<Set<string>> {
+  if (meterIds.length === 0) return new Set();
+  const res = await pool.query(
+    `SELECT meter_id FROM raw_telemetry_packets
+     WHERE meter_id = ANY($1::text[]) AND date_key >= $2 AND date_key <= $3 AND decoded_at >= $4 AND decoded_at <= $5
+     GROUP BY meter_id HAVING COUNT(DISTINCT gateway_id) > 1`,
+    [[...new Set(meterIds)], win.fromDate, win.toDate, win.fromTs, win.toTs]
+  );
+  return new Set<string>(res.rows.map((r: any) => r.meter_id));
+}
+
+export interface FramesPage {
+  total: number;
+  limit: number;
+  offset: number;
+  items: ReturnType<typeof mapFrameRow>[];
+}
+
+/** Newest frames received through one gateway in the window (newest first, paginated). */
+export async function getGatewayFrames(gatewayId: string, win: TelemetryWindow, limit: number, offset: number): Promise<FramesPage> {
+  const res = await pool.query(
+    `SELECT *, COUNT(*) OVER()::int AS total FROM raw_telemetry_packets
+     WHERE gateway_id = $1 AND date_key >= $2 AND date_key <= $3 AND decoded_at >= $4 AND decoded_at <= $5
+     ORDER BY decoded_at DESC
+     LIMIT $6 OFFSET $7`,
+    [gatewayId, win.fromDate, win.toDate, win.fromTs, win.toTs, limit, offset]
+  );
+  const multi = await findMultiGatewayMeters(res.rows.map((r: any) => r.meter_id), win);
+  return { total: res.rows[0]?.total ?? 0, limit, offset, items: res.rows.map((r: any, i: number) => mapFrameRow(r, i, multi)) };
+}
+
+/** Every frame from one meter in the window, across all gateways (newest first, paginated). */
+export async function getMeterFrames(meterId: string, win: TelemetryWindow, limit: number, offset: number): Promise<FramesPage> {
+  const res = await pool.query(
+    `SELECT *, COUNT(*) OVER()::int AS total FROM raw_telemetry_packets
+     WHERE meter_id = $1 AND date_key >= $2 AND date_key <= $3 AND decoded_at >= $4 AND decoded_at <= $5
+     ORDER BY decoded_at DESC
+     LIMIT $6 OFFSET $7`,
+    [meterId, win.fromDate, win.toDate, win.fromTs, win.toTs, limit, offset]
+  );
+  const gateways = new Set<string>(res.rows.map((r: any) => r.gateway_id));
+  const multi = gateways.size > 1 ? new Set([meterId]) : new Set<string>();
+  return { total: res.rows[0]?.total ?? 0, limit, offset, items: res.rows.map((r: any, i: number) => mapFrameRow(r, i, multi)) };
 }
 
 export type MeterStatusFilter = 'live' | 'stale' | 'silent';
@@ -459,6 +553,10 @@ export async function listFleetMeters(opts: {
   siteId: string;
   q?: string;
   status?: MeterStatusFilter;
+  /** Filters on the meter's latest frame: data rate, frequency in Hz, confirmed uplink. */
+  dr?: number;
+  frequency?: number;
+  confirmed?: boolean;
   limit: number;
   offset: number;
 }) {
@@ -493,23 +591,47 @@ export async function listFleetMeters(opts: {
     else if (opts.status === 'stale') { params.push(dayAgo, silentAt); outer.push(`decoded_at <= $${params.length - 1} AND decoded_at > $${params.length}`); }
     else { params.push(silentAt); outer.push(`decoded_at <= $${params.length}`); }
   }
-  params.push(opts.limit, opts.offset);
+  if (opts.dr !== undefined) { params.push(opts.dr); outer.push(`dr = $${params.length}`); }
+  if (opts.frequency !== undefined) { params.push(opts.frequency); outer.push(`frequency = $${params.length}`); }
+  if (opts.confirmed !== undefined) { params.push(opts.confirmed); outer.push(`confirmed = $${params.length}`); }
+  const mainParams = [...params, opts.limit, opts.offset];
 
-  const res = await pool.query(
-    `WITH latest AS (
-       SELECT DISTINCT ON (meter_id) ${LATEST_FRAME_COLUMNS}
+  // Values present in the window/site, for the DR and frequency dropdowns (independent of the other filters)
+  const facetParams: any[] = [win.fromDate, win.toDate, win.fromTs, win.toTs];
+  let facetSite = '';
+  if (siteGateways) {
+    facetParams.push(siteGateways);
+    facetSite = 'AND gateway_id = ANY($5::text[])';
+  }
+
+  const [res, facetRes] = await Promise.all([
+    pool.query(
+      `WITH latest AS (
+         SELECT DISTINCT ON (meter_id) ${LATEST_FRAME_COLUMNS}
+         FROM raw_telemetry_packets
+         WHERE ${inner.join(' AND ')}
+         ORDER BY meter_id, decoded_at DESC
+       )
+       SELECT *, COUNT(*) OVER()::int AS total FROM latest
+       ${outer.length ? 'WHERE ' + outer.join(' AND ') : ''}
+       ORDER BY decoded_at DESC, meter_id
+       LIMIT $${mainParams.length - 1} OFFSET $${mainParams.length}`,
+      mainParams
+    ),
+    pool.query(
+      `SELECT array_agg(DISTINCT dr ORDER BY dr) FILTER (WHERE dr IS NOT NULL) AS dr,
+              array_agg(DISTINCT frequency ORDER BY frequency) FILTER (WHERE frequency IS NOT NULL) AS frequency
        FROM raw_telemetry_packets
-       WHERE ${inner.join(' AND ')}
-       ORDER BY meter_id, decoded_at DESC
-     )
-     SELECT *, COUNT(*) OVER()::int AS total FROM latest
-     ${outer.length ? 'WHERE ' + outer.join(' AND ') : ''}
-     ORDER BY decoded_at DESC, meter_id
-     LIMIT $${params.length - 1} OFFSET $${params.length}`,
-    params
-  );
-  const items = await buildMeterItems(res.rows, win);
-  return { total: res.rows[0]?.total ?? 0, limit: opts.limit, offset: opts.offset, items };
+       WHERE date_key >= $1 AND date_key <= $2 AND decoded_at >= $3 AND decoded_at <= $4 ${facetSite}`,
+      facetParams
+    ),
+  ]);
+  const items = await buildMeterItems(res.rows, win, 'meter');
+  const facets = {
+    dr: (facetRes.rows[0]?.dr ?? []).map(Number) as number[],
+    frequency: (facetRes.rows[0]?.frequency ?? []).map(Number) as number[],
+  };
+  return { total: res.rows[0]?.total ?? 0, limit: opts.limit, offset: opts.offset, items, facets };
 }
 
 /**
@@ -518,8 +640,7 @@ export async function listFleetMeters(opts: {
 export async function getPostgresAggregatedSummary(
   win: TelemetryWindow,
   forceRefresh: boolean = false,
-  siteId: string = 'ALL',
-  skipIngestion: boolean = false
+  siteId: string = 'ALL'
 ): Promise<TelemetrySummary> {
   const { fromDate, toDate, fromTs, toTs, days } = win;
   const cacheKey = `${win.key}_summary_site_${siteId || 'ALL'}`;
@@ -536,33 +657,20 @@ export async function getPostgresAggregatedSummary(
         const ageMs = Date.now() - new Date(row.updated_at).getTime();
         // Fresh (< 2 min): serve as-is. Stale (< 1 h): serve instantly and rebuild in the background.
         if (ageMs < 120000) {
-          return { ...(row.summary_json as TelemetrySummary), metersByGateway: {} };
+          return row.summary_json as TelemetrySummary;
         }
         if (ageMs < 3600000) {
           if (!inflightRebuilds.has(cacheKey)) {
-            const rebuild = getPostgresAggregatedSummary(resolveWindow(windowRequestFromKey(win)), true, siteId, true)
+            const rebuild = getPostgresAggregatedSummary(resolveWindow(windowRequestFromKey(win)), true, siteId)
               .catch((err) => console.warn('[telemetryDb] Background rebuild note:', err.message))
               .finally(() => inflightRebuilds.delete(cacheKey));
             inflightRebuilds.set(cacheKey, rebuild);
           }
-          return { ...(row.summary_json as TelemetrySummary), metersByGateway: {} };
+          return row.summary_json as TelemetrySummary;
         }
       }
     } catch {
       // ignore
-    }
-  }
-
-  // 2. Ingestion is NOT triggered by ordinary page requests (that caused overlapping long inserts and
-  // lock pile-ups). Data arrives via the scheduled sync; only an explicit manual Refresh pulls today's
-  // packets on demand, and only when the window actually includes today.
-  const todayUtc = new Date().toISOString().slice(0, 10);
-  if (forceRefresh && !skipIngestion && toDate === todayUtc) {
-    try {
-      console.log(`[telemetryDb] Manual refresh requested: pulling latest packets for ${toDate}...`);
-      await ingestDateIntoPostgres(toDate);
-    } catch (ingestErr: any) {
-      console.warn('[telemetryDb] Refresh ingestion warning:', ingestErr.message);
     }
   }
 
@@ -592,18 +700,7 @@ export async function getPostgresAggregatedSummary(
         COUNT(*)::int as frames_received,
         AVG(rssi)::numeric(10,1)::float as avg_rssi,
         AVG(snr)::numeric(10,1)::float as avg_snr,
-        COUNT(*) FILTER (WHERE battery_status != 'OK')::int as battery_abnormal_count,
-        COUNT(*) FILTER (WHERE valve_health != 'Normal')::int as valve_abnormal_count,
-        COUNT(*) FILTER (WHERE reverse_flow > 0.05)::int as reverse_flow_count,
-        MAX(decoded_at) as latest_frame_at,
-        COUNT(*) FILTER (WHERE rssi >= -80)::int as rssi_excellent,
-        COUNT(*) FILTER (WHERE rssi < -80 AND rssi >= -95)::int as rssi_good,
-        COUNT(*) FILTER (WHERE rssi < -95 AND rssi >= -105)::int as rssi_fair,
-        COUNT(*) FILTER (WHERE rssi < -105)::int as rssi_poor,
-        COUNT(*) FILTER (WHERE snr >= 0)::int as snr_excellent,
-        COUNT(*) FILTER (WHERE snr < 0 AND snr >= -5)::int as snr_good,
-        COUNT(*) FILTER (WHERE snr < -5 AND snr >= -12)::int as snr_fair,
-        COUNT(*) FILTER (WHERE snr < -12)::int as snr_poor
+        MAX(decoded_at) as latest_frame_at
       FROM raw_telemetry_packets
       WHERE date_key >= $1 AND date_key <= $2 AND decoded_at >= $3 AND decoded_at <= $4 ${siteFilter}
     `, range),
@@ -695,9 +792,6 @@ export async function getPostgresAggregatedSummary(
     })
     .sort((a, b) => b.uniqueMeters - a.uniqueMeters || b.frameCount - a.frameCount);
 
-  // Meters are loaded per gateway on demand (see getGatewayMeters) to keep this payload small.
-  const metersByGateway: Record<string, any[]> = {};
-
   // Hourly (UTC hour-of-day) frame counts: per gateway, and the fleet total summed from them
   const hourSlots = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
   const perGatewayHours = new Map<string, Map<string, number>>();
@@ -713,41 +807,9 @@ export async function getPostgresAggregatedSummary(
   const hourlyByGateway: Record<string, Array<{ hour: string; count: number }>> = {};
   for (const [gw, m] of perGatewayHours) hourlyByGateway[gw] = toSeries(m);
 
-  const radioRow = kpiRow;
 
-  // Meters in the feed that more than one gateway heard in this window (any gateway, not site-scoped)
-  const feedMeterIds = [...new Set<string>(framesRes.rows.map((r: any) => r.meter_id))];
-  const multiRes = feedMeterIds.length
-    ? await pool.query(
-        `SELECT meter_id FROM raw_telemetry_packets
-         WHERE meter_id = ANY($1::text[]) AND date_key >= $2 AND date_key <= $3 AND decoded_at >= $4 AND decoded_at <= $5
-         GROUP BY meter_id HAVING COUNT(DISTINCT gateway_id) > 1`,
-        [feedMeterIds, fromDate, toDate, fromTs, toTs]
-      )
-    : { rows: [] as any[] };
-  const feedMultiGw = new Set<string>(multiRes.rows.map((r: any) => r.meter_id));
-
-  const recentFrames = framesRes.rows.map((r: any, idx: number) => ({
-    multiGateway: feedMultiGw.has(r.meter_id),
-    id: `pg-frame-${idx}-${r.meter_id}`,
-    decodedAt: r.decoded_at,
-    meterTimestamp: r.meter_timestamp || r.decoded_at,
-    meterId: r.meter_id,
-    devEui: r.dev_eui,
-    gatewayId: r.gateway_id,
-    gatewayAlias: getGatewayAlias(r.gateway_id),
-    fCnt: r.fcnt === -1 ? null : r.fcnt,
-    fPort: r.fport,
-    frequency: r.frequency,
-    dr: r.dr,
-    rssi: r.rssi,
-    snr: r.snr,
-    confirmed: r.confirmed,
-    adr: r.adr,
-    checksumStatus: r.checksum_status,
-    statusByte: r.status_byte,
-    statusEvent: frameStatusEvent(r),
-  }));
+  const feedMulti = await findMultiGatewayMeters(framesRes.rows.map((r: any) => r.meter_id), win);
+  const recentFrames = framesRes.rows.map((r: any, idx: number) => mapFrameRow(r, idx, feedMulti));
 
   const summary: TelemetrySummary = {
     dateRange: { fromDate, toDate, days, fromTs, toTs, window: win.key },
@@ -759,39 +821,17 @@ export async function getPostgresAggregatedSummary(
       totalConfiguredGateways: gateways.length,
       noRecentTrafficGateways: gateways.filter((g) => g.status === 'stale' || g.status === 'no-traffic').length,
       uniqueMetersSeen: (win.subDay ? undefined : upstreamSummary?.totalUniqueMeters) ?? kpiRow.unique_meters_seen ?? 0,
-      configuredMeters: (win.subDay ? undefined : upstreamSummary?.totalUniqueMeters) ?? kpiRow.unique_meters_seen ?? 0,
       framesReceived: kpiRow.frames_received ?? 0,
       framesTrendPct: pctChange(kpiRow.frames_received ?? 0, prevRes.rows.reduce((a: number, r: any) => a + r.frames, 0)),
       lastFrameAt: (kpiRow.latest_frame_at ?? null) as string | null,
       multiGatewayMeters: (win.subDay ? undefined : upstreamSummary?.metersOnMultipleGateways) ?? multiGatewayMeters,
       avgRssi: kpiRow.avg_rssi ?? null,
       avgSnr: kpiRow.avg_snr ?? null,
-      batteryAbnormalCount: kpiRow.battery_abnormal_count ?? 0,
-      valveAbnormalCount: kpiRow.valve_abnormal_count ?? 0,
-      reverseFlowCount: kpiRow.reverse_flow_count ?? 0,
     },
     gateways,
-    metersByGateway,
-    allMetersCount: (win.subDay ? undefined : upstreamSummary?.totalUniqueMeters) ?? kpiRow.unique_meters_seen ?? 0,
     recentFrames,
     hourlyActivity,
     hourlyByGateway,
-    radioHealth: {
-      avgRssi: kpiRow.avg_rssi ?? null,
-      avgSnr: kpiRow.avg_snr ?? null,
-      rssiBuckets: {
-        excellent: radioRow.rssi_excellent ?? 0,
-        good: radioRow.rssi_good ?? 0,
-        fair: radioRow.rssi_fair ?? 0,
-        poor: radioRow.rssi_poor ?? 0,
-      },
-      snrBuckets: {
-        excellent: radioRow.snr_excellent ?? 0,
-        good: radioRow.snr_good ?? 0,
-        fair: radioRow.snr_fair ?? 0,
-        poor: radioRow.snr_poor ?? 0,
-      },
-    },
   };
 
   // 10. Cache in PostgreSQL

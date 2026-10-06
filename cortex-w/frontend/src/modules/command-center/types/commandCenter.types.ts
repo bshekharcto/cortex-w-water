@@ -59,22 +59,6 @@ export interface MeterTelemetryItem {
   /** Separate link-quality / reach flags (weak-rssi, poor-snr, multi-gw) used for filtering. */
   diagnostics: MeterState[];
   gatewaysHeard: MeterReceptionPath[];
-  recentFrames?: MeterFrameRecord[];
-}
-
-export interface MeterFrameRecord {
-  id: string;
-  receivedTime: string;
-  gatewayAlias: string;
-  gatewayId: string;
-  fCnt: number;
-  fPort: number;
-  rssi: number;
-  snr: number;
-  frequency: number;
-  dr: number;
-  confirmed: boolean;
-  checksum: string;
 }
 
 export interface RawFrameItem {
@@ -95,7 +79,7 @@ export interface RawFrameItem {
   adr: boolean;
   checksumStatus: string;
   statusByte: number;
-  statusEvent: 'FRAME_RECEIVED' | 'WEAK_RSSI' | 'POOR_LINK' | 'MULTI_GW' | 'DEGRADED';
+  statusEvent: 'FRAME_RECEIVED' | 'WEAK_RSSI' | 'POOR_LINK';
   /** True when more than one gateway heard this frame's meter in the selected window. */
   multiGateway?: boolean;
 }
@@ -105,7 +89,6 @@ export interface NetworkKpiData {
   totalConfiguredGateways: number;
   noRecentTrafficGateways: number;
   uniqueMetersSeen: number;
-  configuredMeters: number;
   framesReceived: number;
   framesTrendPct: number | null;
   lastFrameAt: string | null;

@@ -4,6 +4,7 @@ import { fmt, formatFrequency } from '../utils/format';
 import { useNow, formatAgo } from '../utils/timeAgo';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 import { useVirtualRows } from '../utils/useVirtualRows';
+import { MeterFacetFilters, type MeterFacetState } from './MeterFacetFilters';
 
 interface Props {
   meters: MeterTelemetryItem[];
@@ -23,8 +24,13 @@ export function GatewayMetersTable({
   const th = useThresholds();
   const nowMs = useNow();
   const [filter, setFilter] = useState<string>('ALL');
+  const [facets, setFacets] = useState<MeterFacetState>({ dr: '', frequency: '', confirmed: '' });
 
-  const filteredMeters = useMemo(() => {
+  // Options come from the meters actually on this gateway
+  const drOptions = useMemo(() => [...new Set(meters.map((m) => m.dr).filter((d): d is number => d != null))].sort((a, b) => a - b), [meters]);
+  const frequencyOptions = useMemo(() => [...new Set(meters.map((m) => m.frequency).filter((f): f is number => f != null))].sort((a, b) => a - b), [meters]);
+
+  const statusFiltered = useMemo(() => {
     if (filter === 'ALL') return meters;
     if (filter === 'LIVE') return meters.filter((m) => m.statusChips.includes('live'));
     if (filter === 'STALE') return meters.filter((m) => m.statusChips.includes('stale'));
@@ -35,8 +41,19 @@ export function GatewayMetersTable({
     return meters;
   }, [meters, filter]);
 
+  const filteredMeters = useMemo(
+    () =>
+      statusFiltered.filter(
+        (m) =>
+          (facets.dr === '' || m.dr === Number(facets.dr)) &&
+          (facets.frequency === '' || m.frequency === Number(facets.frequency)) &&
+          (facets.confirmed === '' || m.confirmed === (facets.confirmed === 'true'))
+      ),
+    [statusFiltered, facets]
+  );
+
   // Only the visible slice of rows is rendered (the busiest gateway has ~1,700 meters)
-  const v = useVirtualRows(filteredMeters.length, `${filter}|${meters[0]?.meterId ?? ''}|${meters.length}`);
+  const v = useVirtualRows(filteredMeters.length, `${filter}|${facets.dr}|${facets.frequency}|${facets.confirmed}|${meters[0]?.meterId ?? ''}|${meters.length}`);
 
   return (
     <div className="cc-meters-view">
@@ -59,6 +76,7 @@ export function GatewayMetersTable({
             {f.label}
           </button>
         ))}
+        <MeterFacetFilters value={facets} onChange={setFacets} drOptions={drOptions} frequencyOptions={frequencyOptions} />
         <span className="cc-subfilter-count">({filteredMeters.length} meters)</span>
       </div>
 
@@ -69,6 +87,7 @@ export function GatewayMetersTable({
               <th>Meter ID</th>
               <th>DevEUI</th>
               <th>Frame Age</th>
+              <th>Frames 1H</th>
               <th>Frames 24H</th>
               <th>Last RSSI</th>
               <th>Last SNR</th>
@@ -109,6 +128,7 @@ export function GatewayMetersTable({
                   <td className="cc-mono cc-cell-bold">{m.meterId}</td>
                   <td className="cc-mono cc-cell-mute">{fmt(m.devEui)}</td>
                   <td>{formatAgo(m.lastSeenDate, nowMs)}</td>
+                  <td>{m.frames1H}</td>
                   <td>{m.frames24H}</td>
                   <td className={`cc-mono ${isWeak ? 'cc-text-warn' : ''}`}>
                     {fmt(m.lastRssi, ' dBm')}

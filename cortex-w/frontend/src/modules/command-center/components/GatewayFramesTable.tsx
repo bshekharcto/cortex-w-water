@@ -6,19 +6,30 @@ interface Props {
   frames: RawFrameItem[];
   gatewayAlias: string;
   onSelectFrameMeter: (meterId: string) => void;
+  /** Total frames for this gateway in the window (more may be loadable). */
+  total?: number;
+  loading?: boolean;
+  error?: string | null;
+  onLoadMore?: () => void;
 }
 
 export function GatewayFramesTable({
   frames,
   gatewayAlias,
   onSelectFrameMeter,
+  total,
+  loading,
+  error,
+  onLoadMore,
 }: Props) {
   const th = useThresholds();
   return (
     <div className="cc-frames-view">
       <div className="cc-subfilter-bar">
         <span className="cc-subfilter-label">Latest Decoded Frames for {gatewayAlias}:</span>
-        <span className="cc-subfilter-count">({frames.length} frames stream)</span>
+        <span className="cc-subfilter-count">
+          ({frames.length.toLocaleString()}{total != null ? ` of ${total.toLocaleString()}` : ''} frames, newest first)
+        </span>
       </div>
 
       <div className="cc-table-scroll-container">
@@ -44,7 +55,7 @@ export function GatewayFramesTable({
             {frames.length === 0 && (
               <tr>
                 <td colSpan={99} style={{ padding: 24, textAlign: 'center', opacity: 0.7 }}>
-                  No frames received through this gateway in the loaded sample.
+                  {loading ? 'Loading frames…' : error ? `Could not load frames (${error}).` : 'No frames received through this gateway in the selected window.'}
                 </td>
               </tr>
             )}
@@ -87,6 +98,12 @@ export function GatewayFramesTable({
           </tbody>
         </table>
       </div>
+
+      {onLoadMore && total != null && frames.length < total && (
+        <button className="cw-button-secondary cc-load-more" disabled={loading} onClick={onLoadMore}>
+          {loading ? 'Loading…' : `Load more (${(total - frames.length).toLocaleString()} remaining)`}
+        </button>
+      )}
     </div>
   );
 }

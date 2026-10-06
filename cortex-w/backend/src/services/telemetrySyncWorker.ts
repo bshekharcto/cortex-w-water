@@ -94,7 +94,7 @@ export async function syncLatestTelemetry(customDates?: string[]): Promise<SyncR
     // Pre-warm the fleet-wide caches for the standard windows using SQL aggregation ONLY (skip re-ingestion)
     for (const req of [{ hours: 1 }, { hours: 6 }, { hours: 24 }, { days: 7 }, { days: 30 }]) {
       try {
-        await getPostgresAggregatedSummary(resolveWindow(req), true, 'ALL', true);
+        await getPostgresAggregatedSummary(resolveWindow(req), true, 'ALL');
       } catch (cacheErr: any) {
         console.warn(`[telemetrySync] Cache pre-warm note for ${JSON.stringify(req)}:`, cacheErr.message);
       }

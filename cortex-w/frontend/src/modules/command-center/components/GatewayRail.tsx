@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { GATEWAY_SORT_OPTIONS, sortGateways, type GatewaySortKey } from '../utils/gatewaySort';
 import { Search } from 'lucide-react';
 import { GatewayItem } from '../types/commandCenter.types';
 import { useNow, formatAgo } from '../utils/timeAgo';
@@ -20,9 +21,11 @@ export function GatewayRail({
   const nowMs = useNow();
   const [filter, setFilter] = useState<'ALL' | 'REPORTING' | 'DEGRADED' | 'STALE' | 'NO_TRAFFIC'>('ALL');
   const [railSearch, setRailSearch] = useState('');
+  const [sortKey, setSortKey] = useState<GatewaySortKey>('severity');
+  const listRef = useRef<HTMLDivElement>(null);
 
   const filteredList = useMemo(() => {
-    return gateways.filter((gw) => {
+    return sortGateways(gateways, sortKey).filter((gw) => {
       // Search
       if (railSearch) {
         const q = railSearch.toLowerCase();
@@ -36,7 +39,17 @@ export function GatewayRail({
       if (filter === 'NO_TRAFFIC') return gw.status === 'no-traffic';
       return true;
     });
-  }, [gateways, filter, railSearch]);
+  }, [gateways, filter, railSearch, sortKey]);
+
+  // Keep the selected gateway visible when the selection, sort, or filter changes (the list is long and
+  // problem gateways sort to the top, so the selected one can otherwise sit out of sight). Deliberately not
+  // tied to the data refresh, so the list never jumps while someone is scrolling it.
+  useEffect(() => {
+    if (!selectedGatewayId || !listRef.current) return;
+    const el = listRef.current.querySelector<HTMLElement>(`[data-gw-id="${selectedGatewayId}"]`);
+    el?.scrollIntoView({ block: 'nearest' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedGatewayId, sortKey, filter, railSearch]);
 
   return (
     <div className="cc-gateway-rail">
@@ -57,6 +70,45 @@ export function GatewayRail({
           />
         </div>
 
+        <select
+
+
+          className="cc-rail-search-input"
+
+
+          style={{ padding: '5px 8px' }}
+
+
+          aria-label="Sort gateways"
+
+
+          value={sortKey}
+
+
+          onChange={(e) => setSortKey(e.target.value as GatewaySortKey)}
+
+
+        >
+
+
+          {GATEWAY_SORT_OPTIONS.map((o) => (
+
+
+            <option key={o.key} value={o.key}>
+
+
+              Sort: {o.label}
+
+
+            </option>
+
+
+          ))}
+
+
+        </select>
+
+
         <div className="cc-rail-filters">
           {(['ALL', 'REPORTING', 'DEGRADED', 'STALE', 'NO_TRAFFIC'] as const).map((f) => (
             <button
@@ -70,7 +122,7 @@ export function GatewayRail({
         </div>
       </div>
 
-      <div className="cc-rail-list">
+      <div className="cc-rail-list" ref={listRef}>
         {loading && gateways.length === 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 8 }}>
             {[1, 2, 3, 4, 5, 6].map((i) => (
@@ -102,6 +154,7 @@ export function GatewayRail({
             <div
               key={gw.gatewayId}
               className={`cc-rail-item ${isSelected ? 'cc-rail-item--active' : ''}`}
+              data-gw-id={gw.gatewayId}
               onClick={() => onSelectGateway(isSelected ? null : gw.gatewayId)}
             >
               <div className="cc-rail-item-top">

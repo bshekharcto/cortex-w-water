@@ -1,19 +1,46 @@
 import { Copy, X, Check } from 'lucide-react';
-import { useState } from 'react';
-import { MeterTelemetryItem } from '../types/commandCenter.types';
+import { useEffect, useState } from 'react';
+import { MeterTelemetryItem, RawFrameItem } from '../types/commandCenter.types';
+import { fetchMeterFrames, windowKey, type WindowParams } from '@/services/api/commandCenterApi';
 import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle } from '../utils/format';
 import { useNow, formatAgo } from '../utils/timeAgo';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
+import { describeError } from '../utils/errors';
 
 interface Props {
   meter: MeterTelemetryItem;
   onClose: () => void;
+  win: WindowParams;
+  onViewAllFrames: () => void;
+  /** Found by a 90-day look-back: not heard by any gateway in the selected window. */
+  outsideWindow?: boolean;
 }
 
-export function MeterInspector({ meter, onClose }: Props) {
+export function MeterInspector({ meter, onClose, win, onViewAllFrames, outsideWindow }: Props) {
   const th = useThresholds();
   const nowMs = useNow();
   const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  // The meter's most recent frames (any gateway) for the "Recent frames" card
+  const [recent, setRecent] = useState<{ items: RawFrameItem[]; total: number; loading: boolean; error: string | null }>({
+    items: [],
+    total: 0,
+    loading: true,
+    error: null,
+  });
+  const winId = windowKey(win);
+  useEffect(() => {
+    let cancelled = false;
+    setRecent({ items: [], total: 0, loading: true, error: null });
+    fetchMeterFrames(meter.meterId, win, { limit: 15 })
+      .then((p) => !cancelled && setRecent({ items: p.items, total: p.total, loading: false, error: null }))
+      .catch((e) => !cancelled && setRecent({ items: [], total: 0, loading: false, error: describeError(e, 'Failed to load') }));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meter.meterId, winId]);
+  const status = meter.statusChips[0] ?? 'live';
 
   const copyToClipboard = (text: string, field: string) => {
     navigator.clipboard?.writeText(text);
@@ -56,9 +83,15 @@ export function MeterInspector({ meter, onClose }: Props) {
       </div>
 
       <div className="cc-inspector-badges-row">
-        <span className="cc-chip cc-chip--live">LIVE</span>
+        <span className={`cc-chip cc-chip--${status}`}>{status.toUpperCase()}</span>
         <span className="cc-inspector-freshness">Last seen {formatAgo(meter.lastSeenDate, nowMs)}</span>
       </div>
+      {outsideWindow && (
+        <div className="cc-inspector-card" role="note" style={{ fontSize: 12, color: '#FBBF24' }}>
+          Not heard in the selected time window. Showing the last known frame
+          {meter.gatewaysHeard.find((p) => p.isLatest) ? ` via ${meter.gatewaysHeard.find((p) => p.isLatest)!.alias}` : ''}.
+        </div>
+      )}
 
       {/* Latest Frame Details Card */}
       <div className="cc-inspector-card">
@@ -132,6 +165,36 @@ export function MeterInspector({ meter, onClose }: Props) {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* Recent frames */}
+      <div className="cc-inspector-card">
+        <div className="cc-inspector-card-title">RECENT FRAMES{recent.total > 0 ? ` (${recent.total})` : ''}</div>
+        {recent.items.length === 0 ? (
+          <div className="cc-cell-mute" style={{ fontSize: 12 }}>
+            {recent.loading ? 'Loading frames…' : recent.error ? `Could not load frames (${recent.error}).` : 'No frames in the selected window.'}
+          </div>
+        ) : (
+          <div className="cc-gw-paths-list">
+            {recent.items.map((f) => (
+              <div key={f.id} className="cc-gw-path-item" style={{ display: 'block' }}>
+                {/* Two short lines so the narrow inspector never wraps a gateway name mid-word */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', whiteSpace: 'nowrap' }}>
+                  <span className="cc-mono" title={utcTitle(f.decodedAt)}>{formatLocalTime(f.decodedAt)}</span>
+                  <span className="cc-cell-bold">{f.gatewayAlias}</span>
+                </div>
+                <div className="cc-mono cc-cell-mute" style={{ whiteSpace: 'nowrap', fontSize: 11.5, marginTop: 2 }}>
+                  FCnt {fmt(f.fCnt)} ·{' '}
+                  <span className={isWeakRssi(th, f.rssi) ? 'cc-text-warn' : ''}>{fmt(f.rssi, ' dBm')}</span> ·{' '}
+                  <span className={isPoorSnr(th, f.snr) ? 'cc-text-danger' : ''}>{fmt(f.snr, ' dB')}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <button className="cw-button-secondary" style={{ marginTop: 10, width: '100%' }} onClick={onViewAllFrames}>
+          View all frames
+        </button>
       </div>
 
       {/* Diagnostics */}

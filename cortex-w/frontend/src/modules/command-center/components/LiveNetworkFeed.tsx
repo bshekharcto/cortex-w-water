@@ -13,12 +13,12 @@ interface Props {
 
 export function LiveNetworkFeed({ frames, onSelectMeter, meterCount }: Props) {
   const th = useThresholds();
-  const [filter, setFilter] = useState<'ALL' | 'NORMAL' | 'WEAK' | 'DEGRADED' | 'MULTI_GW'>('ALL');
+  const [filter, setFilter] = useState<'ALL' | 'NORMAL' | 'WEAK' | 'POOR' | 'MULTI_GW'>('ALL');
 
   const filteredFrames = useMemo(() => {
     if (filter === 'NORMAL') return frames.filter((f) => f.statusEvent === 'FRAME_RECEIVED');
-    if (filter === 'WEAK') return frames.filter((f) => f.statusEvent === 'WEAK_RSSI' || f.statusEvent === 'POOR_LINK');
-    if (filter === 'DEGRADED') return frames.filter((f) => f.statusEvent === 'DEGRADED' || f.statusEvent === 'POOR_LINK');
+    if (filter === 'WEAK') return frames.filter((f) => f.statusEvent === 'WEAK_RSSI');
+    if (filter === 'POOR') return frames.filter((f) => f.statusEvent === 'POOR_LINK');
     if (filter === 'MULTI_GW') return frames.filter((f) => f.multiGateway === true);
     return frames;
   }, [frames, filter]);
@@ -39,7 +39,7 @@ export function LiveNetworkFeed({ frames, onSelectMeter, meterCount }: Props) {
             { key: 'ALL', label: 'All' },
             { key: 'NORMAL', label: 'Normal' },
             { key: 'WEAK', label: 'Weak Signal' },
-            { key: 'DEGRADED', label: 'Degraded' },
+            { key: 'POOR', label: 'Poor Link' },
             { key: 'MULTI_GW', label: 'Multi-Gateway' },
           ].map((f) => (
             <button

@@ -7,7 +7,7 @@ async function main() {
     const date = new Date(Date.UTC(2026, 7, d)).toISOString().slice(0, 10);
     console.log(`Ingesting ${date}: +${await ingestDateIntoPostgres(date)} packets`);
   }
-  const summary = await getPostgresAggregatedSummary(resolveWindow({ from: '2026-08-31', to: '2026-09-06' }), true, 'ALL', true);
+  const summary = await getPostgresAggregatedSummary(resolveWindow({ from: '2026-08-31', to: '2026-09-06' }), true, 'ALL');
   const elapsed = Date.now() - t0;
   console.log('=== Ingestion & PostgreSQL Aggregation Completed ===');
   console.log(`Total time elapsed: ${(elapsed / 1000).toFixed(1)}s`);

@@ -1,8 +1,8 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
-import { getPostgresAggregatedSummary, getGatewayMeters, searchMeters, listFleetMeters, resolveWindow, frameStatusEvent } from '../services/telemetryDbService.js';
+import { getPostgresAggregatedSummary, getGatewayMeters, searchMeters, listFleetMeters, getGatewayFrames, getMeterFrames, resolveWindow, startManualRefresh, isRefreshing } from '../services/telemetryDbService.js';
 import { getRoots } from '../services/siteTree.js';
 import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
 
@@ -49,17 +49,26 @@ function windowFromQuery(q: Record<string, any>) {
   return resolveWindow({ hours: num(q.hours), days: num(q.days), from: q.from as string, to: q.to as string });
 }
 
-router.get('/summary', async (req, res) => {
-  let win;
+/** Resolves the requested window, or answers 400 itself and returns null (a bad window is the client's fault). */
+function windowOr400(req: Request, res: Response) {
   try {
-    win = windowFromQuery(req.query);
+    return windowFromQuery(req.query);
   } catch (err: any) {
-    return res.status(400).json({ error: 'Invalid time window', message: err.message });
+    res.status(400).json({ error: 'Invalid time window', message: err.message });
+    return null;
   }
+}
+
+router.get('/summary', async (req, res) => {
+  const win = windowOr400(req, res);
+  if (!win) return;
   try {
-    const refresh = req.query.refresh === 'true';
     const siteId = (req.query.siteId as string) || (req.query.siteIds as string) || 'ALL';
-    res.json(await getPostgresAggregatedSummary(win, refresh, siteId));
+    // Manual Refresh answers instantly from stored data and pulls fresh packets in the background;
+    // the page keeps polling while `refreshing` is true.
+    if (req.query.refresh === 'true') startManualRefresh(win, siteId);
+    const summary = await getPostgresAggregatedSummary(win, false, siteId);
+    res.json({ ...summary, refreshing: isRefreshing() });
   } catch (err: any) {
     // No silent fallback to a different data source: an honest error beats plausible-looking wrong data.
     console.error('[commandCenter] Error generating telemetry summary:', err);
@@ -86,8 +95,10 @@ router.get('/sites', async (req, res) => {
 });
 
 router.get('/gateways/:gatewayId/meters', async (req, res) => {
+  const win = windowOr400(req, res);
+  if (!win) return;
   try {
-    res.json(await getGatewayMeters(req.params.gatewayId, windowFromQuery(req.query)));
+    res.json(await getGatewayMeters(req.params.gatewayId, win));
   } catch (err: any) {
     console.error('[commandCenter] Error loading gateway meters:', err);
     res.status(503).json({ error: 'Failed to load gateway meters', message: err.message });
@@ -95,12 +106,8 @@ router.get('/gateways/:gatewayId/meters', async (req, res) => {
 });
 
 router.get('/meters', async (req, res) => {
-  let win;
-  try {
-    win = windowFromQuery(req.query);
-  } catch (err: any) {
-    return res.status(400).json({ error: 'Invalid time window', message: err.message });
-  }
+  const win = windowOr400(req, res);
+  if (!win) return;
   try {
     const status = ['live', 'stale', 'silent'].includes(req.query.status as string)
       ? (req.query.status as 'live' | 'stale' | 'silent')
@@ -108,53 +115,60 @@ router.get('/meters', async (req, res) => {
     const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '100', 10) || 100, 1), 200);
     const offset = Math.max(parseInt((req.query.offset as string) || '0', 10) || 0, 0);
     const siteId = (req.query.siteId as string) || 'ALL';
-    res.json(await listFleetMeters({ win, siteId, q: req.query.q as string, status, limit, offset }));
+    const intOrUndef = (v: unknown) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? undefined : Number(v));
+    const confirmed = req.query.confirmed === 'true' ? true : req.query.confirmed === 'false' ? false : undefined;
+    res.json(
+      await listFleetMeters({
+        win, siteId, q: req.query.q as string, status,
+        dr: intOrUndef(req.query.dr), frequency: intOrUndef(req.query.frequency), confirmed,
+        limit, offset,
+      })
+    );
   } catch (err: any) {
     console.error('[commandCenter] Error listing meters:', err);
     res.status(503).json({ error: 'Failed to list meters', message: err.message });
   }
 });
 
-router.get('/meters/search', async (req, res) => {
+const pageParams = (q: Record<string, any>, defaultLimit: number) => ({
+  limit: Math.min(Math.max(parseInt(q.limit as string, 10) || defaultLimit, 1), 200),
+  offset: Math.max(parseInt(q.offset as string, 10) || 0, 0),
+});
+
+router.get('/gateways/:gatewayId/frames', async (req, res) => {
+  const win = windowOr400(req, res);
+  if (!win) return;
   try {
-    const q = ((req.query.q as string) || '').trim();
-    if (q.length < 3) return res.json([]);
-    res.json(await searchMeters(q, windowFromQuery(req.query)));
+    const { limit, offset } = pageParams(req.query, 100);
+    res.json(await getGatewayFrames(req.params.gatewayId, win, limit, offset));
   } catch (err: any) {
-    console.error('[commandCenter] Error searching meters:', err);
-    res.status(503).json({ error: 'Failed to search meters', message: err.message });
+    console.error('[commandCenter] Error loading gateway frames:', err);
+    res.status(503).json({ error: 'Failed to load gateway frames', message: err.message });
   }
 });
 
-router.get('/feed', async (req, res) => {
+router.get('/meters/:meterId/frames', async (req, res) => {
+  const win = windowOr400(req, res);
+  if (!win) return;
   try {
-    const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '100', 10) || 100, 1), 500);
-    const result = await pool.query('SELECT * FROM raw_telemetry_packets ORDER BY decoded_at DESC LIMIT $1', [limit]);
-    res.json(
-      result.rows.map((r: any, idx: number) => ({
-        id: `feed-${r.id || idx}-${r.meter_id}`,
-        decodedAt: r.decoded_at,
-        meterTimestamp: r.meter_timestamp || r.decoded_at,
-        meterId: r.meter_id,
-        devEui: r.dev_eui,
-        gatewayId: r.gateway_id,
-        gatewayAlias: `GW-${(r.gateway_id || '').slice(-3).toUpperCase()}`,
-        fCnt: r.fcnt === -1 ? null : r.fcnt,
-        fPort: r.fport,
-        frequency: r.frequency,
-        dr: r.dr,
-        rssi: r.rssi,
-        snr: r.snr,
-        confirmed: r.confirmed,
-        adr: r.adr,
-        checksumStatus: r.checksum_status,
-        statusByte: r.status_byte,
-        statusEvent: frameStatusEvent(r),
-      }))
-    );
+    const { limit, offset } = pageParams(req.query, 20);
+    res.json(await getMeterFrames(req.params.meterId, win, limit, offset));
   } catch (err: any) {
-    console.error('[commandCenter] Error getting live feed:', err);
-    res.status(503).json({ error: 'Failed to get live feed', message: err.message });
+    console.error('[commandCenter] Error loading meter frames:', err);
+    res.status(503).json({ error: 'Failed to load meter frames', message: err.message });
+  }
+});
+
+router.get('/meters/search', async (req, res) => {
+  const win = windowOr400(req, res);
+  if (!win) return;
+  try {
+    const q = ((req.query.q as string) || '').trim();
+    if (q.length < 3) return res.json([]);
+    res.json(await searchMeters(q, win));
+  } catch (err: any) {
+    console.error('[commandCenter] Error searching meters:', err);
+    res.status(503).json({ error: 'Failed to search meters', message: err.message });
   }
 });
 

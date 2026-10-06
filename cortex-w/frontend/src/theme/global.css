@@ -173,6 +173,22 @@
   color: var(--cw-text-faint); text-transform: uppercase;
 }
 .cw-top-header-right { display: flex; align-items: center; gap: 10px; }
+
+/* Notifications dialog (anchored under the bell) */
+.cw-notif-wrap { position: relative; }
+.cw-notif-dialog {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 50; width: 260px;
+  padding: 14px 16px; border-radius: 8px;
+  background: var(--cw-surface); border: 1px solid var(--cw-border);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+}
+.cw-notif-dialog-title { font: 600 13px var(--cw-font-family); color: var(--cw-text); margin-bottom: 6px; }
+.cw-notif-dialog-body { margin: 0; font: 13px/1.45 var(--cw-font-family); color: var(--cw-text-muted); }
+.cw-top-header--dark .cw-notif-dialog {
+  background: #0E1626; border-color: #1E293B; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.cw-top-header--dark .cw-notif-dialog-title { color: #F8FAFC; }
+.cw-top-header--dark .cw-notif-dialog-body { color: #94A3B8; }
 .cw-data-badge {
   font: 600 10.5px var(--cw-font-family);
   letter-spacing: var(--cw-letter-spacing-micro);

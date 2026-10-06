@@ -5,6 +5,8 @@ import { fmt, formatFrequency } from '../utils/format';
 import { useNow, formatAgo } from '../utils/timeAgo';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 import { useVirtualRows } from '../utils/useVirtualRows';
+import { MeterFacetFilters, type MeterFacetState } from './MeterFacetFilters';
+import { describeError } from '../utils/errors';
 
 interface Props {
   win: WindowParams;
@@ -25,6 +27,8 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [status, setStatus] = useState<MeterStatusFilter | 'ALL'>('ALL');
+  const [facets, setFacets] = useState<MeterFacetState>({ dr: '', frequency: '', confirmed: '' });
+  const [facetOptions, setFacetOptions] = useState<{ dr: number[]; frequency: number[] }>({ dr: [], frequency: [] });
   const [items, setItems] = useState<MeterTelemetryItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -47,19 +51,23 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }
           siteId,
           q: debouncedQ || undefined,
           status: status === 'ALL' ? undefined : status,
+          dr: facets.dr === '' ? undefined : Number(facets.dr),
+          frequency: facets.frequency === '' ? undefined : Number(facets.frequency),
+          confirmed: facets.confirmed === '' ? undefined : facets.confirmed === 'true',
           limit: PAGE_SIZE,
           offset,
         });
         if (id !== seq.current) return;
         setTotal(page.total);
+        if (offset === 0) setFacetOptions(page.facets);
         setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
       } catch (err) {
-        if (id === seq.current) setError(err instanceof Error ? err.message : 'Failed to load meters');
+        if (id === seq.current) setError(describeError(err, 'Failed to load meters'));
       } finally {
         if (id === seq.current) setLoading(false);
       }
     },
-    [win, siteId, debouncedQ, status]
+    [win, siteId, debouncedQ, status, facets]
   );
 
   // Any change to window, site, search or status starts a fresh list
@@ -69,7 +77,7 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }
     load(0);
   }, [load]);
 
-  const v = useVirtualRows(items.length, `${windowKey(win)}|${siteId}|${debouncedQ}|${status}`);
+  const v = useVirtualRows(items.length, `${windowKey(win)}|${siteId}|${debouncedQ}|${status}|${facets.dr}|${facets.frequency}|${facets.confirmed}`);
 
   return (
     <div className="cc-meters-view">
@@ -89,8 +97,11 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }
             {s === 'ALL' ? 'All' : s[0].toUpperCase() + s.slice(1)}
           </button>
         ))}
+        <MeterFacetFilters value={facets} onChange={setFacets} drOptions={facetOptions.dr} frequencyOptions={facetOptions.frequency} />
         <span className="cc-subfilter-count">
-          ({items.length.toLocaleString()} of {total.toLocaleString()} meters)
+          {loading && items.length === 0
+            ? '(loading…)'
+            : `(${items.length.toLocaleString()} of ${total.toLocaleString()} meters)`}
         </span>
       </div>
 
@@ -102,6 +113,8 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }
               <th>DevEUI</th>
               <th>Last Gateway</th>
               <th>Frame Age</th>
+              <th>Frames 1H</th>
+              <th>Frames 24H</th>
               <th>Last RSSI</th>
               <th>Last SNR</th>
               <th>FCnt</th>
@@ -137,6 +150,8 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }
                   <td className="cc-mono cc-cell-mute">{fmt(m.devEui)}</td>
                   <td className="cc-cell-bold">{latest?.alias ?? '—'}</td>
                   <td>{formatAgo(m.lastSeenDate, nowMs)}</td>
+                  <td>{m.frames1H}</td>
+                  <td>{m.frames24H}</td>
                   <td className={`cc-mono ${isWeakRssi(th, m.lastRssi) ? 'cc-text-warn' : ''}`}>{fmt(m.lastRssi, ' dBm')}</td>
                   <td className={`cc-mono ${isPoorSnr(th, m.lastSnr) ? 'cc-text-danger' : ''}`}>{fmt(m.lastSnr, ' dB')}</td>
                   <td className="cc-mono">{fmt(m.fCnt)}</td>

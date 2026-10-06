@@ -1,7 +1,11 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
 import { ThresholdsProvider, WindowLabelProvider } from '../utils/thresholds';
+import { describeError } from '../utils/errors';
+import { validateCustomRange } from '../utils/customRange';
+import { parseUrlState, buildUrlSearch } from '../utils/urlState';
 import '../styles/commandCenter.css';
 
 // Components
@@ -11,7 +15,8 @@ import { GatewayRail } from '../components/GatewayRail';
 import { SelectedGatewayHeader } from '../components/SelectedGatewayHeader';
 import { GatewayMetersTable } from '../components/GatewayMetersTable';
 import { FleetMetersTable } from '../components/FleetMetersTable';
-import { GatewayFramesTable } from '../components/GatewayFramesTable';
+import { GatewayFramesPanel } from '../components/GatewayFramesPanel';
+import { MeterFramesView } from '../components/MeterFramesView';
 import { GatewayTrafficChart } from '../components/GatewayTrafficChart';
 import { GatewayRadioHealth } from '../components/GatewayRadioHealth';
 import { AllGatewayComparison } from '../components/AllGatewayComparison';
@@ -30,13 +35,17 @@ import {
   TelemetrySummaryResponse,
 } from '@/services/api/commandCenterApi';
 import {
-  GatewayTabType,
   TimeWindow,
   MeterTelemetryItem,
   RawFrameItem,
+  GatewayTabType,
 } from '../types/commandCenter.types';
 
 const AUTO_REFRESH_SECONDS = 45;
+const REFRESH_POLL_MS = 4000;
+const REFRESH_MAX_POLLS = 25; // ~100s; the background pull normally finishes in under a minute
+const SEARCH_DEBOUNCE_MS = 350;
+const OUT_OF_WINDOW_LOOKBACK: WindowParams = { days: 90 };
 
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 const defaultCustomRange = () => ({
@@ -55,18 +64,47 @@ function toWindowParams(range: TimeWindow, custom: { from: string; to: string })
   }
 }
 
+type SearchHint = { kind: 'idle' | 'searching' | 'info' | 'none' | 'error'; text?: string };
+
 export function CommandCenterPage() {
-  const [activeMode, setActiveMode] = useState<'Gateways' | 'Meters'>('Gateways');
-  const [timeRange, setTimeRange] = useState<TimeWindow>('7D');
-  const [customRange, setCustomRange] = useState(defaultCustomRange);
-  const win = useMemo(() => toWindowParams(timeRange, customRange), [timeRange, customRange]);
+  const location = useLocation();
+  const routeParams = useParams();
+  const navigate = useNavigate();
+
+  // Restore what the operator was looking at from the URL (query string and /gateways/:id, /meters/:id)
+  const initialRef = useRef<ReturnType<typeof parseUrlState> | null>(null);
+  if (initialRef.current === null) {
+    initialRef.current = parseUrlState(
+      location.search,
+      { gatewayId: routeParams.gatewayId, meterId: routeParams.meterId },
+      defaultCustomRange()
+    );
+  }
+  const init = initialRef.current;
+  const pendingUrlMeter = useRef<string | null>(init.meter);
+
+  const [activeMode, setActiveMode] = useState<'Gateways' | 'Meters'>(init.mode);
+  const [timeRange, setTimeRange] = useState<TimeWindow>(init.window);
+  const [customRange, setCustomRange] = useState({ from: init.from, to: init.to });
+
+  // A custom range that can't be used is explained in the toolbar and never sent to the server:
+  // the page keeps showing the last valid window until the dates are fixed.
+  const rangeError = timeRange === 'CUSTOM' ? validateCustomRange(customRange) : null;
+  const rawWin = useMemo(() => toWindowParams(timeRange, customRange), [timeRange, customRange]);
+  const lastValidWin = useRef<WindowParams>(rawWin);
+  if (!rangeError) lastValidWin.current = rawWin;
+  const win = lastValidWin.current;
   const winKey = windowKey(win);
-  const customValid = timeRange !== 'CUSTOM' || (!!customRange.from && !!customRange.to && customRange.from <= customRange.to);
+
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedGatewayId, setSelectedGatewayId] = useState<string | null>(null);
-  const [gatewayTab, setGatewayTab] = useState<GatewayTabType>('METERS');
+  const [searchHint, setSearchHint] = useState<SearchHint>({ kind: 'idle' });
+  const [selectedGatewayId, setSelectedGatewayId] = useState<string | null>(init.gateway);
+  const [gatewayTab, setGatewayTab] = useState<GatewayTabType>(init.tab);
   const [selectedMeter, setSelectedMeter] = useState<MeterTelemetryItem | null>(null);
-  const [secondsAgo, setSecondsAgo] = useState(0);
+  // True when the open meter was found by a 90-day look-back because it wasn't heard in the selected window
+  const [meterOutsideWindow, setMeterOutsideWindow] = useState(false);
+  // Meter whose full frame history is open in the centre workspace ("View all frames")
+  const [framesViewMeter, setFramesViewMeter] = useState<MeterTelemetryItem | null>(null);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(() => {
     try {
       return localStorage.getItem('cortex_w_cc_auto_refresh') !== 'off';
@@ -84,7 +122,7 @@ export function CommandCenterPage() {
   };
 
   // Dynamic Site Selector State
-  const [selectedSiteId, setSelectedSiteId] = useState<string>('ALL');
+  const [selectedSiteId, setSelectedSiteId] = useState<string>(init.site);
   const [sites, setSites] = useState<Array<{ id: string; name: string }>>([
     { id: 'ALL', name: 'All Sites (Fleet)' },
   ]);
@@ -107,9 +145,9 @@ export function CommandCenterPage() {
   }, []);
 
   // Live Summary State with 0ms Stale-While-Revalidate from LocalStorage Cache
-  const [summaryData, setSummaryData] = useState<TelemetrySummaryResponse | null>(() => {
-    return getLocalCachedSummary('d7', 'ALL');
-  });
+  const [summaryData, setSummaryData] = useState<TelemetrySummaryResponse | null>(() =>
+    getLocalCachedSummary(windowKey(toWindowParams(init.window, { from: init.from, to: init.to })), init.site)
+  );
   const [isSyncing, setIsSyncing] = useState<boolean>(!summaryData);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [metersByGatewayMap, setMetersByGatewayMap] = useState<Record<string, MeterTelemetryItem[]>>({});
@@ -118,32 +156,45 @@ export function CommandCenterPage() {
 
   // Only the newest request may update the page (a slow earlier window/site must not overwrite it)
   const requestSeq = useRef(0);
+  const wasRefreshing = useRef(false);
+  const pollCount = useRef(0);
 
   // Background fetch routine (windows are resolved on the server clock; nothing date-specific is sent)
-  const loadSummary = useCallback(async (forceRefresh = false) => {
-    if (!customValid) return;
-    const seq = ++requestSeq.current;
-    setIsSyncing(true);
-    try {
-      const live = await fetchCommandCenterSummary(win, forceRefresh, selectedSiteId);
-      if (seq !== requestSeq.current) return;
-      setSummaryData(live);
-      setSyncError(null);
-      setSecondsAgo(0);
-    } catch (err) {
-      if (seq !== requestSeq.current) return;
-      console.warn('[CommandCenter] Live summary sync failed:', err);
-      setSyncError(err instanceof Error ? err.message : 'Telemetry service unavailable');
-    } finally {
-      if (seq === requestSeq.current) setIsSyncing(false);
-    }
-  }, [win, selectedSiteId, customValid]);
+  const loadSummary = useCallback(
+    async (forceRefresh = false) => {
+      const seq = ++requestSeq.current;
+      setIsSyncing(true);
+      try {
+        const live = await fetchCommandCenterSummary(win, forceRefresh, selectedSiteId);
+        if (seq !== requestSeq.current) return;
+        setSummaryData(live);
+        setSyncError(null);
+        // A manual Refresh just finished its background pull: per-gateway meter lists are now out of date
+        if (wasRefreshing.current && !live.refreshing) setMetersByGatewayMap({});
+        wasRefreshing.current = !!live.refreshing;
+      } catch (err) {
+        if (seq !== requestSeq.current) return;
+        console.warn('[CommandCenter] Live summary sync failed:', err);
+        setSyncError(describeError(err, 'Telemetry service unavailable'));
+      } finally {
+        if (seq === requestSeq.current) setIsSyncing(false);
+      }
+    },
+    [win, selectedSiteId]
+  );
 
   // Window or site changed: drop the previous selection's data (show a recent local cache if we have one)
+  const firstScope = useRef(true);
   useEffect(() => {
     setSummaryData(getLocalCachedSummary(winKey, selectedSiteId));
     setSyncError(null);
+    if (firstScope.current) {
+      firstScope.current = false; // keep a meter/gateway restored from the URL
+      return;
+    }
     setSelectedMeter(null);
+    setMeterOutsideWindow(false);
+    setFramesViewMeter(null);
   }, [winKey, selectedSiteId]);
 
   // Sync on mount or when the window or site changes
@@ -151,13 +202,8 @@ export function CommandCenterPage() {
     loadSummary(false);
   }, [loadSummary]);
 
-  // Periodic background refresh (every 45s) and elapsed timer ticker
+  // Auto refresh: only while enabled and the tab is visible (no background polling of a hidden tab)
   useEffect(() => {
-    const ticker = setInterval(() => {
-      setSecondsAgo((prev) => prev + 1);
-    }, 1000);
-
-    // Auto refresh: only while enabled and the tab is visible (no background polling of a hidden tab)
     const autoSync = autoRefresh
       ? setInterval(() => {
           if (!document.hidden) loadSummary(false);
@@ -170,13 +216,23 @@ export function CommandCenterPage() {
     document.addEventListener('visibilitychange', onVisible);
 
     return () => {
-      clearInterval(ticker);
       if (autoSync) clearInterval(autoSync);
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [loadSummary, autoRefresh]);
 
+  // Manual Refresh answers instantly; while the server is still pulling fresh packets, keep checking
+  useEffect(() => {
+    if (!summaryData?.refreshing || pollCount.current >= REFRESH_MAX_POLLS) return;
+    const t = setTimeout(() => {
+      pollCount.current += 1;
+      loadSummary(false);
+    }, REFRESH_POLL_MS);
+    return () => clearTimeout(t);
+  }, [summaryData, loadSummary]);
+
   const handleManualRefresh = () => {
+    pollCount.current = 0;
     loadSummary(true);
   };
 
@@ -185,19 +241,20 @@ export function CommandCenterPage() {
     return summaryData?.gateways ?? [];
   }, [summaryData]);
 
-  // Ensure an active gateway is selected once gateways are known
   // Auto-select a gateway once on first load. After that, "no selection" is a deliberate choice (the
   // All Gateways overview) and must not be overridden; only a selection that no longer exists
   // (e.g. after switching site) falls back to the first gateway.
   const autoSelected = useRef(false);
   useEffect(() => {
     if (currentGateways.length === 0) return;
+    const exists = (id: string | null) => !!id && currentGateways.some((g) => g.gatewayId === id);
     if (!autoSelected.current) {
       autoSelected.current = true;
-      setSelectedGatewayId((prev) => prev ?? currentGateways[0].gatewayId);
+      // honour a gateway from the URL if it is part of this view, otherwise start on the first one
+      setSelectedGatewayId((prev) => (exists(prev) ? prev : currentGateways[0].gatewayId));
       return;
     }
-    if (selectedGatewayId && !currentGateways.some((g) => g.gatewayId === selectedGatewayId)) {
+    if (selectedGatewayId && !exists(selectedGatewayId)) {
       setSelectedGatewayId(currentGateways[0].gatewayId);
     }
   }, [currentGateways, selectedGatewayId]);
@@ -222,7 +279,7 @@ export function CommandCenterPage() {
         if (!cancelled) setMetersByGatewayMap((prev) => ({ ...prev, [selectedGatewayId]: list }));
       })
       .catch((err) => {
-        if (!cancelled) setMetersError(err instanceof Error ? err.message : 'Failed to load meters');
+        if (!cancelled) setMetersError(describeError(err, 'Failed to load meters'));
       })
       .finally(() => {
         if (!cancelled) setMetersLoading(false);
@@ -249,14 +306,9 @@ export function CommandCenterPage() {
     return metersByGatewayMap[selectedGatewayId] ?? [];
   }, [selectedGatewayId, metersByGatewayMap]);
 
-  // Frames received by selected gateway
-  const currentFrames = useMemo(() => {
-    if (!selectedGatewayId) return allFrames;
-    return allFrames.filter((f) => f.gatewayId === selectedGatewayId);
-  }, [selectedGatewayId, allFrames]);
-
   // Handle selecting a meter from table or feed
   const handleSelectMeter = (meter: MeterTelemetryItem) => {
+    setMeterOutsideWindow(false);
     setSelectedMeter(meter);
   };
 
@@ -264,46 +316,99 @@ export function CommandCenterPage() {
     for (const gwId of Object.keys(metersByGatewayMap)) {
       const found = metersByGatewayMap[gwId].find((m) => m.meterId === meterId);
       if (found) {
-        setSelectedMeter(found);
+        handleSelectMeter(found);
         return;
       }
     }
     searchMeters(meterId, win)
       .then((hits) => {
         const hit = hits.find((h) => h.meter.meterId === meterId);
-        if (hit) setSelectedMeter(hit.meter);
+        if (hit) handleSelectMeter(hit.meter);
       })
       .catch(() => {});
   };
 
-  // Global search handler
-  const handleSearch = (q: string) => {
-    setSearchQuery(q);
-    if (!q) return;
-    const query = q.toLowerCase();
-    // Check gateway alias or id
-    const gw = currentGateways.find(
-      (g) => g.alias.toLowerCase().includes(query) || g.gatewayId.toLowerCase().includes(query)
-    );
-    if (gw) {
-      setActiveMode('Gateways');
-      setSelectedGatewayId(gw.gatewayId);
-      setGatewayTab('METERS');
+  // A meter id carried in the URL: open it once the page has loaded
+  useEffect(() => {
+    const id = pendingUrlMeter.current;
+    if (!id || !summaryData) return;
+    pendingUrlMeter.current = null;
+    handleSelectMeterById(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summaryData]);
+
+  // Keep the URL in step with the page (replace, so Back isn't flooded with every click)
+  useEffect(() => {
+    const search = buildUrlSearch({
+      site: selectedSiteId,
+      window: timeRange,
+      from: customRange.from,
+      to: customRange.to,
+      gateway: selectedGatewayId,
+      tab: gatewayTab,
+      meter: selectedMeter?.meterId ?? pendingUrlMeter.current,
+      mode: activeMode,
+    });
+    const target = '/app/command-center' + (search ? `?${search}` : '');
+    if (target !== window.location.pathname + window.location.search) navigate(target, { replace: true });
+  }, [selectedSiteId, timeRange, customRange, selectedGatewayId, gatewayTab, selectedMeter, activeMode, navigate]);
+
+  // Global search: debounced, gateway first, then meter / DevEUI (server-side), with a 90-day look-back
+  // for meters that weren't heard in the selected window. Reads the latest page state through refs so a
+  // background refresh never re-runs the search and steals the selection.
+  const searchCtx = useRef({ gateways: currentGateways, win });
+  searchCtx.current = { gateways: currentGateways, win };
+  const searchSeq = useRef(0);
+  useEffect(() => {
+    const q = searchQuery.trim();
+    const seq = ++searchSeq.current;
+    if (!q) {
+      setSearchHint({ kind: 'idle' });
       return;
     }
-    // Meter ID / DevEUI lookup (server-side; meters aren't preloaded)
-    if (q.length >= 3) {
-      searchMeters(q, win)
-        .then((hits) => {
-          if (hits.length === 0) return;
+    const lower = q.toLowerCase();
+    const timer = setTimeout(async () => {
+      const { gateways, win: searchWin } = searchCtx.current;
+      const gw = gateways.find((g) => g.alias.toLowerCase().includes(lower) || g.gatewayId.toLowerCase().includes(lower));
+      if (gw) {
+        setSearchHint({ kind: 'idle' });
+        setActiveMode('Gateways');
+        setSelectedGatewayId(gw.gatewayId);
+        setGatewayTab('METERS');
+        return;
+      }
+      if (q.length < 3) {
+        setSearchHint({ kind: 'info', text: 'No gateway matches. Type at least 3 characters to search meters.' });
+        return;
+      }
+      setSearchHint({ kind: 'searching', text: 'Searching meters…' });
+      try {
+        let hits = await searchMeters(q, searchWin);
+        if (seq !== searchSeq.current) return;
+        if (hits.length > 0) {
+          setSearchHint({ kind: 'idle' });
           setActiveMode('Gateways');
           setSelectedGatewayId(hits[0].gatewayId);
+          setMeterOutsideWindow(false);
           setSelectedMeter(hits[0].meter);
           setGatewayTab('METERS');
-        })
-        .catch(() => {});
-    }
-  };
+          return;
+        }
+        hits = await searchMeters(q, OUT_OF_WINDOW_LOOKBACK);
+        if (seq !== searchSeq.current) return;
+        if (hits.length > 0) {
+          setSearchHint({ kind: 'info', text: `Found outside the selected window (looked back 90 days).` });
+          setMeterOutsideWindow(true);
+          setSelectedMeter(hits[0].meter);
+          return;
+        }
+        setSearchHint({ kind: 'none', text: `No gateway, meter or DevEUI matches “${q}”.` });
+      } catch (err) {
+        if (seq === searchSeq.current) setSearchHint({ kind: 'error', text: describeError(err, 'Search failed') });
+      }
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const windowLabel = timeRange === 'CUSTOM' ? 'custom range' : timeRange;
 
@@ -320,10 +425,12 @@ export function CommandCenterPage() {
         customRange={customRange}
         onCustomRangeChange={setCustomRange}
         searchQuery={searchQuery}
-        onSearchChange={handleSearch}
+        onSearchChange={setSearchQuery}
+        searchHint={searchHint.kind === 'idle' ? null : searchHint}
+        rangeError={rangeError}
         onRefresh={handleManualRefresh}
-        lastUpdatedText={`${secondsAgo}s ago`}
-        isSyncing={isSyncing}
+        lastUpdatedAt={summaryData?.generatedAt ?? null}
+        isSyncing={isSyncing || !!summaryData?.refreshing}
         sites={sites}
         selectedSiteId={selectedSiteId}
         onSiteChange={setSelectedSiteId}
@@ -375,7 +482,9 @@ export function CommandCenterPage() {
 
         {/* Center: Selected Gateway Workspace OR All-Gateway Overview */}
         <main className="cc-center-workspace">
-          {activeMode === 'Meters' ? (
+          {framesViewMeter ? (
+            <MeterFramesView meter={framesViewMeter} win={win} onBack={() => setFramesViewMeter(null)} />
+          ) : activeMode === 'Meters' ? (
             <FleetMetersTable
               win={win}
               siteId={selectedSiteId}
@@ -402,9 +511,11 @@ export function CommandCenterPage() {
               )}
 
               {gatewayTab === 'FRAMES' && (
-                <GatewayFramesTable
-                  frames={currentFrames}
+                <GatewayFramesPanel
+                  gatewayId={currentGateway.gatewayId}
                   gatewayAlias={currentGateway.alias}
+                  win={win}
+                  refreshToken={summaryData?.generatedAt}
                   onSelectFrameMeter={handleSelectMeterById}
                 />
               )}
@@ -445,7 +556,13 @@ export function CommandCenterPage() {
         {selectedMeter && (
           <MeterInspector
             meter={selectedMeter}
-            onClose={() => setSelectedMeter(null)}
+            win={win}
+            outsideWindow={meterOutsideWindow}
+            onViewAllFrames={() => setFramesViewMeter(selectedMeter)}
+            onClose={() => {
+              setSelectedMeter(null);
+              setMeterOutsideWindow(false);
+            }}
           />
         )}
       </div>

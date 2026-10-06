@@ -1,5 +1,6 @@
 import { Activity, RefreshCw, Search } from 'lucide-react';
 import { TimeWindow } from '../types/commandCenter.types';
+import { useNow, formatAgo } from '../utils/timeAgo';
 
 interface Props {
   activeTab: 'Gateways' | 'Meters';
@@ -10,8 +11,13 @@ interface Props {
   onCustomRangeChange: (r: { from: string; to: string }) => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
+  /** Inline feedback under the search box (no match, searching, look-back result…). */
+  searchHint?: { kind: string; text?: string } | null;
+  /** Why the custom date range can't be used; the page keeps showing the previous valid range. */
+  rangeError?: string | null;
   onRefresh: () => void;
-  lastUpdatedText: string;
+  /** When the data on screen was generated (server time), not when the browser fetched it. */
+  lastUpdatedAt: string | null;
   isSyncing?: boolean;
   sites?: Array<{ id: string; name: string }>;
   selectedSiteId?: string;
@@ -30,8 +36,10 @@ export function CommandCenterToolbar({
   onCustomRangeChange,
   searchQuery,
   onSearchChange,
+  searchHint,
+  rangeError,
   onRefresh,
-  lastUpdatedText,
+  lastUpdatedAt,
   isSyncing,
   sites,
   selectedSiteId = 'ALL',
@@ -40,6 +48,7 @@ export function CommandCenterToolbar({
   onAutoRefreshChange,
   autoRefreshSeconds,
 }: Props) {
+  const nowMs = useNow();
   return (
     <div className="cc-toolbar-section">
       <div className="cc-breadcrumb-bar">
@@ -93,6 +102,14 @@ export function CommandCenterToolbar({
               value={searchQuery}
               onChange={(e) => onSearchChange(e.target.value)}
             />
+            {searchHint?.text && (
+              <div
+                className={`cc-search-hint ${searchHint.kind === 'none' || searchHint.kind === 'error' ? 'cc-search-hint--warn' : ''}`}
+                role="status"
+              >
+                {searchHint.text}
+              </div>
+            )}
           </div>
 
           <div className="cc-time-group">
@@ -125,6 +142,11 @@ export function CommandCenterToolbar({
                 min={customRange.from || undefined}
                 onChange={(e) => onCustomRangeChange({ ...customRange, to: e.target.value })}
               />
+              {rangeError && (
+                <span className="cc-range-error" role="alert">
+                  {rangeError}. Showing the previous range.
+                </span>
+              )}
             </div>
           )}
 
@@ -153,7 +175,7 @@ export function CommandCenterToolbar({
           </button>
 
           <div className="cc-live-badge" title="Time since the last successful refresh">
-            <span>Updated {lastUpdatedText}</span>
+            <span>Updated {lastUpdatedAt ? formatAgo(lastUpdatedAt, nowMs) : '—'}</span>
           </div>
 
           <button className="cc-icon-btn" onClick={onRefresh} title="Manual Refresh">
