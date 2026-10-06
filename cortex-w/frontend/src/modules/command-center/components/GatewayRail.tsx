@@ -155,7 +155,17 @@ export function GatewayRail({
               key={gw.gatewayId}
               className={`cc-rail-item ${isSelected ? 'cc-rail-item--active' : ''}`}
               data-gw-id={gw.gatewayId}
+              role="button"
+              tabIndex={0}
+              aria-pressed={isSelected}
+              aria-label={`Gateway ${gw.alias}, ${gw.status}`}
               onClick={() => onSelectGateway(isSelected ? null : gw.gatewayId)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelectGateway(isSelected ? null : gw.gatewayId);
+                }
+              }}
             >
               <div className="cc-rail-item-top">
                 <div className="cc-rail-item-name-group">

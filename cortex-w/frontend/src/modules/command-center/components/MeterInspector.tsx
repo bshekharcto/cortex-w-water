@@ -5,7 +5,8 @@ import { fetchMeterFrames, windowKey, type WindowParams } from '@/services/api/c
 import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle } from '../utils/format';
 import { useNow, formatAgo } from '../utils/timeAgo';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
-import { describeError } from '../utils/errors';
+import { describeError, isAbortError } from '../utils/errors';
+import { copyText } from '../utils/clipboard';
 
 interface Props {
   meter: MeterTelemetryItem;
@@ -30,20 +31,22 @@ export function MeterInspector({ meter, onClose, win, onViewAllFrames, outsideWi
   });
   const winId = windowKey(win);
   useEffect(() => {
-    let cancelled = false;
+    const ctrl = new AbortController();
     setRecent({ items: [], total: 0, loading: true, error: null });
-    fetchMeterFrames(meter.meterId, win, { limit: 15 })
-      .then((p) => !cancelled && setRecent({ items: p.items, total: p.total, loading: false, error: null }))
-      .catch((e) => !cancelled && setRecent({ items: [], total: 0, loading: false, error: describeError(e, 'Failed to load') }));
-    return () => {
-      cancelled = true;
-    };
+    fetchMeterFrames(meter.meterId, win, { limit: 15, signal: ctrl.signal })
+      .then((p) => setRecent({ items: p.items, total: p.total, loading: false, error: null }))
+      .catch((e) => {
+        if (isAbortError(e)) return;
+        setRecent({ items: [], total: 0, loading: false, error: describeError(e, 'Failed to load') });
+      });
+    return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meter.meterId, winId]);
   const status = meter.statusChips[0] ?? 'live';
 
-  const copyToClipboard = (text: string, field: string) => {
-    navigator.clipboard?.writeText(text);
+  const copyToClipboard = async (text: string, field: string) => {
+    // only claim "copied" when it really was
+    if (!(await copyText(text))) return;
     setCopiedField(field);
     setTimeout(() => setCopiedField(null), 1500);
   };

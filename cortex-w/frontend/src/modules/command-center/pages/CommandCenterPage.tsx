@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
 import { ThresholdsProvider, WindowLabelProvider } from '../utils/thresholds';
-import { describeError } from '../utils/errors';
+import { describeError, isAbortError } from '../utils/errors';
 import { validateCustomRange } from '../utils/customRange';
 import { parseUrlState, buildUrlSearch } from '../utils/urlState';
 import '../styles/commandCenter.css';
@@ -156,6 +156,8 @@ export function CommandCenterPage() {
 
   // Only the newest request may update the page (a slow earlier window/site must not overwrite it)
   const requestSeq = useRef(0);
+  const summaryAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => summaryAbort.current?.abort(), []);
   const wasRefreshing = useRef(false);
   const pollCount = useRef(0);
 
@@ -163,9 +165,12 @@ export function CommandCenterPage() {
   const loadSummary = useCallback(
     async (forceRefresh = false) => {
       const seq = ++requestSeq.current;
+      summaryAbort.current?.abort(); // the request this one replaces is cancelled, not left running
+      const ctrl = new AbortController();
+      summaryAbort.current = ctrl;
       setIsSyncing(true);
       try {
-        const live = await fetchCommandCenterSummary(win, forceRefresh, selectedSiteId);
+        const live = await fetchCommandCenterSummary(win, forceRefresh, selectedSiteId, ctrl.signal);
         if (seq !== requestSeq.current) return;
         setSummaryData(live);
         setSyncError(null);
@@ -173,7 +178,7 @@ export function CommandCenterPage() {
         if (wasRefreshing.current && !live.refreshing) setMetersByGatewayMap({});
         wasRefreshing.current = !!live.refreshing;
       } catch (err) {
-        if (seq !== requestSeq.current) return;
+        if (isAbortError(err) || seq !== requestSeq.current) return;
         console.warn('[CommandCenter] Live summary sync failed:', err);
         setSyncError(describeError(err, 'Telemetry service unavailable'));
       } finally {
@@ -259,6 +264,11 @@ export function CommandCenterPage() {
     }
   }, [currentGateways, selectedGatewayId]);
 
+  const gatewayStatus = useMemo(
+    () => Object.fromEntries(currentGateways.map((g) => [g.gatewayId, g.status])),
+    [currentGateways]
+  );
+
   // Derived KPIs
   const currentKpis = useMemo(() => {
     return summaryData?.kpis ?? null;
@@ -271,22 +281,19 @@ export function CommandCenterPage() {
 
   useEffect(() => {
     if (!selectedGatewayId || metersByGatewayMap[selectedGatewayId]) return;
-    let cancelled = false;
+    const ctrl = new AbortController();
     setMetersLoading(true);
     setMetersError(null);
-    fetchGatewayMeters(selectedGatewayId, win)
-      .then((list) => {
-        if (!cancelled) setMetersByGatewayMap((prev) => ({ ...prev, [selectedGatewayId]: list }));
-      })
+    fetchGatewayMeters(selectedGatewayId, win, ctrl.signal)
+      .then((list) => setMetersByGatewayMap((prev) => ({ ...prev, [selectedGatewayId]: list })))
       .catch((err) => {
-        if (!cancelled) setMetersError(describeError(err, 'Failed to load meters'));
+        if (isAbortError(err)) return;
+        setMetersError(describeError(err, 'Failed to load meters'));
       })
       .finally(() => {
-        if (!cancelled) setMetersLoading(false);
+        if (!ctrl.signal.aborted) setMetersLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => ctrl.abort();
   }, [selectedGatewayId, win, metersByGatewayMap]);
 
   // Derived Raw Frames for live feed and tables
@@ -362,6 +369,7 @@ export function CommandCenterPage() {
   useEffect(() => {
     const q = searchQuery.trim();
     const seq = ++searchSeq.current;
+    const ctrl = new AbortController();
     if (!q) {
       setSearchHint({ kind: 'idle' });
       return;
@@ -383,7 +391,7 @@ export function CommandCenterPage() {
       }
       setSearchHint({ kind: 'searching', text: 'Searching meters…' });
       try {
-        let hits = await searchMeters(q, searchWin);
+        let hits = await searchMeters(q, searchWin, ctrl.signal);
         if (seq !== searchSeq.current) return;
         if (hits.length > 0) {
           setSearchHint({ kind: 'idle' });
@@ -394,7 +402,7 @@ export function CommandCenterPage() {
           setGatewayTab('METERS');
           return;
         }
-        hits = await searchMeters(q, OUT_OF_WINDOW_LOOKBACK);
+        hits = await searchMeters(q, OUT_OF_WINDOW_LOOKBACK, ctrl.signal);
         if (seq !== searchSeq.current) return;
         if (hits.length > 0) {
           setSearchHint({ kind: 'info', text: `Found outside the selected window (looked back 90 days).` });
@@ -404,10 +412,14 @@ export function CommandCenterPage() {
         }
         setSearchHint({ kind: 'none', text: `No gateway, meter or DevEUI matches “${q}”.` });
       } catch (err) {
+        if (isAbortError(err)) return;
         if (seq === searchSeq.current) setSearchHint({ kind: 'error', text: describeError(err, 'Search failed') });
       }
     }, SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      ctrl.abort(); // typing on cancels the previous lookup
+    };
   }, [searchQuery]);
 
   const windowLabel = timeRange === 'CUSTOM' ? 'custom range' : timeRange;
@@ -490,6 +502,7 @@ export function CommandCenterPage() {
               siteId={selectedSiteId}
               selectedMeterId={selectedMeter?.meterId || null}
               onSelectMeter={handleSelectMeter}
+              expectedTotal={currentKpis?.uniqueMetersSeen ?? null}
             />
           ) : currentGateway ? (
             <>
@@ -507,6 +520,7 @@ export function CommandCenterPage() {
                   meters={currentMeters}
                   selectedMeterId={selectedMeter?.meterId || null}
                   onSelectMeter={handleSelectMeter}
+                  expectedMeters={currentGateway.uniqueMeters}
                 />
               )}
 
@@ -572,6 +586,7 @@ export function CommandCenterPage() {
         frames={allFrames}
         onSelectMeter={handleSelectMeterById}
         meterCount={currentKpis?.uniqueMetersSeen ?? null}
+        gatewayStatus={gatewayStatus}
       />
     </div>
     </WindowLabelProvider>

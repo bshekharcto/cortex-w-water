@@ -1,6 +1,7 @@
 import { RawFrameItem } from '../types/commandCenter.types';
 import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle } from '../utils/format';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
+import { CopyCell } from './CopyCell';
 
 interface Props {
   frames: RawFrameItem[];
@@ -68,10 +69,12 @@ export function GatewayFramesTable({
                   key={frame.id}
                   className="cc-table-row"
                   onClick={() => onSelectFrameMeter(frame.meterId)}
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectFrameMeter(frame.meterId); } }}
                 >
                   <td className="cc-mono" title={utcTitle(frame.decodedAt)}>{formatLocalTime(frame.decodedAt)}</td>
-                  <td className="cc-mono cc-cell-bold">{frame.meterId}</td>
-                  <td className="cc-mono cc-cell-mute">{fmt(frame.devEui)}</td>
+                  <td className="cc-mono cc-cell-bold"><CopyCell value={frame.meterId} label="meter ID" /></td>
+                  <td className="cc-mono cc-cell-mute"><CopyCell value={frame.devEui} label="DevEUI" /></td>
                   <td className="cc-mono">{fmt(frame.fCnt)}</td>
                   <td className="cc-mono">{fmt(frame.fPort)}</td>
                   <td className="cc-mono">{formatFrequency(frame.frequency)}</td>

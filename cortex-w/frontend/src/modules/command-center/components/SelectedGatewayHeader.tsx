@@ -54,7 +54,7 @@ export function SelectedGatewayHeader({
         </span>
         <span className="cc-gw-meta-sep">·</span>
         <span className="cc-gw-meta-item">
-          <strong>{gateway.frameCount}</strong> frames ({windowLabel})
+          <strong>{gateway.frameCount}</strong> frames stored ({windowLabel})
         </span>
         <span className="cc-gw-meta-sep">·</span>
         <span className="cc-gw-meta-item">
@@ -74,7 +74,7 @@ export function SelectedGatewayHeader({
         )}
       </div>
 
-      <div className="cc-gw-tabs-row">
+      <div className="cc-gw-tabs-row" role="tablist" aria-label="Gateway views">
         {(
           [
             { key: 'METERS', label: 'Meters' },
@@ -85,6 +85,8 @@ export function SelectedGatewayHeader({
         ).map((t) => (
           <button
             key={t.key}
+            role="tab"
+            aria-selected={activeTab === t.key}
             className={`cc-gw-tab ${activeTab === t.key ? 'cc-gw-tab--active' : ''}`}
             onClick={() => onTabChange(t.key)}
           >

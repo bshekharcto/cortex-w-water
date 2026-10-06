@@ -66,12 +66,14 @@ export function CommandCenterToolbar({
 
           <div className="cc-tab-group">
             <button
+              aria-pressed={activeTab === 'Gateways'}
               className={`cc-tab-btn ${activeTab === 'Gateways' ? 'cc-tab-btn--active' : ''}`}
               onClick={() => onTabChange('Gateways')}
             >
               Gateways
             </button>
             <button
+              aria-pressed={activeTab === 'Meters'}
               className={`cc-tab-btn ${activeTab === 'Meters' ? 'cc-tab-btn--active' : ''}`}
               onClick={() => onTabChange('Meters')}
             >
@@ -94,14 +96,17 @@ export function CommandCenterToolbar({
 
         <div className="cc-header-right">
           <div className="cc-search-wrap">
-            <Search size={14} className="cc-search-icon" />
-            <input
-              type="text"
-              className="cc-global-search"
-              placeholder="Search Meter ID, DevEUI, or Gateway..."
-              value={searchQuery}
-              onChange={(e) => onSearchChange(e.target.value)}
-            />
+            <div className="cc-search-field">
+              <Search size={14} className="cc-search-icon" />
+              <input
+                type="text"
+                className="cc-global-search"
+                aria-label="Search meter ID, DevEUI or gateway"
+                placeholder="Search Meter ID, DevEUI, or Gateway..."
+                value={searchQuery}
+                onChange={(e) => onSearchChange(e.target.value)}
+              />
+            </div>
             {searchHint?.text && (
               <div
                 className={`cc-search-hint ${searchHint.kind === 'none' || searchHint.kind === 'error' ? 'cc-search-hint--warn' : ''}`}
@@ -116,6 +121,7 @@ export function CommandCenterToolbar({
             {(['1H', '6H', '24H', '7D', '30D', 'CUSTOM'] as TimeWindow[]).map((t) => (
               <button
                 key={t}
+                aria-pressed={timeRange === t}
                 className={`cc-time-btn ${timeRange === t ? 'cc-time-btn--active' : ''}`}
                 onClick={() => onTimeRangeChange(t)}
               >

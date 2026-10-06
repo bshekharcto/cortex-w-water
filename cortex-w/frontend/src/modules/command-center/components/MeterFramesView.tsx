@@ -4,7 +4,7 @@ import { MeterTelemetryItem, RawFrameItem } from '../types/commandCenter.types';
 import { fetchMeterFrames, type WindowParams } from '@/services/api/commandCenterApi';
 import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle } from '../utils/format';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
-import { describeError } from '../utils/errors';
+import { describeError, isAbortError } from '../utils/errors';
 
 interface Props {
   meter: MeterTelemetryItem;
@@ -22,18 +22,24 @@ export function MeterFramesView({ meter, win, onBack }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const seq = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const load = useCallback(
     async (offset: number) => {
       const id = ++seq.current;
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
       setLoading(true);
       setError(null);
       try {
-        const page = await fetchMeterFrames(meter.meterId, win, { limit: PAGE_SIZE, offset });
+        const page = await fetchMeterFrames(meter.meterId, win, { limit: PAGE_SIZE, offset, signal: ctrl.signal });
         if (id !== seq.current) return;
         setTotal(page.total);
         setFrames((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
       } catch (err) {
+        if (isAbortError(err)) return;
         if (id === seq.current) setError(describeError(err, 'Failed to load frames'));
       } finally {
         if (id === seq.current) setLoading(false);

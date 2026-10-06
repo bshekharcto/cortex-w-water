@@ -10,6 +10,7 @@ export interface NetworkHealthThresholds {
   snrWeakDb: number;
   snrCriticalDb: number;
   trendMinPrevFrames: number;
+  trendsEnabled: boolean;
 }
 
 export type GatewayState = 'reporting' | 'degraded' | 'stale' | 'no-traffic' | 'never-observed';
@@ -27,6 +28,8 @@ export interface GatewayItem {
   avgSnr: number | null;
   /** % change in frames vs the previous equal-length period; null when not comparable. */
   trendPct: number | null;
+  /** Meters on this gateway that at least one other gateway also heard in the window. */
+  multiGatewayMeters?: number;
   status: GatewayState;
 }
 

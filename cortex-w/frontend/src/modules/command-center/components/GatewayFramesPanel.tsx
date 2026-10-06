@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { RawFrameItem } from '../types/commandCenter.types';
 import { fetchGatewayFrames, windowKey, type WindowParams } from '@/services/api/commandCenterApi';
 import { GatewayFramesTable } from './GatewayFramesTable';
-import { describeError } from '../utils/errors';
+import { describeError, isAbortError } from '../utils/errors';
 
 interface Props {
   gatewayId: string;
@@ -22,20 +22,26 @@ export function GatewayFramesPanel({ gatewayId, gatewayAlias, win, refreshToken,
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const seq = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
   const scopeKey = `${gatewayId}|${windowKey(win)}`;
   const lastScope = useRef('');
 
   const load = useCallback(
     async (offset: number) => {
       const id = ++seq.current;
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
       setLoading(true);
       setError(null);
       try {
-        const page = await fetchGatewayFrames(gatewayId, win, { limit: PAGE_SIZE, offset });
+        const page = await fetchGatewayFrames(gatewayId, win, { limit: PAGE_SIZE, offset, signal: ctrl.signal });
         if (id !== seq.current) return;
         setTotal(page.total);
         setFrames((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
       } catch (err) {
+        if (isAbortError(err)) return;
         if (id === seq.current) setError(describeError(err, 'Failed to load frames'));
       } finally {
         if (id === seq.current) setLoading(false);

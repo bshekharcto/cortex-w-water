@@ -34,6 +34,8 @@ export interface TelemetrySummary {
     avgSnr: number | null;
     /** % change in frames vs the previous equal-length period; null when it can't be compared honestly. */
     trendPct: number | null;
+    /** Meters on this gateway that at least one other gateway also heard in the window. */
+    multiGatewayMeters: number;
     status: 'reporting' | 'degraded' | 'stale' | 'no-traffic';
   }>;
   recentFrames: any[];
@@ -299,6 +301,49 @@ async function ingestDateUnlocked(date: string): Promise<number> {
 
 const inflightRebuilds = new Map<string, Promise<unknown>>();
 
+/**
+ * Keeps the summary cache warm for every site x standard window, so no one waits for a cold build
+ * (a 30-day single-site view takes ~10s cold, ~0.3s warm). A combination is rebuilt when new packets
+ * arrived, when it has no cache yet, or when its cache is old enough that the serve-stale window
+ * (1 hour) is about to lapse. Builds run one at a time to keep the database load gentle.
+ */
+export async function prewarmSummaries(newPackets: boolean): Promise<{ rebuilt: number; skipped: number }> {
+  const roots = await getRoots().catch(() => []);
+  const sites = ['ALL', ...roots.map((r) => String(r.id))];
+  const requests = [{ hours: 1 }, { hours: 6 }, { hours: 24 }, { days: 7 }, { days: 30 }];
+  const combos = sites.flatMap((siteId) => requests.map((req) => ({ siteId, win: resolveWindow(req) })));
+  const keyOf = (c: { siteId: string; win: TelemetryWindow }) => `${c.win.key}_summary_site_${c.siteId}`;
+
+  const ages = new Map<string, number>();
+  try {
+    const res = await pool.query(
+      'SELECT cache_key, EXTRACT(EPOCH FROM (NOW() - updated_at))::int AS age FROM telemetry_aggregation_cache WHERE cache_key = ANY($1::text[])',
+      [combos.map(keyOf)]
+    );
+    for (const r of res.rows) ages.set(r.cache_key, r.age);
+  } catch {
+    // no cache info: rebuild everything below
+  }
+
+  let rebuilt = 0;
+  let skipped = 0;
+  for (const c of combos) {
+    const age = ages.get(keyOf(c));
+    const needs = newPackets || age === undefined || age > 50 * 60;
+    if (!needs) {
+      skipped++;
+      continue;
+    }
+    try {
+      await getPostgresAggregatedSummary(c.win, true, c.siteId);
+      rebuilt++;
+    } catch (err: any) {
+      console.warn(`[telemetryDb] Pre-warm note for ${keyOf(c)}:`, err.message);
+    }
+  }
+  return { rebuilt, skipped };
+}
+
 let activeRefreshJobs = 0;
 
 /** True while a manual Refresh (pull today's packets, then rebuild the summary) is still running. */
@@ -433,12 +478,6 @@ async function buildMeterItems(rows: any[], win: TelemetryWindow, scope: 'gatewa
         lastSeenAt: p.decoded_at,
         isLatest: p.gateway_id === latestGw,
       })),
-      batteryVoltage: m.battery_voltage,
-      batteryStatus: m.battery_status,
-      batteryHealth: m.battery_health,
-      valveHealth: m.valve_health,
-      forwardFlowL: m.forward_flow_l,
-      reverseFlow: m.reverse_flow,
     };
   });
 }
@@ -692,7 +731,7 @@ export async function getPostgresAggregatedSummary(
     ? [prevFromTs.slice(0, 10), fromTs.slice(0, 10), prevFromTs, fromTs, siteGatewayIds]
     : [prevFromTs.slice(0, 10), fromTs.slice(0, 10), prevFromTs, fromTs];
 
-  const [kpiRes, multiGwRes, gwRes, hourlyRes, framesRes, prevRes, earliestRes] = await Promise.all([
+  const [kpiRes, multiGwRes, gwRes, hourlyRes, framesRes, prevRes, earliestRes, gwMultiRes] = await Promise.all([
     pool.query(`
       SELECT
         COUNT(DISTINCT gateway_id)::int as gateways_with_traffic,
@@ -739,6 +778,18 @@ export async function getPostgresAggregatedSummary(
       GROUP BY gateway_id
     `, prevRange),
     pool.query(`SELECT MIN(date_key) AS d FROM raw_telemetry_packets`),
+    // Per gateway: meters it heard that at least one other gateway also heard (the "other" gateway can be any)
+    pool.query(`
+      WITH multi AS (
+        SELECT meter_id FROM raw_telemetry_packets
+        WHERE date_key >= $1 AND date_key <= $2 AND decoded_at >= $3 AND decoded_at <= $4
+        GROUP BY meter_id HAVING COUNT(DISTINCT gateway_id) > 1
+      )
+      SELECT p.gateway_id, COUNT(DISTINCT p.meter_id)::int AS n
+      FROM raw_telemetry_packets p JOIN multi m ON m.meter_id = p.meter_id
+      WHERE p.date_key >= $1 AND p.date_key <= $2 AND p.decoded_at >= $3 AND p.decoded_at <= $4 ${siteFilter}
+      GROUP BY p.gateway_id
+    `, range),
   ]);
 
   // A trend is only reported when the previous period lies entirely inside the data we hold;
@@ -747,12 +798,13 @@ export async function getPostgresAggregatedSummary(
   const prevComparable = earliestDate !== null && prevFromTs.slice(0, 10) >= earliestDate;
   const prevFrames = new Map<string, number>(prevRes.rows.map((r: any) => [r.gateway_id, r.frames]));
   const pctChange = (cur: number, prev: number | undefined): number | null =>
-    prevComparable && prev && prev >= T.trendMinPrevFrames ? Math.round(((cur - prev) / prev) * 100) : null;
+    T.trendsEnabled && prevComparable && prev && prev >= T.trendMinPrevFrames ? Math.round(((cur - prev) / prev) * 100) : null;
 
   const kpiRow = kpiRes.rows[0] || {};
 
   const multiGatewayMeters = multiGwRes.rows[0]?.count ?? 0;
 
+  const gwMulti = new Map<string, number>(gwMultiRes.rows.map((r: any) => [r.gateway_id, r.n]));
   const pgByGateway = new Map<string, any>(gwRes.rows.map((r: any) => [r.gateway_id, r]));
   // Upstream is the source of truth for which gateways hear this site and how many unique meters;
   // packet rows add frame counts / radio stats / last-seen where we have them.
@@ -787,6 +839,7 @@ export async function getPostgresAggregatedSummary(
         avgRssi: r?.avg_rssi ?? null,
         avgSnr: r?.avg_snr ?? null,
         trendPct,
+        multiGatewayMeters: gwMulti.get(gatewayId) ?? 0,
         status,
       };
     })

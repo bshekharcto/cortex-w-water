@@ -87,7 +87,8 @@ export async function fetchSites(): Promise<Array<{ id: string; name: string }>>
 export async function fetchCommandCenterSummary(
   win: WindowParams,
   refresh: boolean = false,
-  siteId: string = 'ALL'
+  siteId: string = 'ALL',
+  signal?: AbortSignal
 ): Promise<TelemetrySummaryResponse> {
   const query: Record<string, string | number | boolean> = { ...windowQuery(win) };
   if (refresh) query.refresh = true;
@@ -96,6 +97,7 @@ export async function fetchCommandCenterSummary(
   const data = await apiRequest<TelemetrySummaryResponse>('/command-center/summary', {
     method: 'GET',
     query,
+    signal,
   });
 
   setLocalCachedSummary({ ...data, refreshing: false }, windowKey(win), siteId);
@@ -106,20 +108,23 @@ export async function fetchCommandCenterSummary(
 /**
  * Latest frame per meter for one gateway (loaded on selection; not part of the summary payload)
  */
-export async function fetchGatewayMeters(gatewayId: string, win: WindowParams): Promise<MeterTelemetryItem[]> {
+export async function fetchGatewayMeters(gatewayId: string, win: WindowParams, signal?: AbortSignal): Promise<MeterTelemetryItem[]> {
   return apiRequest<MeterTelemetryItem[]>(`/command-center/gateways/${encodeURIComponent(gatewayId)}/meters`, {
     method: 'GET',
     query: windowQuery(win),
+    signal,
   });
 }
 
 export async function searchMeters(
   q: string,
-  win: WindowParams
+  win: WindowParams,
+  signal?: AbortSignal
 ): Promise<Array<{ gatewayId: string; meter: MeterTelemetryItem }>> {
   return apiRequest(`/command-center/meters/search`, {
     method: 'GET',
     query: { q, ...windowQuery(win) },
+    signal,
   });
 }
 
@@ -147,6 +152,7 @@ export async function fetchFleetMeters(opts: {
   confirmed?: boolean;
   limit?: number;
   offset?: number;
+  signal?: AbortSignal;
 }): Promise<FleetMetersPage> {
   const query: Record<string, string | number> = { ...windowQuery(opts.win), limit: opts.limit ?? 100, offset: opts.offset ?? 0 };
   if (opts.siteId && opts.siteId !== 'ALL') query.siteId = opts.siteId;
@@ -155,7 +161,7 @@ export async function fetchFleetMeters(opts: {
   if (opts.dr !== undefined) query.dr = opts.dr;
   if (opts.frequency !== undefined) query.frequency = opts.frequency;
   if (opts.confirmed !== undefined) query.confirmed = String(opts.confirmed);
-  return apiRequest<FleetMetersPage>('/command-center/meters', { method: 'GET', query });
+  return apiRequest<FleetMetersPage>('/command-center/meters', { method: 'GET', query, signal: opts.signal });
 }
 
 export interface FramesPage {
@@ -169,11 +175,12 @@ export interface FramesPage {
 export async function fetchGatewayFrames(
   gatewayId: string,
   win: WindowParams,
-  opts: { limit?: number; offset?: number } = {}
+  opts: { limit?: number; offset?: number; signal?: AbortSignal } = {}
 ): Promise<FramesPage> {
   return apiRequest<FramesPage>(`/command-center/gateways/${encodeURIComponent(gatewayId)}/frames`, {
     method: 'GET',
     query: { ...windowQuery(win), limit: opts.limit ?? 100, offset: opts.offset ?? 0 },
+    signal: opts.signal,
   });
 }
 
@@ -181,10 +188,11 @@ export async function fetchGatewayFrames(
 export async function fetchMeterFrames(
   meterId: string,
   win: WindowParams,
-  opts: { limit?: number; offset?: number } = {}
+  opts: { limit?: number; offset?: number; signal?: AbortSignal } = {}
 ): Promise<FramesPage> {
   return apiRequest<FramesPage>(`/command-center/meters/${encodeURIComponent(meterId)}/frames`, {
     method: 'GET',
     query: { ...windowQuery(win), limit: opts.limit ?? 20, offset: opts.offset ?? 0 },
+    signal: opts.signal,
   });
 }

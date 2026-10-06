@@ -5,6 +5,7 @@ import { useNow, formatAgo } from '../utils/timeAgo';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 import { useVirtualRows } from '../utils/useVirtualRows';
 import { MeterFacetFilters, type MeterFacetState } from './MeterFacetFilters';
+import { CopyCell } from './CopyCell';
 
 interface Props {
   meters: MeterTelemetryItem[];
@@ -12,6 +13,8 @@ interface Props {
   error?: string | null;
   selectedMeterId: string | null;
   onSelectMeter: (meter: MeterTelemetryItem) => void;
+  /** Meters upstream says this gateway heard; if more than the stored packets cover, say so. */
+  expectedMeters?: number;
 }
 
 export function GatewayMetersTable({
@@ -20,6 +23,7 @@ export function GatewayMetersTable({
   error,
   selectedMeterId,
   onSelectMeter,
+  expectedMeters,
 }: Props) {
   const th = useThresholds();
   const nowMs = useNow();
@@ -78,6 +82,11 @@ export function GatewayMetersTable({
         ))}
         <MeterFacetFilters value={facets} onChange={setFacets} drOptions={drOptions} frequencyOptions={frequencyOptions} />
         <span className="cc-subfilter-count">({filteredMeters.length} meters)</span>
+        {!loading && expectedMeters != null && meters.length > 0 && meters.length < expectedMeters && (
+          <span className="cc-gap-note" title="Their only frames in this window were not stored (ingestion limit), so they cannot be listed yet.">
+            · {(expectedMeters - meters.length).toLocaleString()} more seen upstream without stored frames
+          </span>
+        )}
       </div>
 
       <div className="cc-table-scroll-container cc-table-scroll-container--tall" ref={v.containerRef} onScroll={v.onScroll}>
@@ -124,9 +133,11 @@ export function GatewayMetersTable({
                   key={m.meterId}
                   className={`cc-table-row ${isSelected ? 'cc-table-row--selected' : ''}`}
                   onClick={() => onSelectMeter(m)}
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectMeter(m); } }}
                 >
-                  <td className="cc-mono cc-cell-bold">{m.meterId}</td>
-                  <td className="cc-mono cc-cell-mute">{fmt(m.devEui)}</td>
+                  <td className="cc-mono cc-cell-bold"><CopyCell value={m.meterId} label="meter ID" /></td>
+                  <td className="cc-mono cc-cell-mute"><CopyCell value={m.devEui} label="DevEUI" /></td>
                   <td>{formatAgo(m.lastSeenDate, nowMs)}</td>
                   <td>{m.frames1H}</td>
                   <td>{m.frames24H}</td>

@@ -1,6 +1,5 @@
 import { GatewayItem } from '../types/commandCenter.types';
 import { useNow, formatAgo } from '../utils/timeAgo';
-import { formatTrend } from '../utils/format';
 import { useWindowLabel } from '../utils/thresholds';
 
 interface Props {
@@ -57,11 +56,11 @@ export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
                 <th>Gateway ID</th>
                 <th>Status</th>
                 <th>Unique Meters</th>
-                <th>Frames ({windowLabel})</th>
+                <th title="Frames kept in Cortex for this window; not the network's true total yet">Frames stored ({windowLabel})</th>
                 <th>Last Frame</th>
                 <th>Avg RSSI</th>
                 <th>Avg SNR</th>
-                <th>Trend</th>
+                <th title="Meters on this gateway that at least one other gateway also heard">Multi-GW Meters</th>
               </tr>
             </thead>
             <tbody>
@@ -70,6 +69,13 @@ export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
                   key={gw.gatewayId}
                   className="cc-table-row"
                   onClick={() => onSelectGateway(gw.gatewayId)}
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelectGateway(gw.gatewayId);
+                    }
+                  }}
                 >
                   <td className="cc-cell-bold">{gw.alias}</td>
                   <td className="cc-mono cc-cell-mute">{gw.gatewayId}</td>
@@ -87,19 +93,7 @@ export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
                   <td className="cc-mono">
                     {gw.avgSnr ? `${gw.avgSnr} dB` : '—'}
                   </td>
-                  <td>
-                    <span
-                      className={
-                        gw.status === 'degraded'
-                          ? 'cc-text-warn'
-                          : gw.status === 'reporting'
-                          ? 'cc-text-success'
-                          : 'cc-cell-mute'
-                      }
-                    >
-                      {formatTrend(gw.trendPct) || '—'}
-                    </span>
-                  </td>
+                  <td className="cc-mono">{gw.multiGatewayMeters ?? 0}</td>
                 </tr>
               ))}
             </tbody>

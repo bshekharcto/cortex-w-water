@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { pool } from '../db/pool.js';
+import { pool, retryTransient } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { getPostgresAggregatedSummary, getGatewayMeters, searchMeters, listFleetMeters, getGatewayFrames, getMeterFrames, resolveWindow, startManualRefresh, isRefreshing } from '../services/telemetryDbService.js';
@@ -67,7 +67,7 @@ router.get('/summary', async (req, res) => {
     // Manual Refresh answers instantly from stored data and pulls fresh packets in the background;
     // the page keeps polling while `refreshing` is true.
     if (req.query.refresh === 'true') startManualRefresh(win, siteId);
-    const summary = await getPostgresAggregatedSummary(win, false, siteId);
+    const summary = await retryTransient(() => getPostgresAggregatedSummary(win, false, siteId));
     res.json({ ...summary, refreshing: isRefreshing() });
   } catch (err: any) {
     // No silent fallback to a different data source: an honest error beats plausible-looking wrong data.
@@ -98,7 +98,7 @@ router.get('/gateways/:gatewayId/meters', async (req, res) => {
   const win = windowOr400(req, res);
   if (!win) return;
   try {
-    res.json(await getGatewayMeters(req.params.gatewayId, win));
+    res.json(await retryTransient(() => getGatewayMeters(req.params.gatewayId, win)));
   } catch (err: any) {
     console.error('[commandCenter] Error loading gateway meters:', err);
     res.status(503).json({ error: 'Failed to load gateway meters', message: err.message });
@@ -118,11 +118,13 @@ router.get('/meters', async (req, res) => {
     const intOrUndef = (v: unknown) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? undefined : Number(v));
     const confirmed = req.query.confirmed === 'true' ? true : req.query.confirmed === 'false' ? false : undefined;
     res.json(
-      await listFleetMeters({
-        win, siteId, q: req.query.q as string, status,
-        dr: intOrUndef(req.query.dr), frequency: intOrUndef(req.query.frequency), confirmed,
-        limit, offset,
-      })
+      await retryTransient(() =>
+        listFleetMeters({
+          win, siteId, q: req.query.q as string, status,
+          dr: intOrUndef(req.query.dr), frequency: intOrUndef(req.query.frequency), confirmed,
+          limit, offset,
+        })
+      )
     );
   } catch (err: any) {
     console.error('[commandCenter] Error listing meters:', err);
@@ -140,7 +142,7 @@ router.get('/gateways/:gatewayId/frames', async (req, res) => {
   if (!win) return;
   try {
     const { limit, offset } = pageParams(req.query, 100);
-    res.json(await getGatewayFrames(req.params.gatewayId, win, limit, offset));
+    res.json(await retryTransient(() => getGatewayFrames(req.params.gatewayId, win, limit, offset)));
   } catch (err: any) {
     console.error('[commandCenter] Error loading gateway frames:', err);
     res.status(503).json({ error: 'Failed to load gateway frames', message: err.message });
@@ -152,7 +154,7 @@ router.get('/meters/:meterId/frames', async (req, res) => {
   if (!win) return;
   try {
     const { limit, offset } = pageParams(req.query, 20);
-    res.json(await getMeterFrames(req.params.meterId, win, limit, offset));
+    res.json(await retryTransient(() => getMeterFrames(req.params.meterId, win, limit, offset)));
   } catch (err: any) {
     console.error('[commandCenter] Error loading meter frames:', err);
     res.status(503).json({ error: 'Failed to load meter frames', message: err.message });

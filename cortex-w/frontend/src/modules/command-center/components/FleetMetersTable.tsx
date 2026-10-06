@@ -6,13 +6,16 @@ import { useNow, formatAgo } from '../utils/timeAgo';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 import { useVirtualRows } from '../utils/useVirtualRows';
 import { MeterFacetFilters, type MeterFacetState } from './MeterFacetFilters';
-import { describeError } from '../utils/errors';
+import { describeError, isAbortError } from '../utils/errors';
+import { CopyCell } from './CopyCell';
 
 interface Props {
   win: WindowParams;
   siteId: string;
   selectedMeterId: string | null;
   onSelectMeter: (meter: MeterTelemetryItem) => void;
+  /** Unique meters seen in the window per the KPI; if the stored list is shorter, say so. */
+  expectedTotal?: number | null;
 }
 
 const PAGE_SIZE = 100;
@@ -21,7 +24,7 @@ const PAGE_SIZE = 100;
  * Fleet-wide meter list ("Meters" mode): every meter's latest frame for the selected site and window,
  * searched / filtered / paginated on the server so it scales to the whole fleet.
  */
-export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }: Props) {
+export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter, expectedTotal }: Props) {
   const nowMs = useNow();
   const th = useThresholds();
   const [q, setQ] = useState('');
@@ -34,6 +37,8 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const seq = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q.trim()), 300);
@@ -43,6 +48,9 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }
   const load = useCallback(
     async (offset: number) => {
       const id = ++seq.current; // only the newest request may update the table
+      abortRef.current?.abort(); // and the superseded one is cancelled, not left running
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
       setLoading(true);
       setError(null);
       try {
@@ -56,12 +64,14 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }
           confirmed: facets.confirmed === '' ? undefined : facets.confirmed === 'true',
           limit: PAGE_SIZE,
           offset,
+          signal: ctrl.signal,
         });
         if (id !== seq.current) return;
         setTotal(page.total);
         if (offset === 0) setFacetOptions(page.facets);
         setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
       } catch (err) {
+        if (isAbortError(err)) return;
         if (id === seq.current) setError(describeError(err, 'Failed to load meters'));
       } finally {
         if (id === seq.current) setLoading(false);
@@ -103,6 +113,11 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }
             ? '(loading…)'
             : `(${items.length.toLocaleString()} of ${total.toLocaleString()} meters)`}
         </span>
+        {!loading && expectedTotal != null && status === 'ALL' && !debouncedQ && !facets.dr && !facets.frequency && !facets.confirmed && total > 0 && total < expectedTotal && (
+          <span className="cc-gap-note" title="Their only frames in this window were not stored (ingestion limit), so they cannot be listed yet.">
+            · {(expectedTotal - total).toLocaleString()} more seen upstream without stored frames
+          </span>
+        )}
       </div>
 
       <div className="cc-table-scroll-container cc-table-scroll-container--tall" ref={v.containerRef} onScroll={v.onScroll}>
@@ -145,9 +160,11 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter }
                   key={m.meterId}
                   className={`cc-table-row ${selectedMeterId === m.meterId ? 'cc-table-row--selected' : ''}`}
                   onClick={() => onSelectMeter(m)}
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectMeter(m); } }}
                 >
-                  <td className="cc-mono cc-cell-bold">{m.meterId}</td>
-                  <td className="cc-mono cc-cell-mute">{fmt(m.devEui)}</td>
+                  <td className="cc-mono cc-cell-bold"><CopyCell value={m.meterId} label="meter ID" /></td>
+                  <td className="cc-mono cc-cell-mute"><CopyCell value={m.devEui} label="DevEUI" /></td>
                   <td className="cc-cell-bold">{latest?.alias ?? '—'}</td>
                   <td>{formatAgo(m.lastSeenDate, nowMs)}</td>
                   <td>{m.frames1H}</td>
