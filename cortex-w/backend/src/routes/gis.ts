@@ -63,8 +63,8 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
     return gisCache;
   }
 
-  const today = new Date().toISOString().split('T')[0];
-  const lastWeek = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+  const today = localDate(0);
+  const lastWeek = localDate(-7);
 
   const headers: Record<string, string> = {};
   const token = await getAuthToken(authHeader);
@@ -397,8 +397,8 @@ router.get('/meters', async (req, res) => {
 router.get('/performance', async (req, res) => {
   try {
     const siteId = (req.query.siteId as string) || '6394';
-    const today = new Date().toISOString().split('T')[0];
-    const lastWeek = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+    const today = localDate(0);
+    const lastWeek = localDate(-7);
     const fromDate = (req.query.fromDate as string) || lastWeek;
     const toDate = (req.query.toDate as string) || today;
 
@@ -432,8 +432,8 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     const token = await getAuthToken(authHeader);
     if (token) headers['Authorization'] = token;
 
-    const today = new Date().toISOString().split('T')[0];
-    const last30Days = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
+    const today = localDate(0);
+    const last30Days = localDate(-30);
 
     // Fetch live data from upstream Cognecto endpoints in parallel
     const [assetRes, latestRes, imeiRes, imagesRes, billRes, householdDetailRes] = await Promise.all([
@@ -557,7 +557,7 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     // and disagreed with the real daily readings in practice. If our own
     // telemetry store has a reading dated yesterday, that's authoritative;
     // otherwise fall back to the upstream field rather than fabricating one.
-    const yesterdayIso = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const yesterdayIso = localDate(-1);
     const yesterdayRow = dailyReadings.find((r) => r.date === yesterdayIso);
     const yesterdayConsumptionM3 = yesterdayRow ? yesterdayRow.consumptionM3 : (latest?.consumption ?? null);
 

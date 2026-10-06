@@ -34,7 +34,8 @@ import {
   RawFrameItem,
 } from '../types/commandCenter.types';
 
-const TARGET_DATE = new Date().toISOString().slice(0, 10);
+// Calendar date in IST, matching the backend's day keys (not the UTC date).
+const TARGET_DATE = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
 
 export function CommandCenterPage() {
   const [activeMode, setActiveMode] = useState<'Gateways' | 'Meters'>('Gateways');

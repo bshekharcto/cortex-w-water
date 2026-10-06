@@ -100,6 +100,12 @@ export async function getRoots(authHeader?: string): Promise<SiteNode[]> {
   return tree.roots;
 }
 
+/** Every node in the hierarchy, at any depth. */
+export async function getAllNodes(authHeader?: string): Promise<SiteNode[]> {
+  const tree = await fetchSiteTree(authHeader);
+  return [...tree.byId.values()];
+}
+
 export async function getNode(id: number, authHeader?: string): Promise<SiteNode | null> {
   const tree = await fetchSiteTree(authHeader);
   return tree.byId.get(id) || null;

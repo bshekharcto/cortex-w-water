@@ -154,6 +154,7 @@ async function runMigrations() {
       : []),
     "005_raw_telemetry.sql",
     "007_water_rollup_tables.sql",
+    "008_asset_inventory.sql",
   ];
 
   for (const file of migrations) {

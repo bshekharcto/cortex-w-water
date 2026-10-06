@@ -4,6 +4,7 @@ import { singleFlight } from '../services/inflight.js';
 import { getAuthToken } from './gis.js';
 import {
   getRoots,
+  getAllNodes,
   getNode,
   hasStructuralChildren,
   getAncestorChain,
@@ -18,18 +19,24 @@ import {
   connectivityOf,
   type MeterFact,
 } from '../services/unassignedMeters.js';
+import { pageMeters, parseMeterQuery } from '../services/meterPage.js';
 
 const router = Router();
 
 /**
- * Warm the slow sources (meter inventory ~1min, telemetry scan ~10s) so the
- * first dashboard load isn't the one that pays for them. Called once from the
- * long-running server's startup, not at import, so serverless cold starts
- * (which only import the app) don't each trigger a full load.
+ * Warm the sources (meter inventory snapshot from Postgres, telemetry scan,
+ * and every node's DMA report) so the first dashboard load isn't the one that
+ * pays for them. Called once from the long-running server's startup, not at
+ * import, so serverless cold starts (which only import the app) don't each
+ * trigger a full load.
  */
 export function warmDashboardCaches(): void {
-  getInventory().catch((err) => console.warn('[dashboard] Inventory warm-up failed:', err?.message || err));
-  getMeterFacts().catch((err) => console.warn('[dashboard] Telemetry warm-up failed:', err?.message || err));
+  const warn = (what: string) => (err: any) => console.warn(`[dashboard] ${what} warm-up failed:`, err?.message || err);
+  getInventory().catch(warn('Inventory'));
+  getMeterFacts().catch(warn('Telemetry'));
+  getAllNodes()
+    .then((nodes) => Promise.all(nodes.map((n) => fetchRealDmaReport(n.id).catch(warn(`DMA report ${n.id}`)))))
+    .catch(warn('Site tree'));
 }
 
 // Real implementation, generic over depth: cog-core-api's real site hierarchy
@@ -43,26 +50,36 @@ export function warmDashboardCaches(): void {
 // automatically without a code change.
 
 // Shared per-site cache for the (large — full meter lists embedded per node)
-// upstream DMA report, so sibling requests for the same parent within a
-// short window don't each independently re-fetch it. Same TTL pattern as
-// gis.ts's gisCache. A failed fetch throws (UpstreamError) and is never
-// cached — an outage must surface and keep retrying, not be frozen in (or
-// passed off) as "this node has zero devices."
+// upstream DMA report, which takes 1-10s to fetch. It is stale-while-
+// revalidate: inside FRESH it is served as is; past that (up to STALE_MAX) the
+// cached copy is still served instantly while a refresh runs in the
+// background, so no request waits for upstream except the very first. A failed
+// fetch throws (UpstreamError) and is never cached — an outage must surface,
+// not be passed off as "this node has zero devices" — except that a failed
+// background refresh simply leaves the stale copy to be retried.
 interface CachedDmaReport {
   timestamp: number;
   rows: any[];
 }
 const dmaReportCache = new Map<number, CachedDmaReport>();
 const dmaReportInflight = new Map<number, Promise<any[]>>();
-const DMA_REPORT_CACHE_TTL_MS = 60 * 1000;
+const DMA_REPORT_FRESH_MS = 60 * 1000;
+const DMA_REPORT_STALE_MAX_MS = 10 * 60 * 1000;
 
 function fetchRealDmaReport(siteId: number, authHeader?: string): Promise<any[]> {
   const cached = dmaReportCache.get(siteId);
-  if (cached && Date.now() - cached.timestamp < DMA_REPORT_CACHE_TTL_MS) {
+  const age = cached ? Date.now() - cached.timestamp : Infinity;
+  if (cached && age < DMA_REPORT_FRESH_MS) return Promise.resolve(cached.rows);
+
+  // Concurrent requests for the same node share one (large) upstream fetch.
+  const refresh = singleFlight(dmaReportInflight, siteId, () => loadDmaReport(siteId, authHeader));
+  if (cached && age < DMA_REPORT_STALE_MAX_MS) {
+    refresh.catch((err) =>
+      console.warn(`[dashboard] Background refresh of DMA report ${siteId} failed, serving stale:`, err?.message || err)
+    );
     return Promise.resolve(cached.rows);
   }
-  // Concurrent requests for the same node share one (large) upstream fetch.
-  return singleFlight(dmaReportInflight, siteId, () => loadDmaReport(siteId, authHeader));
+  return refresh;
 }
 
 async function loadDmaReport(siteId: number, authHeader?: string): Promise<any[]> {
@@ -71,8 +88,9 @@ async function loadDmaReport(siteId: number, authHeader?: string): Promise<any[]
   const path = `/api/water/dma-report/zones/${siteId}`;
   const data = await fetchUpstreamOrThrow('GET', path, { headers });
   if (!Array.isArray(data)) throw new UpstreamError(path, 200, 'response was not a list');
-  // An empty list is a legitimate answer (a leaf node has no children).
-  if (data.length > 0) dmaReportCache.set(siteId, { timestamp: Date.now(), rows: data });
+  // An empty list is a legitimate answer (a leaf node has no children), and
+  // is cached too so opening a leaf doesn't cost an upstream round trip.
+  dmaReportCache.set(siteId, { timestamp: Date.now(), rows: data });
   return data;
 }
 
@@ -110,7 +128,7 @@ interface Ctx {
 }
 
 async function loadCtx(authHeader?: string): Promise<Ctx> {
-  const [inv, facts] = await Promise.all([getInventory(authHeader), getMeterFacts()]);
+  const [inv, facts] = await Promise.all([getInventory(), getMeterFacts()]);
   return { inv, facts: new Map(facts.map((f) => [f.meterId, f])) };
 }
 
@@ -272,154 +290,174 @@ function sendError(res: Response, what: string, err: any) {
   });
 }
 
-/**
- * GET /api/dashboard/nodes?parentId=<id>
- * Returns the direct children of `parentId` (or the real top-level sites if
- * `parentId` is omitted/"root"), each with its own real totals. Works at any
- * depth — the frontend just keeps calling this with whichever id the user
- * drilled into.
- */
-router.get('/nodes', async (req, res) => {
-  const authHeader = req.headers.authorization;
-  const parentIdParam = (req.query.parentId as string) || '';
+interface NodeRowOut {
+  id: string;
+  name: string;
+  level: number | null;
+  parentId: string | null;
+  parentName: string | null;
+  hasChildren: boolean;
+  synthetic?: boolean;
+  meterCount: number;
+  dataTimestamp: string;
+  totalDevices: number;
+  connected: number;
+  disconnected: number;
+  neverSeen: number;
+  yesterdayFlowM3: number;
+  todayFlowM3: number;
+  monthToDateFlowM3: number;
+}
 
-  try {
-    const ctx = await loadCtx(authHeader);
+function buildNodeRow(
+  node: SiteNode,
+  parentId: string | null,
+  ids: Set<string>,
+  emb: Map<string, any>,
+  hasChildren: boolean,
+  reportTimestamp: string | undefined,
+  ctx: Ctx
+): NodeRowOut {
+  return {
+    id: String(node.id),
+    name: node.name,
+    level: node.level ?? null,
+    parentId,
+    parentName: parentId === null ? null : node.parentName ?? null,
+    hasChildren,
+    meterCount: ids.size,
+    ...summarize(ids, emb, ctx),
+    dataTimestamp: freshness(reportTimestamp, ctx),
+  };
+}
 
-    if (!parentIdParam || parentIdParam === 'root') {
-      const roots = await getRoots(authHeader);
-      const results = await Promise.all(
-        roots.map(async (root) => {
-          const rows = await fetchRealDmaReport(root.id, authHeader);
-          const hasRealChildren = await hasStructuralChildren(root.id, authHeader);
-          // A top-level site's total is every meter attached to it or listed
-          // under any of its children — including meters attached straight to
-          // the site, which the DMA report never lists.
-          const ids = await memberIds(root, rows, ctx, authHeader);
-          const totals = summarize(ids, embeddedOf(rows), ctx);
-          return {
-            id: String(root.id),
-            name: root.name,
-            level: root.level,
-            parentId: null,
-            parentName: null,
-            hasChildren: hasRealChildren,
-            meterCount: ids.size,
-            ...totals,
-            dataTimestamp: freshness(rows[0]?.timestamp, ctx),
-          };
-        })
-      );
-      return res.json(results);
-    }
+/** A top-level site: every meter attached to it or listed under any child, including ones attached straight to the site (which the DMA report never lists). */
+async function rootRow(root: SiteNode, ctx: Ctx, authHeader?: string): Promise<NodeRowOut> {
+  const rows = await fetchRealDmaReport(root.id, authHeader);
+  const [hasChildren, ids] = await Promise.all([
+    hasStructuralChildren(root.id, authHeader),
+    memberIds(root, rows, ctx, authHeader),
+  ]);
+  return buildNodeRow(root, null, ids, embeddedOf(rows), hasChildren, rows[0]?.timestamp, ctx);
+}
 
-    const parentId = Number(parentIdParam);
-    if (!Number.isFinite(parentId)) return res.json([]);
-
-    const rows = await fetchRealDmaReport(parentId, authHeader);
-    const results: any[] = await Promise.all(
-      rows.map(async (r: any) => {
-        const node = await getNode(r.id, authHeader);
-        const childCount = await hasStructuralChildren(r.id, authHeader);
-        // A row the site tree doesn't know still gets the same vetting as
-        // everywhere else: only meters the inventory knows (household-mapped).
-        const ids: Set<string> = node
-          ? await memberIds(node, [r], ctx, authHeader)
-          : new Set<string>(
-              (r.meters || []).map((m: any) => m.meterId).filter((id: string) => id && ctx.inv.byMeter.has(id))
-            );
-        const totals = summarize(ids, embeddedOf([r]), ctx);
-        return {
-          id: String(r.id),
-          name: node?.name || r.name,
-          level: node?.level ?? null,
-          parentId: parentIdParam,
-          parentName: node?.parentName ?? null,
-          hasChildren: childCount,
-          meterCount: ids.size,
-          ...totals,
-          dataTimestamp: freshness(r.timestamp, ctx),
-        };
-      })
+/** A row of the DMA report of `parentId`, as a node row. */
+async function childRow(parentId: string, r: any, ctx: Ctx, authHeader?: string): Promise<NodeRowOut> {
+  const node = await getNode(r.id, authHeader);
+  const hasChildren = await hasStructuralChildren(r.id, authHeader);
+  const emb = embeddedOf([r]);
+  if (!node) {
+    // A row the site tree doesn't know still gets the same vetting as
+    // everywhere else: only meters the inventory knows (household-mapped).
+    const ids = new Set<string>(
+      (r.meters || []).map((m: any) => m.meterId).filter((id: string) => id && ctx.inv.byMeter.has(id))
     );
-    const parentNode = await getNode(parentId, authHeader);
-    if (parentNode && rows.length > 0) {
-      const others = await computeOthers(parentNode, rows, ctx, authHeader);
-      if (others) results.push(othersNodeRow(parentNode, others.totals, ctx));
-    }
-    return res.json(results);
-  } catch (err: any) {
-    return sendError(res, 'load dashboard nodes', err);
+    return buildNodeRow(
+      { id: r.id, name: r.name, level: 0, parentId: null, parentName: null },
+      parentId, ids, emb, hasChildren, r.timestamp, ctx
+    );
   }
-});
+  const ids = await memberIds(node, [r], ctx, authHeader);
+  return buildNodeRow(node, parentId, ids, emb, hasChildren, r.timestamp, ctx);
+}
+
+/** The direct children of `parent` (its DMA-report rows) plus the synthetic "Others" group when some meters sit under no real child. */
+async function childrenOf(parent: SiteNode, ctx: Ctx, authHeader?: string): Promise<NodeRowOut[]> {
+  const rows = await fetchRealDmaReport(parent.id, authHeader);
+  const children = await Promise.all(rows.map((r: any) => childRow(String(parent.id), r, ctx, authHeader)));
+  if (rows.length > 0) {
+    const others = await computeOthers(parent, rows, ctx, authHeader);
+    if (others) children.push(othersNodeRow(parent, others.totals, ctx));
+  }
+  return children;
+}
+
+function meterPageOf(ids: Iterable<string>, emb: Map<string, any>, ctx: Ctx, query: Record<string, unknown>) {
+  const rows = [...ids].map((id) => toMeterRow(id, emb, ctx));
+  return pageMeters(rows, parseMeterQuery(query));
+}
+
+function crumb(n: SiteNode) {
+  return { id: String(n.id), name: n.name, level: n.level };
+}
 
 /**
- * GET /api/dashboard/nodes/:nodeId/ancestors
- * Root-to-node chain of real names, for resolving the breadcrumb on a fresh
- * page load or a pasted deep link (where the frontend doesn't have the
- * intermediate names from click history).
+ * GET /api/dashboard/view?nodeId=<id|others:<id>>   (omit nodeId for the root)
+ *     &page=&size=&search=&status=&sort=&dir=        (meter-list paging, leaves only)
+ *
+ * Everything the Dashboard needs to draw one screen, in a single round trip:
+ *   ancestors  root-to-node breadcrumb
+ *   node       this node's own row (totals, flows, hasChildren); null at the root
+ *   children   its direct child rows (incl. the synthetic "Others" row)
+ *   isLeaf     true when it has no children, so its meters are shown instead
+ *   meters     for a leaf, ONE page of its meters (search/status/sort applied
+ *              here) plus the unfiltered status counts; null otherwise
+ * Works at any depth — the site tree, not this code, decides how deep it goes.
  */
-router.get('/nodes/:nodeId/ancestors', async (req, res) => {
-  try {
-    if (req.params.nodeId.startsWith(OTHERS_ID_PREFIX)) {
-      const parentKey = req.params.nodeId.slice(OTHERS_ID_PREFIX.length);
-      const parentChain = Number.isFinite(Number(parentKey))
-        ? await getAncestorChain(Number(parentKey), req.headers.authorization)
-        : [];
-      return res.json([
-        ...parentChain.map((n) => ({ id: String(n.id), name: n.name, level: n.level })),
-        { id: req.params.nodeId, name: OTHERS_NAME, level: null },
-      ]);
-    }
-    const nodeId = Number(req.params.nodeId);
-    if (!Number.isFinite(nodeId)) return res.json([]);
-    const chain = await getAncestorChain(nodeId, req.headers.authorization);
-    return res.json(chain.map((n) => ({ id: String(n.id), name: n.name, level: n.level })));
-  } catch (err: any) {
-    return sendError(res, 'resolve node ancestors', err);
-  }
-});
+router.get('/view', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  const nodeIdParam = String(req.query.nodeId ?? '').trim();
 
-/**
- * GET /api/dashboard/nodes/:nodeId/meters
- * Returns the meters under this node: those embedded in its row of its
- * PARENT's dma-report (the node's own call returns its children instead), plus
- * any assets the inventory attaches to the node. For a node id of the form
- * `others:<parentId>` it returns the meters under that parent that no real
- * child lists. Consumer details come from the DMA report or, where that
- * doesn't list a meter, the asset inventory's household.
- */
-router.get('/nodes/:nodeId/meters', async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
     const ctx = await loadCtx(authHeader);
 
-    if (req.params.nodeId.startsWith(OTHERS_ID_PREFIX)) {
-      const parent = await getNode(Number(req.params.nodeId.slice(OTHERS_ID_PREFIX.length)), authHeader);
-      if (!parent) return res.json([]);
+    // Root: the real top-level sites.
+    if (!nodeIdParam || nodeIdParam === 'root') {
+      const roots = await getRoots(authHeader);
+      const children = await Promise.all(roots.map((r) => rootRow(r, ctx, authHeader)));
+      return res.json({ ancestors: [], node: null, children, isLeaf: false, meters: null });
+    }
+
+    // "Others" of a parent: a synthetic leaf holding the meters no real child lists.
+    if (nodeIdParam.startsWith(OTHERS_ID_PREFIX)) {
+      const parent = await getNode(Number(nodeIdParam.slice(OTHERS_ID_PREFIX.length)), authHeader);
+      if (!parent) return res.status(404).json({ error: 'NOT_FOUND', message: 'Unknown area.' });
       const childRows = await fetchRealDmaReport(parent.id, authHeader);
       const others = await computeOthers(parent, childRows, ctx, authHeader);
-      return res.json((others?.ids ?? []).map((id) => toMeterRow(id, others!.emb, ctx)));
+      const ids = others?.ids ?? [];
+      const emb = others?.emb ?? new Map<string, any>();
+      const chain = (await getAncestorChain(parent.id, authHeader)).map(crumb);
+      return res.json({
+        ancestors: [...chain, { id: nodeIdParam, name: OTHERS_NAME, level: null }],
+        node: othersNodeRow(parent, others?.totals ?? summarize([], emb, ctx), ctx),
+        children: [],
+        isLeaf: true,
+        meters: meterPageOf(ids, emb, ctx, req.query),
+      });
     }
 
-    const nodeId = Number(req.params.nodeId);
-    if (!Number.isFinite(nodeId)) return res.json([]);
+    const nodeId = Number(nodeIdParam);
+    const node = Number.isFinite(nodeId) ? await getNode(nodeId, authHeader) : null;
+    if (!node) return res.status(404).json({ error: 'NOT_FOUND', message: 'Unknown area.' });
 
-    const node = await getNode(nodeId, authHeader);
-    if (!node) return res.json([]);
+    const [ancestors, children, hasStructural, own] = await Promise.all([
+      getAncestorChain(node.id, authHeader),
+      childrenOf(node, ctx, authHeader),
+      hasStructuralChildren(node.id, authHeader),
+      ownEmbeddedRows(node, authHeader),
+    ]);
 
-    if (node.parentId == null) {
-      // A top-level site with children shows them (and its "Others"); one
-      // without carries its meters directly.
-      if (await hasStructuralChildren(nodeId, authHeader)) return res.json([]);
+    // This node's own row: for a top-level site from its own report, otherwise
+    // from its row in its parent's report (which is where its totals live).
+    const nodeRow =
+      node.parentId == null
+        ? await rootRow(node, ctx, authHeader)
+        : own[0]
+        ? await childRow(String(node.parentId), own[0], ctx, authHeader)
+        : buildNodeRow(node, String(node.parentId), await memberIds(node, [], ctx, authHeader), new Map(), hasStructural, undefined, ctx);
+
+    // Leaf: no children in the report AND none in the site tree. (A node the
+    // tree says has children but whose report came back empty is NOT a leaf:
+    // the client reports it as an error rather than showing a wrong meter list.)
+    const isLeaf = children.length === 0 && !hasStructural;
+    let meters = null;
+    if (isLeaf) {
+      const ids = await memberIds(node, own, ctx, authHeader);
+      meters = meterPageOf(ids, embeddedOf(own), ctx, req.query);
     }
-
-    const own = await ownEmbeddedRows(node, authHeader);
-    const ids = await memberIds(node, own, ctx, authHeader);
-    const emb = embeddedOf(own);
-    return res.json([...ids].map((id) => toMeterRow(id, emb, ctx)));
+    return res.json({ ancestors: ancestors.map(crumb), node: nodeRow, children, isLeaf, meters });
   } catch (err: any) {
-    return sendError(res, 'load node meters', err);
+    return sendError(res, 'load the dashboard view', err);
   }
 });
 

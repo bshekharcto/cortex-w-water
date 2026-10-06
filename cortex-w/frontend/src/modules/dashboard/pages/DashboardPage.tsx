@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RotateCcw, AlertTriangle } from 'lucide-react';
 import { FilterBar } from '@/components/filters/FilterBar';
@@ -10,10 +10,10 @@ import { MeterHistoryDrawer } from '@/modules/gis/shared/MeterHistoryDrawer';
 import type { GisMeter } from '@/modules/gis/shared/gisData';
 import type { MeterRow, NodeRow } from '../models/dashboardRows';
 import { useDashboardScope } from '../hooks/useDashboardScope';
-import { useNodeAncestors } from '../hooks/useNodeAncestors';
-import { useNodeChildren } from '../hooks/useNodeChildren';
-import { useNodeMeters } from '../hooks/useNodeMeters';
-import { aggregateNodeKpis, aggregateMeterKpis } from '../services/dashboardAggregation';
+import { useDashboardView } from '../hooks/useDashboardView';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import type { MeterSortField, StatusFilter } from '../models/dashboardView';
+import { aggregateNodeKpis, aggregateCountKpis } from '../services/dashboardAggregation';
 import '@/modules/gis/shared/gis.css';
 
 function meterRowToGisMeter(row: MeterRow, locality: string): GisMeter {
@@ -65,105 +65,101 @@ function meterRowToGisMeter(row: MeterRow, locality: string): GisMeter {
   } as unknown as GisMeter;
 }
 
+const METERS_PER_PAGE = 15;
+
+/** The filters, paging and sort of the current screen. They belong to ONE node: see the `nodeId` check below. */
+interface ScreenState {
+  nodeId: string | null;
+  page: number;
+  search: string;
+  status: StatusFilter;
+  sort: MeterSortField;
+  asc: boolean;
+}
+
+const freshScreen = (nodeId: string | null): ScreenState => ({
+  nodeId,
+  page: 0,
+  search: '',
+  status: 'ALL',
+  sort: 'devEui',
+  asc: true,
+});
+
 export function DashboardPage() {
   const nav = useNavigate();
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN'>('ALL');
   const [selectedMeter, setSelectedMeter] = useState<MeterRow | null>(null);
 
   // The current node id is just the last segment of the real URL path
   // (/app/dashboard/<id>/<id>/...) — however many real levels deep that is.
   const { currentNodeId, pathIds } = useDashboardScope();
 
-  // Filters belong to the view they were typed in: leaving a node clears them,
-  // so they can't silently narrow the next node's list.
-  useEffect(() => {
-    setSearchQuery('');
-    setStatusFilter('ALL');
-  }, [currentNodeId]);
-
-  // Real root-to-current name chain, resolved fresh from the live site tree
-  // every time — correct on a deep link or refresh, not just on in-app clicks.
-  const {
-    ancestors,
-    isLoading: ancestorsLoading,
-    error: ancestorsError,
-    refetch: refetchAncestors,
-  } = useNodeAncestors(currentNodeId);
-  const parentId = ancestors.length > 1 ? ancestors[ancestors.length - 2].id : null;
-
-  // Children of the current node (or the real top-level sites at the root).
-  const {
-    nodes: childNodes,
-    rawNodes: rawChildNodes,
-    isLoading: childrenLoading,
-    error: childrenError,
-    refetch: refetchChildren,
-  } = useNodeChildren(currentNodeId, searchQuery);
-
-  // A node whose children loaded fine and came back empty is a leaf CANDIDATE.
-  // Only then is its own row (totals, flows, `hasChildren`) needed, and it
-  // lives in its PARENT's children list (for a top-level site, the root list),
-  // so the lookup is deferred until here — a node with children never waits
-  // on, or fails because of, its parent's list.
-  const childrenSettledEmpty =
-    currentNodeId !== null &&
-    !ancestorsLoading &&
-    !ancestorsError &&
-    !childrenLoading &&
-    !childrenError &&
-    rawChildNodes.length === 0;
-  const {
-    rawNodes: siblingNodes,
-    isLoading: siblingsLoading,
-    error: siblingsError,
-    refetch: refetchSiblings,
-  } = useNodeChildren(parentId, '', childrenSettledEmpty);
-  const currentNode = useMemo<NodeRow | undefined>(
-    () => siblingNodes.find((n) => n.id === currentNodeId),
-    [siblingNodes, currentNodeId]
+  // Filters, paging and sort belong to the screen they were set on. State
+  // saved for another node is ignored, so moving to a node starts it clean —
+  // with no effect that would first fire a request using the old node's
+  // leftovers.
+  const [saved, setSaved] = useState<ScreenState>(freshScreen(currentNodeId));
+  const screen = saved.nodeId === currentNodeId ? saved : freshScreen(currentNodeId);
+  const update = useCallback(
+    (patch: Partial<ScreenState>) => setSaved({ ...screen, ...patch, nodeId: currentNodeId }),
+    [screen, currentNodeId]
   );
+  const searchQuery = screen.search;
+  const statusFilter = screen.status;
 
-  // It is a real leaf only once that lookup succeeded and the backend agrees
-  // it has no children. An empty list for a node the backend says HAS children
-  // is an error, not a leaf; a failed fetch is never an empty node.
-  const childrenMissing = childrenSettledEmpty && !siblingsLoading && !siblingsError && !!currentNode?.hasChildren;
-  const isLeafView = childrenSettledEmpty && !siblingsLoading && !siblingsError && !childrenMissing;
+  // Typing in the search box shouldn't fire a request per keystroke.
+  const debouncedSearch = useDebouncedValue(searchQuery, 300, currentNodeId);
 
-  const {
-    meters,
-    rawMeters,
-    isLoading: metersLoading,
-    error: metersError,
-    refetch: refetchMeters,
-  } = useNodeMeters(isLeafView ? currentNodeId : null, searchQuery, statusFilter);
+  // One request returns the whole screen: breadcrumb, this node's own row,
+  // its children and — at a leaf — one page of its meters.
+  const { view, error: viewError, isLoading, isFetching, refetch } = useDashboardView(currentNodeId, {
+    page: screen.page,
+    size: METERS_PER_PAGE,
+    search: debouncedSearch,
+    status: screen.status,
+    sort: screen.sort,
+    dir: screen.asc ? 'asc' : 'desc',
+  });
+
+  const ancestors = view?.ancestors ?? [];
+  const rawChildNodes = view?.children ?? [];
+  const currentNode = view?.node ?? undefined;
+  const isLeafView = !!view?.isLeaf;
+  const meterPage = view?.meters ?? null;
+
+  // At a non-leaf node the search box narrows the (small) list of areas here;
+  // at a leaf it is sent to the server with the meter query instead.
+  const childNodes = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return q ? rawChildNodes.filter((n) => n.name.toLowerCase().includes(q)) : rawChildNodes;
+  }, [rawChildNodes, searchQuery]);
+
+  // A node that is neither a leaf nor has any children means its sub-areas
+  // failed to come back — an error, never a wrong "no meters" screen.
+  const childrenMissing = !!view && currentNodeId !== null && !view.isLeaf && view.children.length === 0;
 
   const kpis = useMemo(() => {
-    if (isLeafView) {
-      // Counts come from the FULL meter list: the search box and status filter
+    if (!view) return null;
+    if (view.isLeaf && view.meters) {
+      // Counts cover ALL the node's meters: the search box and status filter
       // narrow the table, never the totals above it.
-      return aggregateMeterKpis(rawMeters, {
-        yesterdayFlowM3: currentNode?.yesterdayFlowM3 ?? 0,
-        todayFlowM3: currentNode?.todayFlowM3 ?? 0,
-        monthToDateFlowM3: currentNode?.monthToDateFlowM3 ?? 0,
-      });
+      return aggregateCountKpis(
+        view.meters.counts,
+        {
+          yesterdayFlowM3: currentNode?.yesterdayFlowM3 ?? 0,
+          todayFlowM3: currentNode?.todayFlowM3 ?? 0,
+          monthToDateFlowM3: currentNode?.monthToDateFlowM3 ?? 0,
+        },
+        currentNode?.dataTimestamp
+      );
     }
-    return aggregateNodeKpis(rawChildNodes);
-  }, [isLeafView, rawMeters, currentNode, rawChildNodes]);
+    return aggregateNodeKpis(view.children);
+  }, [view, currentNode]);
 
-  const isLoading = childrenLoading || ancestorsLoading || siblingsLoading || (isLeafView && metersLoading);
+  const handleResetFilters = useCallback(() => update({ search: '', status: 'ALL', page: 0 }), [update]);
 
-  const handleResetFilters = useCallback(() => {
-    setSearchQuery('');
-    setStatusFilter('ALL');
-  }, []);
-
-  const handleRetryAll = () => {
-    refetchChildren();
-    if (ancestorsError) refetchAncestors();
-    if (siblingsError) refetchSiblings();
-    if (isLeafView) refetchMeters();
-  };
+  const handleSort = (field: MeterSortField) =>
+    update(screen.sort === field ? { asc: !screen.asc, page: 0 } : { sort: field, asc: true, page: 0 });
 
   const handleSelectNode = (node: NodeRow) => {
     nav(`/app/dashboard/${[...pathIds, node.id].join('/')}`);
@@ -178,12 +174,7 @@ export function DashboardPage() {
   // First failure wins; while any source has failed the page shows the error
   // banner instead of KPIs/tables, so zeros never stand in for missing data.
   const activeError =
-    childrenError ||
-    ancestorsError ||
-    siblingsError ||
-    (isLeafView && metersError) ||
-    (childrenMissing ? 'The sub-areas of this area could not be loaded.' : undefined) ||
-    undefined;
+    viewError || (childrenMissing ? 'The sub-areas of this area could not be loaded.' : undefined) || undefined;
 
   const currentLocality = ancestors.map((n) => n.name).join(' - ') || 'Dashboard';
 
@@ -222,7 +213,7 @@ export function DashboardPage() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="cw-btn" onClick={handleRetryAll} style={{ fontSize: '0.85rem', padding: '6px 12px' }}>
+            <button className="cw-btn" onClick={refetch} style={{ fontSize: '0.85rem', padding: '6px 12px' }}>
               <RotateCcw size={14} style={{ marginRight: 4 }} /> Retry
             </button>
             {currentNodeId !== null && (
@@ -248,14 +239,14 @@ export function DashboardPage() {
           selectedStatusFilter={statusFilter}
           // Status filtering only exists on the meter list, so the cards are
           // only clickable at a leaf.
-          onStatusFilterChange={isLeafView ? setStatusFilter : undefined}
+          onStatusFilterChange={isLeafView ? (status) => update({ status, page: 0 }) : undefined}
         />
 
         {/* 4. Filter Bar */}
         <section className="cw-section" style={{ marginBottom: 16 }}>
           <FilterBar
             searchValue={searchQuery}
-            onSearchChange={setSearchQuery}
+            onSearchChange={(search) => update({ search, page: 0 })}
             searchPlaceholder={searchPlaceholder}
             onReset={searchQuery || statusFilter !== 'ALL' ? handleResetFilters : undefined}
           >
@@ -268,7 +259,7 @@ export function DashboardPage() {
                   id="dashboard-status-filter"
                   className="cw-filter-select"
                   value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value as any)}
+                  onChange={(e) => update({ status: e.target.value as StatusFilter, page: 0 })}
                   style={{
                     background: 'var(--cw-bg-input, #fff)',
                     border: '1px solid var(--cw-border, #cbd5e1)',
@@ -291,14 +282,22 @@ export function DashboardPage() {
         {/* 5. Scope-specific Data Table */}
         {isLeafView ? (
           <NodeMeterTable
-            meters={meters}
-            isLoading={metersLoading}
+            meters={meterPage?.items ?? []}
+            total={meterPage?.total ?? 0}
+            page={meterPage?.page ?? 0}
+            pageSize={meterPage?.pageSize ?? METERS_PER_PAGE}
+            sortField={screen.sort}
+            sortAsc={screen.asc}
+            isLoading={isLoading}
+            isFetching={isFetching}
+            onSort={handleSort}
+            onPageChange={(page) => update({ page })}
             onSelectMeter={(meter) => setSelectedMeter(meter)}
           />
         ) : (
           <NodeOverviewTable
             nodes={childNodes}
-            isLoading={childrenLoading}
+            isLoading={isLoading}
             onSelectNode={handleSelectNode}
           />
         )}

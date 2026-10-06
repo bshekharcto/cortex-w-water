@@ -1,6 +1,7 @@
 import { ingestDateIntoPostgres, getPostgresAggregatedSummary } from './telemetryDbService.js';
 import { pool } from '../db/pool.js';
 import { localDate } from './localDate.js';
+import { refreshInventory } from './assetInventory.js';
 
 let isSyncing = false;
 let lastSyncStartTime = 0;
@@ -138,12 +139,20 @@ export function startTelemetrySyncScheduler(intervalMs: number = 15 * 60 * 1000)
     )} mins)`
   );
 
+  // A long-running server has no time limit, so it finishes a whole inventory
+  // refresh in one go (a no-op when the stored snapshot is still fresh).
+  const refreshInventoryNow = () =>
+    refreshInventory({ budgetMs: Infinity }).catch((err) => {
+      console.warn('[telemetrySyncScheduler] Inventory refresh warning:', err.message);
+    });
+
   // Initial sync delayed by 5 seconds to let database migrations complete
   setTimeout(() => {
     console.log('[telemetrySyncScheduler] Running initial telemetry sync on startup...');
     syncLatestTelemetry().catch((err) => {
       console.warn('[telemetrySyncScheduler] Initial sync warning:', err.message);
     });
+    refreshInventoryNow();
   }, 5000);
 
   // Recurring background interval
@@ -152,5 +161,6 @@ export function startTelemetrySyncScheduler(intervalMs: number = 15 * 60 * 1000)
     syncLatestTelemetry().catch((err) => {
       console.warn('[telemetrySyncScheduler] Scheduled sync warning:', err.message);
     });
+    refreshInventoryNow();
   }, intervalMs);
 }

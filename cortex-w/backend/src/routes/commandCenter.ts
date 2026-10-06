@@ -1,3 +1,4 @@
+import { localDate } from '../services/localDate.js';
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
@@ -5,6 +6,7 @@ import { proxyUpstream } from '../services/upstreamProxy.js';
 import { fetchAndAggregateTelemetry } from '../services/telemetryAggregator.js';
 import { getPostgresAggregatedSummary } from '../services/telemetryDbService.js';
 import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
+import { refreshInventory } from '../services/assetInventory.js';
 
 const router = Router();
 
@@ -30,9 +32,19 @@ router.all('/sync-cron', async (req, res) => {
       customDate,
     });
 
-    const result = await syncLatestTelemetry(customDates);
+    // The same cron tick also advances the dashboard's inventory snapshot.
+    // A serverless invocation can't finish a whole refresh, so it does a
+    // time-boxed chunk; the next tick resumes where this one stopped.
+    const [result, inventory] = await Promise.all([
+      syncLatestTelemetry(customDates),
+      refreshInventory({ budgetMs: 40_000 }).catch((err) => {
+        console.warn('[commandCenter] Inventory refresh failed:', err?.message || err);
+        return 'error' as const;
+      }),
+    ]);
     return res.json({
       status: result.success ? 'success' : 'error',
+      inventory,
       ...result,
     });
   } catch (err: any) {
@@ -46,7 +58,7 @@ router.all('/sync-cron', async (req, res) => {
 router.get('/summary', async (req, res) => {
   try {
     const days = parseInt((req.query.days as string) || '7', 10);
-    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+    const date = (req.query.date as string) || localDate(0);
     const refresh = req.query.refresh === 'true';
     const siteId = (req.query.siteId as string) || (req.query.siteIds as string) || 'ALL';
 
@@ -100,7 +112,7 @@ router.get('/feed', async (req, res) => {
       // ignore and fallback
     }
 
-    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+    const date = (req.query.date as string) || localDate(0);
     const summary = await fetchAndAggregateTelemetry(date, false);
     res.json((summary.recentFrames || []).slice(0, limit));
   } catch (err: any) {

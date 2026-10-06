@@ -1,3 +1,4 @@
+import { localDate } from './localDate.js';
 import { pool } from '../db/pool.js';
 import { proxyUpstream } from './upstreamProxy.js';
 import { getAuthToken } from '../routes/gis.js';
@@ -181,7 +182,7 @@ export async function ensureDaysIngested(
   referenceDate?: string,
   forceDateIngestion: boolean = false
 ): Promise<{ datesIngested: string[]; totalPackets: number }> {
-  const ref = referenceDate ? new Date(referenceDate) : new Date();
+  const ref = new Date(referenceDate ?? localDate(0));
   const dates: string[] = [];
 
   for (let i = days - 1; i >= 0; i--) {
@@ -190,7 +191,7 @@ export async function ensureDaysIngested(
     dates.push(d.toISOString().slice(0, 10));
   }
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = localDate(0);
   let totalPackets = 0;
 
   for (const date of dates) {
@@ -226,7 +227,7 @@ export async function getPostgresAggregatedSummary(
   siteId: string = 'ALL',
   skipIngestion: boolean = false
 ): Promise<TelemetrySummary> {
-  const ref = referenceDate ? new Date(referenceDate) : new Date();
+  const ref = new Date(referenceDate ?? localDate(0));
   const toDate = ref.toISOString().slice(0, 10);
   const fromD = new Date(ref);
   fromD.setUTCDate(ref.getUTCDate() - (days - 1));

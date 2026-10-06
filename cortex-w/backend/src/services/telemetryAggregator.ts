@@ -1,3 +1,4 @@
+import { localDate } from './localDate.js';
 import { proxyUpstream } from './upstreamProxy.js';
 import { getAuthToken } from '../routes/gis.js';
 import { pool } from '../db/pool.js';
@@ -98,8 +99,8 @@ export async function fetchAndAggregateTelemetry(
   targetDate?: string,
   forceRefresh?: boolean
 ): Promise<TelemetrySummaryResponse> {
-  const date = targetDate || new Date().toISOString().slice(0, 10);
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const date = targetDate || localDate(0);
+  const todayStr = localDate(0);
   const isPastDate = date < todayStr;
 
   // 1. Check in-memory cache

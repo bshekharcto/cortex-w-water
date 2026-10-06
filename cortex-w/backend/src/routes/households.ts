@@ -1,3 +1,4 @@
+import { localDate } from '../services/localDate.js';
 import { Router } from 'express';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { getAuthToken, getLiveGisData } from './gis.js';
@@ -96,8 +97,8 @@ router.get('/:id/detail', async (req, res) => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = token;
 
-    const today = new Date().toISOString().split('T')[0];
-    const last30Days = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
+    const today = localDate(0);
+    const last30Days = localDate(-30);
 
     // Determine customId
     let customId = idOrCustomId;
