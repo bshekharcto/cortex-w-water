@@ -1,10 +1,11 @@
 import { useState, useMemo } from 'react';
 import { MeterTelemetryItem } from '../types/commandCenter.types';
-import { fmt, formatFrequency } from '../utils/format';
+import { fmt, formatFrequency, yesNo } from '../utils/format';
 import { useNow, formatAgo } from '../utils/timeAgo';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 import { useVirtualRows } from '../utils/useVirtualRows';
 import { MeterFacetFilters, type MeterFacetState } from './MeterFacetFilters';
+import { TableSkeleton } from './TableSkeleton';
 import { CopyCell } from './CopyCell';
 
 interface Props {
@@ -81,7 +82,7 @@ export function GatewayMetersTable({
           </button>
         ))}
         <MeterFacetFilters value={facets} onChange={setFacets} drOptions={drOptions} frequencyOptions={frequencyOptions} />
-        <span className="cc-subfilter-count">({filteredMeters.length} meters)</span>
+        <span className="cc-subfilter-count">{loading && meters.length === 0 ? '(loading…)' : `(${filteredMeters.length} meters)`}</span>
         {!loading && expectedMeters != null && meters.length > 0 && meters.length < expectedMeters && (
           <span className="cc-gap-note" title="Their only frames in this window were not stored (ingestion limit), so they cannot be listed yet.">
             · {(expectedMeters - meters.length).toLocaleString()} more seen upstream without stored frames
@@ -111,10 +112,11 @@ export function GatewayMetersTable({
             </tr>
           </thead>
           <tbody>
-            {filteredMeters.length === 0 && (
+            {filteredMeters.length === 0 && loading && <TableSkeleton label="Loading meters…" />}
+            {filteredMeters.length === 0 && !loading && (
               <tr>
-                <td colSpan={99} style={{ padding: 24, textAlign: 'center', opacity: 0.7 }}>
-                  {loading ? 'Loading meters…' : error ? `Could not load meters (${error}).` : 'No meters match.'}
+                <td colSpan={99} className="cc-table-empty">
+                  {error ? `Could not load meters (${error}).` : 'No meters match.'}
                 </td>
               </tr>
             )}
@@ -151,8 +153,8 @@ export function GatewayMetersTable({
                   <td className="cc-mono">{fmt(m.fPort)}</td>
                   <td className="cc-mono">{formatFrequency(m.frequency)}</td>
                   <td className="cc-mono">{m.dr == null ? '—' : `DR${m.dr}`}</td>
-                  <td>{m.adr ? 'Yes' : 'No'}</td>
-                  <td>{m.confirmed ? 'Yes' : 'No'}</td>
+                  <td>{yesNo(m.adr)}</td>
+                  <td>{yesNo(m.confirmed)}</td>
                   <td>
                     {m.otherGatewaysCount > 0 ? (
                       <span className="cc-pill-multi">+{m.otherGatewaysCount} GWs</span>

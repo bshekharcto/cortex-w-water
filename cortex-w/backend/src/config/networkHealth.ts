@@ -21,6 +21,15 @@ export const networkHealthThresholds = {
   // off by the 3,000-row ingestion limit, so "frames fell 25%" is an artefact. Keep this off until the database
   // project has fixed ingestion; then switch it on (or trend distinct meters instead of frames).
   trendsEnabled: false,
+  // Radio Health display bands (UI defaults from the spec, kept here so there is one source of truth)
+  rssiBands: { strong: -80, good: -90, weak: -100 }, // >= strong | >= good | >= weak | below
+  snrBands: { excellent: 5, good: 0, marginal: -10 }, // >= excellent | >= good | >= marginal | below
 } as const;
 
 export type NetworkHealthThresholds = typeof networkHealthThresholds;
+
+/**
+ * The timezone operators work in. Traffic charts bucket days and hours in it, so "today" and "09:00"
+ * mean the same thing to everyone looking at the page (India has no daylight saving).
+ */
+export const OPERATIONAL_TZ = 'Asia/Kolkata';

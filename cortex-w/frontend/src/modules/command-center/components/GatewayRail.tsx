@@ -10,6 +10,9 @@ interface Props {
   selectedGatewayId: string | null;
   onSelectGateway: (id: string | null) => void;
   loading?: boolean;
+  /** On narrow screens the rail is a slide-over drawer; this says whether it is open. */
+  drawerOpen?: boolean;
+  onCloseDrawer?: () => void;
 }
 
 export function GatewayRail({
@@ -17,6 +20,8 @@ export function GatewayRail({
   selectedGatewayId,
   onSelectGateway,
   loading,
+  drawerOpen,
+  onCloseDrawer,
 }: Props) {
   const nowMs = useNow();
   const [filter, setFilter] = useState<'ALL' | 'REPORTING' | 'DEGRADED' | 'STALE' | 'NO_TRAFFIC'>('ALL');
@@ -52,11 +57,14 @@ export function GatewayRail({
   }, [selectedGatewayId, sortKey, filter, railSearch]);
 
   return (
-    <div className="cc-gateway-rail">
+    <div className={`cc-gateway-rail ${drawerOpen ? 'cc-gateway-rail--open' : ''}`} aria-label="Gateways">
       <div className="cc-rail-header">
         <div className="cc-rail-title-row">
           <span className="cc-rail-title">GATEWAYS</span>
           <span className="cc-rail-count">{loading && gateways.length === 0 ? 'Syncing...' : `${gateways.length} known`}</span>
+          <button className="cc-icon-btn cc-rail-close" aria-label="Close gateway list" onClick={onCloseDrawer}>
+            ×
+          </button>
         </div>
 
         <div className="cc-rail-search-box">
@@ -71,43 +79,17 @@ export function GatewayRail({
         </div>
 
         <select
-
-
-          className="cc-rail-search-input"
-
-
-          style={{ padding: '5px 8px' }}
-
-
+          className="cc-rail-search-input cc-rail-sort"
           aria-label="Sort gateways"
-
-
           value={sortKey}
-
-
           onChange={(e) => setSortKey(e.target.value as GatewaySortKey)}
-
-
         >
-
-
           {GATEWAY_SORT_OPTIONS.map((o) => (
-
-
             <option key={o.key} value={o.key}>
-
-
               Sort: {o.label}
-
-
             </option>
-
-
           ))}
-
-
         </select>
-
 
         <div className="cc-rail-filters">
           {(['ALL', 'REPORTING', 'DEGRADED', 'STALE', 'NO_TRAFFIC'] as const).map((f) => (

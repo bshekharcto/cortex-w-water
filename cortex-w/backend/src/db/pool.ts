@@ -11,6 +11,9 @@ export const pool = new pg.Pool({
   connectionString: config.DATABASE_URL,
   ssl: isCloudDb ? { rejectUnauthorized: false } : undefined,
   // Hosted Postgres (Neon) drops idle connections and can be slow to accept new ones, so:
+  // How many queries can run at once. Left at the driver's default of 10: a test with 20 was no faster under the same
+  // load (the cost is the queries themselves, not connection queueing). Override with DB_POOL_MAX if that changes.
+  max: Number(process.env.DB_POOL_MAX) > 0 ? Number(process.env.DB_POOL_MAX) : 10,
   keepAlive: true, // detect dead connections sooner
   idleTimeoutMillis: 30_000, // retire idle connections before the server closes them on us
   connectionTimeoutMillis: 20_000, // fail a stuck connect instead of hanging the request

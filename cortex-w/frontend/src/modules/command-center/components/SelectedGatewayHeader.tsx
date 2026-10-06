@@ -2,6 +2,7 @@ import { X } from 'lucide-react';
 import { GatewayItem, GatewayTabType } from '../types/commandCenter.types';
 import { useNow, formatAgo } from '../utils/timeAgo';
 import { useWindowLabel } from '../utils/thresholds';
+import { CopyCell } from './CopyCell';
 
 interface Props {
   gateway: GatewayItem;
@@ -32,7 +33,7 @@ export function SelectedGatewayHeader({
       <div className="cc-gw-header-top">
         <div className="cc-gw-title-group">
           <h2 className="cc-gw-title">{gateway.alias}</h2>
-          <span className="cc-mono cc-gw-id">{gateway.gatewayId}</span>
+          <span className="cc-mono cc-gw-id"><CopyCell value={gateway.gatewayId} label="gateway ID" alwaysVisible /></span>
           <span className={`cc-status-pill ${statusBadge}`}>
             {gateway.status.toUpperCase()}
           </span>

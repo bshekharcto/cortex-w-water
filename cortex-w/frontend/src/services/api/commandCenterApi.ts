@@ -5,6 +5,8 @@ import {
   RawFrameItem,
   NetworkKpiData,
   NetworkHealthThresholds,
+  TrafficSeries,
+  RadioHealthData,
 } from '@/modules/command-center/types/commandCenter.types';
 
 export interface TelemetrySummaryResponse {
@@ -17,8 +19,6 @@ export interface TelemetrySummaryResponse {
   refreshing?: boolean;
   gateways: GatewayItem[];
   recentFrames: RawFrameItem[];
-  hourlyActivity: Array<{ hour: string; count: number }>;
-  hourlyByGateway?: Record<string, Array<{ hour: string; count: number }>>;
 }
 
 /** Time window sent to the backend; the server resolves it against its own clock. */
@@ -195,4 +195,39 @@ export async function fetchMeterFrames(
     query: { ...windowQuery(win), limit: opts.limit ?? 20, offset: opts.offset ?? 0 },
     signal: opts.signal,
   });
+}
+
+/** Newest frames across the fleet or one site (paginated): "Load more" in the live feed. */
+export async function fetchFleetFrames(
+  win: WindowParams,
+  siteId: string,
+  opts: { limit?: number; offset?: number; signal?: AbortSignal } = {}
+): Promise<FramesPage> {
+  const query: Record<string, string | number> = { ...windowQuery(win), limit: opts.limit ?? 100, offset: opts.offset ?? 0 };
+  if (siteId && siteId !== 'ALL') query.siteId = siteId;
+  return apiRequest<FramesPage>('/command-center/frames', { method: 'GET', query, signal: opts.signal });
+}
+
+/** Frames and distinct meters per time bucket, with the previous equal period, for a gateway, site or the fleet. */
+export async function fetchTraffic(
+  win: WindowParams,
+  scope: { siteId: string; gatewayId?: string },
+  signal?: AbortSignal
+): Promise<TrafficSeries> {
+  const query: Record<string, string | number> = { ...windowQuery(win) };
+  if (scope.siteId && scope.siteId !== 'ALL') query.siteId = scope.siteId;
+  if (scope.gatewayId) query.gatewayId = scope.gatewayId;
+  return apiRequest<TrafficSeries>('/command-center/traffic', { method: 'GET', query, signal });
+}
+
+/** RSSI/SNR distributions, DR, frequency and the weakest/strongest meters. */
+export async function fetchRadioHealth(
+  win: WindowParams,
+  scope: { siteId: string; gatewayId?: string },
+  signal?: AbortSignal
+): Promise<RadioHealthData> {
+  const query: Record<string, string | number> = { ...windowQuery(win) };
+  if (scope.siteId && scope.siteId !== 'ALL') query.siteId = scope.siteId;
+  if (scope.gatewayId) query.gatewayId = scope.gatewayId;
+  return apiRequest<RadioHealthData>('/command-center/radio', { method: 'GET', query, signal });
 }

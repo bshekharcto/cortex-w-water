@@ -6,6 +6,7 @@ import { useNow, formatAgo } from '../utils/timeAgo';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 import { useVirtualRows } from '../utils/useVirtualRows';
 import { MeterFacetFilters, type MeterFacetState } from './MeterFacetFilters';
+import { TableSkeleton } from './TableSkeleton';
 import { describeError, isAbortError } from '../utils/errors';
 import { CopyCell } from './CopyCell';
 
@@ -141,10 +142,11 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter, 
             </tr>
           </thead>
           <tbody>
-            {items.length === 0 && (
+            {items.length === 0 && loading && <TableSkeleton label="Loading meters…" />}
+            {items.length === 0 && !loading && (
               <tr>
-                <td colSpan={99} style={{ padding: 24, textAlign: 'center', opacity: 0.7 }}>
-                  {loading ? 'Loading meters…' : error ? `Could not load meters (${error}).` : 'No meters match.'}
+                <td colSpan={99} className="cc-table-empty">
+                  {error ? `Could not load meters (${error}).` : 'No meters match.'}
                 </td>
               </tr>
             )}

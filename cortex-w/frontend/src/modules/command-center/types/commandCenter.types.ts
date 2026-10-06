@@ -11,6 +11,8 @@ export interface NetworkHealthThresholds {
   snrCriticalDb: number;
   trendMinPrevFrames: number;
   trendsEnabled: boolean;
+  rssiBands: { strong: number; good: number; weak: number };
+  snrBands: { excellent: number; good: number; marginal: number };
 }
 
 export type GatewayState = 'reporting' | 'degraded' | 'stale' | 'no-traffic' | 'never-observed';
@@ -57,6 +59,10 @@ export interface MeterTelemetryItem {
   adr: boolean;
   confirmed: boolean;
   otherGatewaysCount: number;
+  checksumStatus?: string | null;
+  statusByte?: number | null;
+  /** The meter's own clock, as reported. Often wrong, so it is shown separately and never used for freshness. */
+  meterTimestamp?: string | null;
   /** Freshness status only: exactly one of live / stale / silent. */
   statusChips: MeterState[];
   /** Separate link-quality / reach flags (weak-rssi, poor-snr, multi-gw) used for filtering. */
@@ -98,4 +104,42 @@ export interface NetworkKpiData {
   multiGatewayMeters: number;
   avgRssi: number | null;
   avgSnr: number | null;
+}
+
+export type TrafficBucket = '5m' | '15m' | '1h' | '1d';
+export type TrafficMetric = 'frames' | 'meters';
+
+export interface TrafficPoint {
+  /** Start of the bucket in the operational timezone, "YYYY-MM-DDTHH:MM". */
+  t: string;
+  frames: number;
+  meters: number;
+}
+
+export interface TrafficSeries {
+  bucket: TrafficBucket;
+  tz: string;
+  current: TrafficPoint[];
+  previous: TrafficPoint[];
+  totals: { frames: number; meters: number; prevFrames: number; prevMeters: number };
+  comparable: boolean;
+}
+
+export interface RadioMeterStat {
+  meterId: string;
+  avgRssi: number;
+  avgSnr: number | null;
+  frames: number;
+}
+
+export interface RadioHealthData {
+  totals: { frames: number; meters: number; avgRssi: number | null; avgSnr: number | null };
+  rssiBuckets: { strong: number; good: number; weak: number; veryWeak: number };
+  snrBuckets: { excellent: number; good: number; marginal: number; poor: number };
+  byDr: Array<{ dr: number | null; frames: number }>;
+  byFrequency: Array<{ frequencyHz: number | null; frames: number }>;
+  weakLinkMeters: number;
+  repeatWeakMeters: number;
+  strongest: RadioMeterStat[];
+  weakest: RadioMeterStat[];
 }

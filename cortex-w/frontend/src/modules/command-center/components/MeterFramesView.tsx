@@ -2,20 +2,22 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { MeterTelemetryItem, RawFrameItem } from '../types/commandCenter.types';
 import { fetchMeterFrames, type WindowParams } from '@/services/api/commandCenterApi';
-import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle } from '../utils/format';
+import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle, yesNo } from '../utils/format';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
+import { TableSkeleton } from './TableSkeleton';
 import { describeError, isAbortError } from '../utils/errors';
 
 interface Props {
   meter: MeterTelemetryItem;
   win: WindowParams;
   onBack: () => void;
+  onInspectFrame?: (frame: RawFrameItem) => void;
 }
 
 const PAGE_SIZE = 100;
 
 /** Full frame history for one meter across every gateway that heard it, shown inside the Command Center. */
-export function MeterFramesView({ meter, win, onBack }: Props) {
+export function MeterFramesView({ meter, win, onBack, onInspectFrame }: Props) {
   const th = useThresholds();
   const [frames, setFrames] = useState<RawFrameItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -58,7 +60,7 @@ export function MeterFramesView({ meter, win, onBack }: Props) {
     <div className="cc-frames-view">
       <div className="cc-subfilter-bar">
         <button className="cw-button-secondary" onClick={onBack}>
-          <ArrowLeft size={13} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+          <ArrowLeft size={13} className="cc-icon-inline" />
           Back
         </button>
         <span className="cc-subfilter-label">All frames — Meter {meter.meterId}</span>
@@ -86,15 +88,28 @@ export function MeterFramesView({ meter, win, onBack }: Props) {
             </tr>
           </thead>
           <tbody>
-            {frames.length === 0 && (
+            {frames.length === 0 && loading && <TableSkeleton label="Loading frames…" />}
+            {frames.length === 0 && !loading && (
               <tr>
-                <td colSpan={99} style={{ padding: 24, textAlign: 'center', opacity: 0.7 }}>
-                  {loading ? 'Loading frames…' : error ? `Could not load frames (${error}).` : 'No frames from this meter in the selected window.'}
+                <td colSpan={99} className="cc-table-empty">
+                  {error ? `Could not load frames (${error}).` : 'No frames from this meter in the selected window.'}
                 </td>
               </tr>
             )}
             {frames.map((f) => (
-              <tr key={f.id} className="cc-table-row">
+              <tr
+                key={f.id}
+                className="cc-table-row"
+                tabIndex={onInspectFrame ? 0 : undefined}
+                onClick={() => onInspectFrame?.(f)}
+                onKeyDown={(e) => {
+                  if (onInspectFrame && (e.key === 'Enter' || e.key === ' ')) {
+                    e.preventDefault();
+                    onInspectFrame(f);
+                  }
+                }}
+                title={onInspectFrame ? 'Click for frame details' : undefined}
+              >
                 <td className="cc-mono" title={utcTitle(f.decodedAt)}>{formatLocalTime(f.decodedAt)}</td>
                 <td className="cc-mono cc-cell-mute" title="As reported by the meter's own clock">{fmt(f.meterTimestamp)}</td>
                 <td className="cc-cell-bold">{f.gatewayAlias}</td>
@@ -104,9 +119,9 @@ export function MeterFramesView({ meter, win, onBack }: Props) {
                 <td className="cc-mono">{f.dr == null ? '—' : `DR${f.dr}`}</td>
                 <td className={`cc-mono ${isWeakRssi(th, f.rssi) ? 'cc-text-warn' : ''}`}>{fmt(f.rssi, ' dBm')}</td>
                 <td className={`cc-mono ${isPoorSnr(th, f.snr) ? 'cc-text-danger' : ''}`}>{fmt(f.snr, ' dB')}</td>
-                <td>{f.confirmed == null ? '—' : f.confirmed ? 'Yes' : 'No'}</td>
-                <td>{f.adr == null ? '—' : f.adr ? 'Yes' : 'No'}</td>
-                <td><span className="cc-tag-ok">{fmt(f.checksumStatus)}</span></td>
+                <td>{yesNo(f.confirmed)}</td>
+                <td>{yesNo(f.adr)}</td>
+                <td><span className={f.checksumStatus === 'OK' ? 'cc-tag-ok' : 'cc-text-danger'}>{fmt(f.checksumStatus)}</span></td>
               </tr>
             ))}
           </tbody>

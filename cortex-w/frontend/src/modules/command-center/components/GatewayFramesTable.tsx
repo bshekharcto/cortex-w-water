@@ -1,7 +1,9 @@
 import { RawFrameItem } from '../types/commandCenter.types';
-import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle } from '../utils/format';
+import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle, yesNo } from '../utils/format';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
+import { TableSkeleton } from './TableSkeleton';
 import { CopyCell } from './CopyCell';
+import { Info } from 'lucide-react';
 
 interface Props {
   frames: RawFrameItem[];
@@ -12,6 +14,10 @@ interface Props {
   loading?: boolean;
   error?: string | null;
   onLoadMore?: () => void;
+  /** Opens the frame detail drawer. */
+  onInspectFrame?: (frame: RawFrameItem) => void;
+  /** Frames that just arrived; their rows flash briefly. */
+  highlightIds?: Set<string>;
 }
 
 export function GatewayFramesTable({
@@ -22,6 +28,8 @@ export function GatewayFramesTable({
   loading,
   error,
   onLoadMore,
+  onInspectFrame,
+  highlightIds,
 }: Props) {
   const th = useThresholds();
   return (
@@ -50,13 +58,15 @@ export function GatewayFramesTable({
               <th>ADR</th>
               <th>Checksum</th>
               <th>Event</th>
+              {onInspectFrame && <th aria-label="Details" />}
             </tr>
           </thead>
           <tbody>
-            {frames.length === 0 && (
+            {frames.length === 0 && loading && <TableSkeleton label="Loading frames…" />}
+            {frames.length === 0 && !loading && (
               <tr>
-                <td colSpan={99} style={{ padding: 24, textAlign: 'center', opacity: 0.7 }}>
-                  {loading ? 'Loading frames…' : error ? `Could not load frames (${error}).` : 'No frames received through this gateway in the selected window.'}
+                <td colSpan={99} className="cc-table-empty">
+                  {error ? `Could not load frames (${error}).` : 'No frames received through this gateway in the selected window.'}
                 </td>
               </tr>
             )}
@@ -67,7 +77,7 @@ export function GatewayFramesTable({
               return (
                 <tr
                   key={frame.id}
-                  className="cc-table-row"
+                  className={`cc-table-row ${highlightIds?.has(frame.id) ? 'cc-row-new' : ''}`}
                   onClick={() => onSelectFrameMeter(frame.meterId)}
                   tabIndex={0}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectFrameMeter(frame.meterId); } }}
@@ -85,16 +95,32 @@ export function GatewayFramesTable({
                   <td className={`cc-mono ${isPoor ? 'cc-text-danger' : ''}`}>
                     {fmt(frame.snr, ' dB')}
                   </td>
-                  <td>{frame.confirmed ? 'Yes' : 'No'}</td>
-                  <td>{frame.adr ? 'Yes' : 'No'}</td>
+                  <td>{yesNo(frame.confirmed)}</td>
+                  <td>{yesNo(frame.adr)}</td>
                   <td>
-                    <span className="cc-tag-ok">{frame.checksumStatus}</span>
+                    <span className={frame.checksumStatus === 'OK' ? 'cc-tag-ok' : 'cc-text-danger'}>{fmt(frame.checksumStatus)}</span>
                   </td>
                   <td>
                     <span className={`cc-event-badge cc-event-badge--${frame.statusEvent.toLowerCase()}`}>
                       {frame.statusEvent.replace('_', ' ')}
                     </span>
                   </td>
+                  {onInspectFrame && (
+                    <td>
+                      <button
+                        className="cc-icon-btn cc-row-info"
+                        aria-label={`Details for the frame from meter ${frame.meterId}`}
+                        title="Frame details"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onInspectFrame(frame);
+                        }}
+                        onKeyDown={(e) => e.stopPropagation()}
+                      >
+                        <Info size={13} />
+                      </button>
+                    </td>
+                  )}
                 </tr>
               );
             })}

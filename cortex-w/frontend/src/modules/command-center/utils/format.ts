@@ -51,3 +51,14 @@ export function utcTitle(iso: string | null | undefined): string | undefined {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? undefined : `${d.toISOString().replace('T', ' ').slice(0, 23)} UTC`;
 }
+
+/** Yes / No / — for a flag that can be unknown (never shows "No" for a value we simply don't have). */
+export function yesNo(v: boolean | null | undefined): string {
+  return v === null || v === undefined ? '—' : v ? 'Yes' : 'No';
+}
+
+/** Status byte as hex plus decimal, e.g. "0xA8 (168)". */
+export function formatStatusByte(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—';
+  return `0x${v.toString(16).toUpperCase().padStart(2, '0')} (${v})`;
+}

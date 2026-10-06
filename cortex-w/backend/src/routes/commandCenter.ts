@@ -1,10 +1,21 @@
-import { Router, type Request, type Response } from 'express';
+import { Router } from 'express';
 import { pool, retryTransient } from '../db/pool.js';
-import { config } from '../config/env.js';
-import { proxyUpstream } from '../services/upstreamProxy.js';
-import { getPostgresAggregatedSummary, getGatewayMeters, searchMeters, listFleetMeters, getGatewayFrames, getMeterFrames, resolveWindow, startManualRefresh, isRefreshing } from '../services/telemetryDbService.js';
+import {
+  getPostgresAggregatedSummary,
+  getGatewayMeters,
+  searchMeters,
+  listFleetMeters,
+  getGatewayFrames,
+  getMeterFrames,
+  getFleetFrames,
+  getTraffic,
+  getRadioHealth,
+  startManualRefresh,
+  isRefreshing,
+} from '../services/telemetryDbService.js';
 import { getRoots } from '../services/siteTree.js';
 import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
+import { validId, validSite, windowOr400, pageParams, badRequest } from './validation.js';
 
 const router = Router();
 
@@ -41,29 +52,15 @@ router.all('/sync-cron', async (req, res) => {
   }
 });
 
-// ---------- Live Telemetry Aggregator (PostgreSQL 7-Day Default & Sub-second Feed) ----------
 
-/** Parses ?hours= | ?days= | ?from=&to= into a window resolved against the server clock. */
-function windowFromQuery(q: Record<string, any>) {
-  const num = (v: unknown) => (v === undefined || v === '' ? undefined : Number(v));
-  return resolveWindow({ hours: num(q.hours), days: num(q.days), from: q.from as string, to: q.to as string });
-}
-
-/** Resolves the requested window, or answers 400 itself and returns null (a bad window is the client's fault). */
-function windowOr400(req: Request, res: Response) {
-  try {
-    return windowFromQuery(req.query);
-  } catch (err: any) {
-    res.status(400).json({ error: 'Invalid time window', message: err.message });
-    return null;
-  }
-}
+// ---------- Live telemetry (PostgreSQL) ----------
 
 router.get('/summary', async (req, res) => {
   const win = windowOr400(req, res);
   if (!win) return;
+  const siteId = validSite(req.query.siteId ?? req.query.siteIds);
+  if (!siteId) return badRequest(res, 'site');
   try {
-    const siteId = (req.query.siteId as string) || (req.query.siteIds as string) || 'ALL';
     // Manual Refresh answers instantly from stored data and pulls fresh packets in the background;
     // the page keeps polling while `refreshing` is true.
     if (req.query.refresh === 'true') startManualRefresh(win, siteId);
@@ -84,7 +81,7 @@ router.get('/sites', async (req, res) => {
     let sites = roots.map((r) => ({ id: String(r.id), name: r.name }));
     if (sites.length === 0) {
       const local = await pool.query('SELECT id, name FROM sites ORDER BY name');
-      sites = local.rows.map((r: any) => ({ id: String(r.id), name: r.name }));
+      sites = local.rows.map((r: { id: number; name: string }) => ({ id: String(r.id), name: r.name }));
     }
     sites.sort((a, b) => a.name.localeCompare(b.name));
     res.json([{ id: 'ALL', name: 'All Sites' }, ...sites]);
@@ -97,30 +94,47 @@ router.get('/sites', async (req, res) => {
 router.get('/gateways/:gatewayId/meters', async (req, res) => {
   const win = windowOr400(req, res);
   if (!win) return;
+  const gatewayId = validId(req.params.gatewayId);
+  if (!gatewayId) return badRequest(res, 'gateway id');
   try {
-    res.json(await retryTransient(() => getGatewayMeters(req.params.gatewayId, win)));
+    res.json(await retryTransient(() => getGatewayMeters(gatewayId, win)));
   } catch (err: any) {
     console.error('[commandCenter] Error loading gateway meters:', err);
     res.status(503).json({ error: 'Failed to load gateway meters', message: err.message });
   }
 });
 
+router.get('/gateways/:gatewayId/frames', async (req, res) => {
+  const win = windowOr400(req, res);
+  if (!win) return;
+  const gatewayId = validId(req.params.gatewayId);
+  if (!gatewayId) return badRequest(res, 'gateway id');
+  try {
+    const { limit, offset } = pageParams(req.query, 100);
+    res.json(await retryTransient(() => getGatewayFrames(gatewayId, win, limit, offset)));
+  } catch (err: any) {
+    console.error('[commandCenter] Error loading gateway frames:', err);
+    res.status(503).json({ error: 'Failed to load gateway frames', message: err.message });
+  }
+});
+
 router.get('/meters', async (req, res) => {
   const win = windowOr400(req, res);
   if (!win) return;
+  const siteId = validSite(req.query.siteId);
+  if (!siteId) return badRequest(res, 'site');
   try {
     const status = ['live', 'stale', 'silent'].includes(req.query.status as string)
       ? (req.query.status as 'live' | 'stale' | 'silent')
       : undefined;
-    const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '100', 10) || 100, 1), 200);
-    const offset = Math.max(parseInt((req.query.offset as string) || '0', 10) || 0, 0);
-    const siteId = (req.query.siteId as string) || 'ALL';
+    const { limit, offset } = pageParams(req.query, 100);
     const intOrUndef = (v: unknown) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? undefined : Number(v));
     const confirmed = req.query.confirmed === 'true' ? true : req.query.confirmed === 'false' ? false : undefined;
+    const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 64) : undefined;
     res.json(
       await retryTransient(() =>
         listFleetMeters({
-          win, siteId, q: req.query.q as string, status,
+          win, siteId, q, status,
           dr: intOrUndef(req.query.dr), frequency: intOrUndef(req.query.frequency), confirmed,
           limit, offset,
         })
@@ -132,201 +146,78 @@ router.get('/meters', async (req, res) => {
   }
 });
 
-const pageParams = (q: Record<string, any>, defaultLimit: number) => ({
-  limit: Math.min(Math.max(parseInt(q.limit as string, 10) || defaultLimit, 1), 200),
-  offset: Math.max(parseInt(q.offset as string, 10) || 0, 0),
-});
-
-router.get('/gateways/:gatewayId/frames', async (req, res) => {
-  const win = windowOr400(req, res);
-  if (!win) return;
-  try {
-    const { limit, offset } = pageParams(req.query, 100);
-    res.json(await retryTransient(() => getGatewayFrames(req.params.gatewayId, win, limit, offset)));
-  } catch (err: any) {
-    console.error('[commandCenter] Error loading gateway frames:', err);
-    res.status(503).json({ error: 'Failed to load gateway frames', message: err.message });
-  }
-});
-
-router.get('/meters/:meterId/frames', async (req, res) => {
-  const win = windowOr400(req, res);
-  if (!win) return;
-  try {
-    const { limit, offset } = pageParams(req.query, 20);
-    res.json(await retryTransient(() => getMeterFrames(req.params.meterId, win, limit, offset)));
-  } catch (err: any) {
-    console.error('[commandCenter] Error loading meter frames:', err);
-    res.status(503).json({ error: 'Failed to load meter frames', message: err.message });
-  }
-});
-
 router.get('/meters/search', async (req, res) => {
   const win = windowOr400(req, res);
   if (!win) return;
   try {
-    const q = ((req.query.q as string) || '').trim();
+    const q = ((req.query.q as string) || '').trim().slice(0, 64);
     if (q.length < 3) return res.json([]);
-    res.json(await searchMeters(q, win));
+    res.json(await retryTransient(() => searchMeters(q, win)));
   } catch (err: any) {
     console.error('[commandCenter] Error searching meters:', err);
     res.status(503).json({ error: 'Failed to search meters', message: err.message });
   }
 });
 
-// ---------- Dashboard ----------
-
-router.get('/water-summary', async (req, res) => {
-  if (config.APP_DATA_MODE === 'seed') {
-    return res.json({
-      'Total Households':  { value: '193125', lastUpdated: '2026-09-04T18:00:00Z' },
-      'Active Meters':     { value: '2532',   lastUpdated: '2026-09-04T18:00:00Z' },
-      'Water Consumption': { value: '2338.92', lastUpdated: '2026-09-04T18:00:00Z' },
-      'Average Consumption': { value: '0.9', lastUpdated: '2026-09-04T18:00:00Z' },
-    });
+router.get('/meters/:meterId/frames', async (req, res) => {
+  const win = windowOr400(req, res);
+  if (!win) return;
+  const meterId = validId(req.params.meterId);
+  if (!meterId) return badRequest(res, 'meter id');
+  try {
+    const { limit, offset } = pageParams(req.query, 20);
+    res.json(await retryTransient(() => getMeterFrames(meterId, win, limit, offset)));
+  } catch (err: any) {
+    console.error('[commandCenter] Error loading meter frames:', err);
+    res.status(503).json({ error: 'Failed to load meter frames', message: err.message });
   }
-  const { fromDate, toDate, siteIds } = req.query as Record<string, string>;
-  const upstream = await proxyUpstream('POST', '/api/module/water-summary', {
-    body: {
-      propertyNameList: ['Total Households', 'Active Meters', 'Water Consumption', 'Average Consumption'],
-      startDate: `${fromDate}T00:00:00.000+05:30`,
-      endDate: `${toDate}T23:59:59.999+05:30`,
-    },
-    headers: { Authorization: req.headers.authorization ?? '' },
-  });
-  res.status(upstream.status).json(upstream.data);
 });
 
-router.get('/executive-summary', async (req, res) => {
-  if (config.APP_DATA_MODE === 'seed') {
-    return res.json({
-      householdsOnboarded: 193125, metersConfigured: 27996, householdsMapped: 18364,
-      meterReplacementsYesterday: 3, criticalAlerts: 2, openMaintenanceRequests: 5,
-      closedMaintenanceRequests: 12, topAlertTypes: ['Battery Abnormal', 'Valve Abnormal'],
-      region: 'BHUBANESWAR', fromDate: '2026-09-01', toDate: '2026-09-04',
-    });
+// Newest frames across the fleet (or one site), paginated: "Load more" in the live feed
+router.get('/frames', async (req, res) => {
+  const win = windowOr400(req, res);
+  if (!win) return;
+  const siteId = validSite(req.query.siteId);
+  if (!siteId) return badRequest(res, 'site');
+  try {
+    const { limit, offset } = pageParams(req.query, 100);
+    res.json(await retryTransient(() => getFleetFrames(win, siteId, limit, offset)));
+  } catch (err: any) {
+    console.error('[commandCenter] Error loading frames:', err);
+    res.status(503).json({ error: 'Failed to load frames', message: err.message });
   }
-  // Upstream uses toDate, not endDate (spec 28.1)
-  const { fromDate, toDate } = req.query as Record<string, string>;
-  const upstream = await proxyUpstream('POST', `/api/water/executive-summary?fromDate=${fromDate}&toDate=${toDate}`, {
-    body: { page: 0, size: 10 },
-    headers: { Authorization: req.headers.authorization ?? '' },
-  });
-  res.status(upstream.status).json(upstream.data);
 });
 
-// ---------- Command Center ----------
-
-router.get('/gateway-summary', async (req, res) => {
-  if (config.APP_DATA_MODE === 'seed') {
-    const result = await pool.query(
-      'SELECT gateway_id, alias, meters_observed, linked_meters, avg_rssi, avg_snr, battery_abnormal, valve_abnormal, latest_decoded_at FROM gateways ORDER BY meters_observed DESC',
-    );
-    const rows = result.rows;
-    return res.json({
-      totalUniqueMeters: rows.reduce((s: number, r: any) => s + r.meters_observed, 0),
-      gatewayCount: rows.length,
-      metersOnMultipleGateways: 0,
-      perGateway: rows.map((r: any) => ({ gatewayId: r.gateway_id, uniqueMeterCount: r.meters_observed, alias: r.alias, avgRssi: r.avg_rssi, avgSnr: r.avg_snr, batteryAbnormal: r.battery_abnormal, valveAbnormal: r.valve_abnormal, latestDecodedAt: r.latest_decoded_at })),
-    });
+// Traffic over time (frames and distinct meters per bucket) with the previous equal period
+router.get('/traffic', async (req, res) => {
+  const win = windowOr400(req, res);
+  if (!win) return;
+  const siteId = validSite(req.query.siteId);
+  if (!siteId) return badRequest(res, 'site');
+  const gatewayId = req.query.gatewayId === undefined ? undefined : validId(req.query.gatewayId);
+  if (gatewayId === null) return badRequest(res, 'gateway id');
+  try {
+    res.json(await retryTransient(() => getTraffic({ win, siteId, gatewayId })));
+  } catch (err: any) {
+    console.error('[commandCenter] Error loading traffic:', err);
+    res.status(503).json({ error: 'Failed to load traffic', message: err.message });
   }
-  // Upstream: siteIds is comma-joined for this endpoint (spec 28.2)
-  const { fromDate, toDate, siteIds } = req.query as Record<string, string>;
-  const upstream = await proxyUpstream('GET', '/api/water/gateway-meter-summary', {
-    query: { siteIds: siteIds ?? '', fromDate, toDate },
-    headers: { Authorization: req.headers.authorization ?? '' },
-  });
-  res.status(upstream.status).json(upstream.data);
 });
 
-router.get('/meter-health', async (req, res) => {
-  if (config.APP_DATA_MODE === 'seed') {
-    const result = await pool.query(
-      'SELECT meter_id, household_id, gateway_id, decoded_at, rssi, battery_health, valve_health FROM meters ORDER BY decoded_at DESC',
-    );
-    return res.json(result.rows.map((r: any) => ({
-      assetId: 0, meterId: r.meter_id, householdId: r.household_id,
-      gatewayId: r.gateway_id, decodedAt: r.decoded_at, rssi: r.rssi,
-      batteryStatus: r.battery_health, lastSeenDate: r.decoded_at, timeZone: 'Asia/Kolkata',
-    })));
+// Radio analysis (RSSI/SNR distributions, DR, frequency, weakest/strongest meters)
+router.get('/radio', async (req, res) => {
+  const win = windowOr400(req, res);
+  if (!win) return;
+  const siteId = validSite(req.query.siteId);
+  if (!siteId) return badRequest(res, 'site');
+  const gatewayId = req.query.gatewayId === undefined ? undefined : validId(req.query.gatewayId);
+  if (gatewayId === null) return badRequest(res, 'gateway id');
+  try {
+    res.json(await retryTransient(() => getRadioHealth({ win, siteId, gatewayId })));
+  } catch (err: any) {
+    console.error('[commandCenter] Error loading radio health:', err);
+    res.status(503).json({ error: 'Failed to load radio health', message: err.message });
   }
-  // Upstream: siteIds as repeated query params (spec 28.2)
-  const siteIds = (req.query.siteIds as string)?.split(',') ?? [];
-  const upstream = await proxyUpstream('GET', '/api/water/meter-health', {
-    query: { siteIds },
-    headers: { Authorization: req.headers.authorization ?? '' },
-  });
-  res.status(upstream.status).json(upstream.data);
-});
-
-router.get('/gateway-performance', async (req, res) => {
-  if (config.APP_DATA_MODE === 'seed') {
-    const result = await pool.query('SELECT gateway_id, latest_decoded_at, meters_observed FROM gateways');
-    return res.json(result.rows.map((r: any) => ({
-      gatewayId: r.gateway_id, date: '2026-09-04', activeMeterCount: r.meters_observed,
-    })));
-  }
-  const { fromDate, toDate, siteIds } = req.query as Record<string, string>;
-  const upstream = await proxyUpstream('GET', '/api/water/gateway-performance', {
-    query: { siteIds: (siteIds ?? '').split(','), fromDate, toDate },
-    headers: { Authorization: req.headers.authorization ?? '' },
-  });
-  res.status(upstream.status).json(upstream.data);
-});
-
-router.post('/latest-meter-status', async (req, res) => {
-  if (config.APP_DATA_MODE === 'seed') {
-    const { page = 0, size = 20 } = req.body ?? {};
-    const result = await pool.query(
-      'SELECT * FROM meters ORDER BY decoded_at DESC LIMIT $1 OFFSET $2',
-      [size, page * size],
-    );
-    const countResult = await pool.query('SELECT COUNT(*) FROM meters');
-    const total = parseInt(countResult.rows[0].count, 10);
-    return res.json({
-      content: result.rows.map((r: any) => ({
-        meterId: r.meter_id, householdId: r.household_id, gatewayId: r.gateway_id,
-        currentReading: r.forward_flow_l, batteryVoltage: r.battery_voltage,
-        batteryHealth: r.battery_health, valveHealth: r.valve_health, rssi: r.rssi,
-        snr: r.snr, valveStatus: r.valve_status === 'Closed', checksumStatus: r.checksum_status,
-        decodedAt: r.decoded_at, meterTimestamp: r.meter_timestamp,
-        siteId: String(r.site_id), siteName: 'BHUBANESWAR',
-      })),
-      totalElements: total, totalPages: Math.ceil(total / size),
-      size, number: page, first: page === 0, last: (page + 1) * size >= total, empty: total === 0,
-      numberOfElements: result.rows.length,
-    });
-  }
-  const upstream = await proxyUpstream('POST', '/api/water/latest-meter-status/page', {
-    body: req.body,
-    headers: { Authorization: req.headers.authorization ?? '' },
-  });
-  res.status(upstream.status).json(upstream.data);
-});
-
-router.post('/raw-telemetry', async (req, res) => {
-  if (config.APP_DATA_MODE === 'seed') {
-    const { cursor, size = 20 } = req.body ?? {};
-    const result = await pool.query(
-      'SELECT * FROM meters ORDER BY decoded_at DESC LIMIT $1',
-      [size],
-    );
-    return res.json({
-      content: result.rows.map((r: any) => ({
-        meterId: r.meter_id, householdId: r.household_id, gatewayId: r.gateway_id,
-        forwardFlowL: r.forward_flow_l, rssi: r.rssi, snr: r.snr,
-        decodedAt: r.decoded_at, meterTimestamp: r.meter_timestamp,
-      })),
-      nextCursor: null, hasMore: false, estimatedTotal: result.rows.length,
-    });
-  }
-  // Upstream uses endDate, not toDate (spec 28.1)
-  const { fromDate, toDate } = req.body ?? {};
-  const upstream = await proxyUpstream('POST', `/api/water/raw-data/cursor?fromDate=${fromDate}&endDate=${toDate}&rawReport=true`, {
-    body: { cursor: req.body.cursor, size: req.body.size },
-    headers: { Authorization: req.headers.authorization ?? '' },
-  });
-  res.status(upstream.status).json(upstream.data);
 });
 
 export default router;

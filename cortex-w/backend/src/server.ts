@@ -11,6 +11,7 @@ import { authMiddleware } from "./middleware/auth.js";
 
 import authRoutes from "./routes/auth.js";
 import commandCenterRoutes from "./routes/commandCenter.js";
+import waterReportRoutes from "./routes/waterReports.js";
 import householdsRoutes from "./routes/households.js";
 import billingRoutes from "./routes/billing.js";
 import alarmsRoutes from "./routes/alarms.js";
@@ -94,6 +95,9 @@ app.use("/auth", authRoutes);
 // Command Center
 app.use("/api/command-center", commandCenterRoutes);
 app.use("/command-center", commandCenterRoutes);
+// Water-platform report endpoints kept at their original /command-center/* URLs
+app.use("/api/command-center", waterReportRoutes);
+app.use("/command-center", waterReportRoutes);
 
 // Households
 app.use("/api/households", householdsRoutes);

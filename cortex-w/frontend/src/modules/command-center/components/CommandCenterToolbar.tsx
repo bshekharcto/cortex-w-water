@@ -25,6 +25,8 @@ interface Props {
   autoRefresh: boolean;
   onAutoRefreshChange: (on: boolean) => void;
   autoRefreshSeconds: number;
+  /** Narrow screens: opens the gateway list drawer. */
+  onToggleRail?: () => void;
 }
 
 export function CommandCenterToolbar({
@@ -47,8 +49,10 @@ export function CommandCenterToolbar({
   autoRefresh,
   onAutoRefreshChange,
   autoRefreshSeconds,
+  onToggleRail,
 }: Props) {
   const nowMs = useNow();
+  const dataIsOld = !!lastUpdatedAt && nowMs - Date.parse(lastUpdatedAt) > 10 * 60 * 1000;
   return (
     <div className="cc-toolbar-section">
       <div className="cc-breadcrumb-bar">
@@ -63,6 +67,10 @@ export function CommandCenterToolbar({
             <Activity size={18} className="cc-pulse-icon" />
             <span>COMMAND CENTER</span>
           </div>
+
+          <button className="cw-button-secondary cc-rail-toggle" onClick={onToggleRail} aria-label="Show the gateway list">
+            Gateways ☰
+          </button>
 
           <div className="cc-tab-group">
             <button
@@ -134,16 +142,14 @@ export function CommandCenterToolbar({
             <div className="cc-time-group" title="Custom range (UTC dates, max 90 days)">
               <input
                 type="date"
-                className="cc-global-search"
-                style={{ width: 130 }}
+                className="cc-global-search cc-date-input"
                 value={customRange.from}
                 max={customRange.to || undefined}
                 onChange={(e) => onCustomRangeChange({ ...customRange, from: e.target.value })}
               />
               <input
                 type="date"
-                className="cc-global-search"
-                style={{ width: 130 }}
+                className="cc-global-search cc-date-input"
                 value={customRange.to}
                 min={customRange.from || undefined}
                 onChange={(e) => onCustomRangeChange({ ...customRange, to: e.target.value })}
@@ -157,11 +163,17 @@ export function CommandCenterToolbar({
           )}
 
           <div
-            className={`cc-sync-pill ${isSyncing ? '' : 'cc-sync-pill--live'}`}
-            title={isSyncing ? 'Synchronizing upstream telemetry stream...' : 'Live stream active'}
+            className={`cc-sync-pill ${isSyncing ? '' : autoRefresh ? 'cc-sync-pill--live' : 'cc-sync-pill--paused'}`}
+            title={
+              isSyncing
+                ? 'Fetching the latest data…'
+                : autoRefresh
+                ? `Refreshing automatically every ${autoRefreshSeconds}s`
+                : 'Auto refresh is paused. Use the refresh button to update.'
+            }
           >
             <span className="cc-sync-pulse-dot" />
-            <span>{isSyncing ? 'Syncing stream...' : 'Live Feed'}</span>
+            <span>{isSyncing ? 'Syncing stream...' : autoRefresh ? 'Live Feed' : 'Auto-refresh paused'}</span>
           </div>
 
           <button
@@ -180,7 +192,10 @@ export function CommandCenterToolbar({
             <span>Auto {autoRefresh ? 'ON' : 'OFF'}</span>
           </button>
 
-          <div className="cc-live-badge" title="Time since the last successful refresh">
+          <div
+            className={`cc-live-badge ${dataIsOld ? 'cc-live-badge--stale' : ''}`}
+            title={dataIsOld ? 'This data is more than 10 minutes old. Use the refresh button to update it.' : 'Age of the data on screen'}
+          >
             <span>Updated {lastUpdatedAt ? formatAgo(lastUpdatedAt, nowMs) : '—'}</span>
           </div>
 

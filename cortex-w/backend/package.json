@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "seed": "tsx src/db/seed/runSeed.ts",
-    "migrate:neon": "tsx src/scripts/migrateToNeon.ts"
+    "migrate:neon": "tsx src/scripts/migrateToNeon.ts",
+    "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "compression": "^1.8.2",

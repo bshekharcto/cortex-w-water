@@ -6,13 +6,15 @@ interface Props {
   value: string | null | undefined;
   /** What the copy button is called for screen readers, e.g. "meter ID". */
   label: string;
+  /** Show the copy button at all times (outside a table row there is no hover to reveal it). */
+  alwaysVisible?: boolean;
 }
 
 /**
  * A table cell value with a copy button that appears on row hover or keyboard focus. It stops the click
  * from reaching the row, so copying never also selects the row. A failed copy is shown, not hidden.
  */
-export function CopyCell({ value, label }: Props) {
+export function CopyCell({ value, label, alwaysVisible }: Props) {
   const [state, setState] = useState<'idle' | 'done' | 'failed'>('idle');
   if (!value) return <>—</>;
 
@@ -29,7 +31,7 @@ export function CopyCell({ value, label }: Props) {
       <button
         type="button"
         className="cc-copy-btn cc-copy-btn--inline"
-        style={state !== 'idle' ? { opacity: 1 } : undefined}
+        style={state !== 'idle' || alwaysVisible ? { opacity: 1 } : undefined}
         aria-label={title}
         title={title}
         onClick={copy}

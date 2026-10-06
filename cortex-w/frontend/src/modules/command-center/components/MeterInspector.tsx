@@ -2,11 +2,12 @@ import { Copy, X, Check } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { MeterTelemetryItem, RawFrameItem } from '../types/commandCenter.types';
 import { fetchMeterFrames, windowKey, type WindowParams } from '@/services/api/commandCenterApi';
-import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle } from '../utils/format';
+import { fmt, formatFrequency, formatLocalTime, formatStatusByte, localTzLabel, utcTitle, yesNo } from '../utils/format';
 import { useNow, formatAgo } from '../utils/timeAgo';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
 import { describeError, isAbortError } from '../utils/errors';
 import { copyText } from '../utils/clipboard';
+import { CopyCell } from './CopyCell';
 
 interface Props {
   meter: MeterTelemetryItem;
@@ -90,7 +91,7 @@ export function MeterInspector({ meter, onClose, win, onViewAllFrames, outsideWi
         <span className="cc-inspector-freshness">Last seen {formatAgo(meter.lastSeenDate, nowMs)}</span>
       </div>
       {outsideWindow && (
-        <div className="cc-inspector-card" role="note" style={{ fontSize: 12, color: '#FBBF24' }}>
+        <div className="cc-inspector-card cc-inspector-note" role="note">
           Not heard in the selected time window. Showing the last known frame
           {meter.gatewaysHeard.find((p) => p.isLatest) ? ` via ${meter.gatewaysHeard.find((p) => p.isLatest)!.alias}` : ''}.
         </div>
@@ -102,11 +103,21 @@ export function MeterInspector({ meter, onClose, win, onViewAllFrames, outsideWi
         <div className="cc-kv-list">
           <div className="cc-kv-row">
             <span className="cc-k">Gateway</span>
-            <span className="cc-v cc-mono cc-cell-bold">{latestGw?.alias}</span>
+            <span className="cc-v cc-mono cc-cell-bold">{latestGw?.alias ?? '—'}</span>
           </div>
           <div className="cc-kv-row">
-            <span className="cc-k">Decoded At</span>
+            <span className="cc-k">Gateway ID</span>
+            <span className="cc-v cc-mono">
+              <CopyCell value={latestGw?.gatewayId} label="gateway ID" alwaysVisible />
+            </span>
+          </div>
+          <div className="cc-kv-row">
+            <span className="cc-k">Received</span>
             <span className="cc-v cc-mono" title={utcTitle(meter.lastSeenDate)}>{formatLocalTime(meter.lastSeenDate)} {localTzLabel()}</span>
+          </div>
+          <div className="cc-kv-row" title="The meter's own clock, as it reported it. Often wrong, so it is shown separately and never used to judge freshness.">
+            <span className="cc-k">Meter clock</span>
+            <span className="cc-v cc-mono cc-cell-mute">{fmt(meter.meterTimestamp)}</span>
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">FCnt</span>
@@ -132,15 +143,19 @@ export function MeterInspector({ meter, onClose, win, onViewAllFrames, outsideWi
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">Confirmed</span>
-            <span className="cc-v">{meter.confirmed ? 'Yes' : 'No'}</span>
+            <span className="cc-v">{yesNo(meter.confirmed)}</span>
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">ADR</span>
-            <span className="cc-v">{meter.adr ? 'Yes' : 'No'}</span>
+            <span className="cc-v">{yesNo(meter.adr)}</span>
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">Checksum</span>
-            <span className="cc-v cc-tag-ok">OK</span>
+            <span className={`cc-v ${meter.checksumStatus === 'OK' ? 'cc-tag-ok' : meter.checksumStatus ? 'cc-text-danger' : ''}`}>{fmt(meter.checksumStatus)}</span>
+          </div>
+          <div className="cc-kv-row">
+            <span className="cc-k">Status byte</span>
+            <span className="cc-v cc-mono">{formatStatusByte(meter.statusByte)}</span>
           </div>
         </div>
       </div>
@@ -174,19 +189,19 @@ export function MeterInspector({ meter, onClose, win, onViewAllFrames, outsideWi
       <div className="cc-inspector-card">
         <div className="cc-inspector-card-title">RECENT FRAMES{recent.total > 0 ? ` (${recent.total})` : ''}</div>
         {recent.items.length === 0 ? (
-          <div className="cc-cell-mute" style={{ fontSize: 12 }}>
+          <div className="cc-cell-mute cc-inspector-muted">
             {recent.loading ? 'Loading frames…' : recent.error ? `Could not load frames (${recent.error}).` : 'No frames in the selected window.'}
           </div>
         ) : (
           <div className="cc-gw-paths-list">
             {recent.items.map((f) => (
-              <div key={f.id} className="cc-gw-path-item" style={{ display: 'block' }}>
+              <div key={f.id} className="cc-gw-path-item cc-recent-row">
                 {/* Two short lines so the narrow inspector never wraps a gateway name mid-word */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', whiteSpace: 'nowrap' }}>
+                <div className="cc-recent-line">
                   <span className="cc-mono" title={utcTitle(f.decodedAt)}>{formatLocalTime(f.decodedAt)}</span>
                   <span className="cc-cell-bold">{f.gatewayAlias}</span>
                 </div>
-                <div className="cc-mono cc-cell-mute" style={{ whiteSpace: 'nowrap', fontSize: 11.5, marginTop: 2 }}>
+                <div className="cc-mono cc-cell-mute cc-recent-sub">
                   FCnt {fmt(f.fCnt)} ·{' '}
                   <span className={isWeakRssi(th, f.rssi) ? 'cc-text-warn' : ''}>{fmt(f.rssi, ' dBm')}</span> ·{' '}
                   <span className={isPoorSnr(th, f.snr) ? 'cc-text-danger' : ''}>{fmt(f.snr, ' dB')}</span>
@@ -195,7 +210,7 @@ export function MeterInspector({ meter, onClose, win, onViewAllFrames, outsideWi
             ))}
           </div>
         )}
-        <button className="cw-button-secondary" style={{ marginTop: 10, width: '100%' }} onClick={onViewAllFrames}>
+        <button className="cw-button-secondary cc-inspector-wide-btn" onClick={onViewAllFrames}>
           View all frames
         </button>
       </div>

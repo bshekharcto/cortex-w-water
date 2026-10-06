@@ -17,7 +17,8 @@ import { GatewayMetersTable } from '../components/GatewayMetersTable';
 import { FleetMetersTable } from '../components/FleetMetersTable';
 import { GatewayFramesPanel } from '../components/GatewayFramesPanel';
 import { MeterFramesView } from '../components/MeterFramesView';
-import { GatewayTrafficChart } from '../components/GatewayTrafficChart';
+import { FrameDetailDrawer } from '../components/FrameDetailDrawer';
+import { GatewayTrafficView } from '../components/GatewayTrafficView';
 import { GatewayRadioHealth } from '../components/GatewayRadioHealth';
 import { AllGatewayComparison } from '../components/AllGatewayComparison';
 import { MeterInspector } from '../components/MeterInspector';
@@ -105,6 +106,10 @@ export function CommandCenterPage() {
   const [meterOutsideWindow, setMeterOutsideWindow] = useState(false);
   // Meter whose full frame history is open in the centre workspace ("View all frames")
   const [framesViewMeter, setFramesViewMeter] = useState<MeterTelemetryItem | null>(null);
+  // Frame whose full details are open in the side drawer
+  const [inspectedFrame, setInspectedFrame] = useState<RawFrameItem | null>(null);
+  // On narrow screens the gateway rail is a slide-over drawer
+  const [railDrawerOpen, setRailDrawerOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(() => {
     try {
       return localStorage.getItem('cortex_w_cc_auto_refresh') !== 'off';
@@ -200,6 +205,7 @@ export function CommandCenterPage() {
     setSelectedMeter(null);
     setMeterOutsideWindow(false);
     setFramesViewMeter(null);
+    setInspectedFrame(null);
   }, [winKey, selectedSiteId]);
 
   // Sync on mount or when the window or site changes
@@ -422,6 +428,24 @@ export function CommandCenterPage() {
     };
   }, [searchQuery]);
 
+  // Escape peels back one layer at a time: frame details, then the rail drawer, then the full-frames view, then the inspector
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+      if (inspectedFrame) setInspectedFrame(null);
+      else if (railDrawerOpen) setRailDrawerOpen(false);
+      else if (framesViewMeter) setFramesViewMeter(null);
+      else if (selectedMeter) {
+        setSelectedMeter(null);
+        setMeterOutsideWindow(false);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [inspectedFrame, railDrawerOpen, framesViewMeter, selectedMeter]);
+
   const windowLabel = timeRange === 'CUSTOM' ? 'custom range' : timeRange;
 
   return (
@@ -449,17 +473,18 @@ export function CommandCenterPage() {
         autoRefresh={autoRefresh}
         onAutoRefreshChange={handleAutoRefreshChange}
         autoRefreshSeconds={AUTO_REFRESH_SECONDS}
+        onToggleRail={() => setRailDrawerOpen((o) => !o)}
       />
 
       {syncError && (
-        <div className="cc-card" role="alert" style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 12px', color: '#B45309' }}>
+        <div className="cc-card cc-banner" role="alert">
           <AlertTriangle size={16} />
           <span>
             {summaryData
               ? `Could not refresh telemetry (${syncError}). Showing the last data received.`
               : `Could not load telemetry (${syncError}).`}
           </span>
-          <button className="cw-button-secondary" onClick={handleManualRefresh} style={{ marginLeft: 'auto' }}>
+          <button className="cw-button-secondary" onClick={handleManualRefresh}>
             Retry
           </button>
         </div>
@@ -477,13 +502,29 @@ export function CommandCenterPage() {
           selectedMeter ? 'cc-main-workspace-layout--with-inspector' : ''
         }`}
       >
+        {/* Dimmed backdrops behind the slide-over drawers (only visible on narrow screens) */}
+        <div className={`cc-drawer-backdrop ${railDrawerOpen ? 'cc-drawer-backdrop--open' : ''}`} onClick={() => setRailDrawerOpen(false)} aria-hidden="true" />
+        {selectedMeter && (
+          <div
+            className="cc-drawer-backdrop cc-drawer-backdrop--inspector"
+            onClick={() => {
+              setSelectedMeter(null);
+              setMeterOutsideWindow(false);
+            }}
+            aria-hidden="true"
+          />
+        )}
+
         {/* Left Navigator: Gateway Rail with Live Status */}
         <GatewayRail
           gateways={currentGateways}
           // In Meters mode no gateway is "current", so clicking one always opens it (never toggles it off)
           selectedGatewayId={activeMode === 'Meters' ? null : selectedGatewayId}
           loading={isSyncing && !summaryData}
+          drawerOpen={railDrawerOpen}
+          onCloseDrawer={() => setRailDrawerOpen(false)}
           onSelectGateway={(id) => {
+            setRailDrawerOpen(false);
             setActiveMode('Gateways');
             setSelectedGatewayId(id);
             if (id) {
@@ -495,7 +536,7 @@ export function CommandCenterPage() {
         {/* Center: Selected Gateway Workspace OR All-Gateway Overview */}
         <main className="cc-center-workspace">
           {framesViewMeter ? (
-            <MeterFramesView meter={framesViewMeter} win={win} onBack={() => setFramesViewMeter(null)} />
+            <MeterFramesView meter={framesViewMeter} win={win} onBack={() => setFramesViewMeter(null)} onInspectFrame={setInspectedFrame} />
           ) : activeMode === 'Meters' ? (
             <FleetMetersTable
               win={win}
@@ -531,20 +572,29 @@ export function CommandCenterPage() {
                   win={win}
                   refreshToken={summaryData?.generatedAt}
                   onSelectFrameMeter={handleSelectMeterById}
+                  onInspectFrame={setInspectedFrame}
+                  paused={!!inspectedFrame}
                 />
               )}
 
               {gatewayTab === 'TRAFFIC' && (
-                <GatewayTrafficChart
+                <GatewayTrafficView
+                  win={win}
+                  siteId={selectedSiteId}
+                  gateway={{ gatewayId: currentGateway.gatewayId, alias: currentGateway.alias }}
                   allGateways={currentGateways}
-                  hourlyActivity={summaryData?.hourlyActivity}
-                  hourlyByGateway={summaryData?.hourlyByGateway}
-                  selectedGateway={{ gatewayId: currentGateway.gatewayId, alias: currentGateway.alias }}
+                  refreshToken={summaryData?.generatedAt}
                 />
               )}
 
               {gatewayTab === 'RADIO' && (
-                <GatewayRadioHealth gatewayAlias={currentGateway.alias} meters={currentMeters} />
+                <GatewayRadioHealth
+                  win={win}
+                  siteId={selectedSiteId}
+                  gateway={{ gatewayId: currentGateway.gatewayId, alias: currentGateway.alias }}
+                  refreshToken={summaryData?.generatedAt}
+                  onSelectMeter={handleSelectMeterById}
+                />
               )}
             </>
           ) : currentGateways.length === 0 ? (
@@ -587,7 +637,14 @@ export function CommandCenterPage() {
         onSelectMeter={handleSelectMeterById}
         meterCount={currentKpis?.uniqueMetersSeen ?? null}
         gatewayStatus={gatewayStatus}
+        win={win}
+        siteId={selectedSiteId}
+        onInspectFrame={setInspectedFrame}
       />
+
+      {inspectedFrame && (
+        <FrameDetailDrawer frame={inspectedFrame} onClose={() => setInspectedFrame(null)} onOpenMeter={handleSelectMeterById} />
+      )}
     </div>
     </WindowLabelProvider>
     </ThresholdsProvider>
