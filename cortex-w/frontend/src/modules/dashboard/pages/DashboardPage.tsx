@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RotateCcw, AlertTriangle } from 'lucide-react';
 import { FilterBar } from '@/components/filters/FilterBar';
@@ -48,8 +48,9 @@ function meterRowToGisMeter(row: MeterRow, locality: string): GisMeter {
     valveStatus: null,
     valveState: null,
     lastSeen: row.latestReadingAt ? new Date(row.latestReadingAt).toLocaleString() : null,
-    pipeDiameter: row.meterSize || null,
-    connectionType: row.meterType || null,
+    // The dashboard feed carries no pipe size or meter type, so none is shown.
+    pipeDiameter: null,
+    connectionType: null,
     currentReadingM3: row.totalizerM3 ?? null,
     yesterdayConsumptionL: null,
     monthConsumptionM3: null,
@@ -70,6 +71,13 @@ export function DashboardPage() {
   // (/app/dashboard/<id>/<id>/...) — however many real levels deep that is.
   const { currentNodeId, pathIds } = useDashboardScope();
 
+  // Filters belong to the view they were typed in: leaving a node clears them,
+  // so they can't silently narrow the next node's list.
+  useEffect(() => {
+    setSearchQuery('');
+    setStatusFilter('ALL');
+  }, [currentNodeId]);
+
   // Real root-to-current name chain, resolved fresh from the live site tree
   // every time — correct on a deep link or refresh, not just on in-app clicks.
   const {
@@ -89,43 +97,57 @@ export function DashboardPage() {
     refetch: refetchChildren,
   } = useNodeChildren(currentNodeId, searchQuery);
 
-  // A node with zero children, once loaded, is a real leaf — show its
-  // meters instead of a further drill-down table. A failed children fetch is
-  // NOT an empty node, so it never counts as a leaf.
-  const isLeafView = currentNodeId !== null && !childrenLoading && !childrenError && rawChildNodes.length === 0;
+  // A node whose children loaded fine and came back empty is a leaf CANDIDATE.
+  // Only then is its own row (totals, flows, `hasChildren`) needed, and it
+  // lives in its PARENT's children list (for a top-level site, the root list),
+  // so the lookup is deferred until here — a node with children never waits
+  // on, or fails because of, its parent's list.
+  const childrenSettledEmpty =
+    currentNodeId !== null &&
+    !ancestorsLoading &&
+    !ancestorsError &&
+    !childrenLoading &&
+    !childrenError &&
+    rawChildNodes.length === 0;
+  const {
+    rawNodes: siblingNodes,
+    isLoading: siblingsLoading,
+    error: siblingsError,
+    refetch: refetchSiblings,
+  } = useNodeChildren(parentId, '', childrenSettledEmpty);
+  const currentNode = useMemo<NodeRow | undefined>(
+    () => siblingNodes.find((n) => n.id === currentNodeId),
+    [siblingNodes, currentNodeId]
+  );
+
+  // It is a real leaf only once that lookup succeeded and the backend agrees
+  // it has no children. An empty list for a node the backend says HAS children
+  // is an error, not a leaf; a failed fetch is never an empty node.
+  const childrenMissing = childrenSettledEmpty && !siblingsLoading && !siblingsError && !!currentNode?.hasChildren;
+  const isLeafView = childrenSettledEmpty && !siblingsLoading && !siblingsError && !childrenMissing;
 
   const {
     meters,
+    rawMeters,
     isLoading: metersLoading,
     error: metersError,
     refetch: refetchMeters,
   } = useNodeMeters(isLeafView ? currentNodeId : null, searchQuery, statusFilter);
 
-  // A leaf's own totals (yesterday/today/month flow) live on its row in its
-  // PARENT's children list, not on the (empty) call to itself — so at a
-  // leaf, also fetch the sibling list to recover them for the KPI row.
-  const {
-    rawNodes: siblingNodes,
-    error: siblingsError,
-    refetch: refetchSiblings,
-  } = useNodeChildren(parentId, '', isLeafView && parentId !== null);
-  const currentNodeTotals = useMemo<NodeRow | undefined>(
-    () => siblingNodes.find((n) => n.id === currentNodeId),
-    [siblingNodes, currentNodeId]
-  );
-
   const kpis = useMemo(() => {
     if (isLeafView) {
-      return aggregateMeterKpis(meters, {
-        yesterdayFlowM3: currentNodeTotals?.yesterdayFlowM3 ?? 0,
-        todayFlowM3: currentNodeTotals?.todayFlowM3 ?? 0,
-        monthToDateFlowM3: currentNodeTotals?.monthToDateFlowM3 ?? 0,
+      // Counts come from the FULL meter list: the search box and status filter
+      // narrow the table, never the totals above it.
+      return aggregateMeterKpis(rawMeters, {
+        yesterdayFlowM3: currentNode?.yesterdayFlowM3 ?? 0,
+        todayFlowM3: currentNode?.todayFlowM3 ?? 0,
+        monthToDateFlowM3: currentNode?.monthToDateFlowM3 ?? 0,
       });
     }
     return aggregateNodeKpis(rawChildNodes);
-  }, [isLeafView, meters, currentNodeTotals, rawChildNodes]);
+  }, [isLeafView, rawMeters, currentNode, rawChildNodes]);
 
-  const isLoading = currentNodeId === null ? childrenLoading : childrenLoading || (isLeafView && metersLoading) || ancestorsLoading;
+  const isLoading = childrenLoading || ancestorsLoading || siblingsLoading || (isLeafView && metersLoading);
 
   const handleResetFilters = useCallback(() => {
     setSearchQuery('');
@@ -135,10 +157,8 @@ export function DashboardPage() {
   const handleRetryAll = () => {
     refetchChildren();
     if (ancestorsError) refetchAncestors();
-    if (isLeafView) {
-      refetchMeters();
-      if (parentId !== null) refetchSiblings();
-    }
+    if (siblingsError) refetchSiblings();
+    if (isLeafView) refetchMeters();
   };
 
   const handleSelectNode = (node: NodeRow) => {
@@ -154,7 +174,12 @@ export function DashboardPage() {
   // First failure wins; while any source has failed the page shows the error
   // banner instead of KPIs/tables, so zeros never stand in for missing data.
   const activeError =
-    childrenError || ancestorsError || (isLeafView && (metersError || siblingsError)) || undefined;
+    childrenError ||
+    ancestorsError ||
+    siblingsError ||
+    (isLeafView && metersError) ||
+    (childrenMissing ? 'The sub-areas of this area could not be loaded.' : undefined) ||
+    undefined;
 
   const currentLocality = ancestors.map((n) => n.name).join(' - ') || 'Dashboard';
 
@@ -217,7 +242,9 @@ export function DashboardPage() {
           kpis={kpis}
           isLoading={isLoading}
           selectedStatusFilter={statusFilter}
-          onStatusFilterChange={setStatusFilter}
+          // Status filtering only exists on the meter list, so the cards are
+          // only clickable at a leaf.
+          onStatusFilterChange={isLeafView ? setStatusFilter : undefined}
         />
 
         {/* 4. Filter Bar */}

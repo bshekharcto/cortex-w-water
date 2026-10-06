@@ -1,4 +1,6 @@
 import { pool } from '../db/pool.js';
+import { config } from '../config/env.js';
+import { localDate } from './localDate.js';
 
 // Our own synced telemetry (raw_telemetry_packets) and daily rollup, used only
 // to ENRICH meters whose membership is decided by cog-core-api's inventory
@@ -20,7 +22,7 @@ export interface MeterFact {
 }
 
 // A meter that has reported within this window counts as CONNECTED.
-const CONNECTED_WINDOW_MS = 24 * 60 * 60 * 1000;
+const CONNECTED_WINDOW_MS = config.METER_CONNECTED_WINDOW_HOURS * 60 * 60 * 1000;
 
 // Full scan of raw_telemetry_packets takes ~10s, so one result is shared by
 // every request inside the TTL window. Failed loads are never cached.
@@ -28,15 +30,13 @@ const FACTS_TTL_MS = 5 * 60 * 1000;
 let cache: { timestamp: number; facts: MeterFact[] } | null = null;
 let inflight: Promise<MeterFact[]> | null = null;
 
-function istDate(offsetDays = 0): string {
-  const d = new Date(Date.now() + offsetDays * 86400000);
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
-}
-
 async function queryFacts(): Promise<MeterFact[]> {
-  const today = istDate(0);
-  const yesterday = istDate(-1);
+  const today = localDate(0);
+  const yesterday = localDate(-1);
   const monthStart = `${today.slice(0, 7)}-01`;
+  // On the 1st, yesterday falls in the previous month, so the scan must reach
+  // back to it even though the month total only counts from monthStart.
+  const scanFrom = yesterday < monthStart ? yesterday : monthStart;
 
   const [telemetry, flows] = await Promise.all([
     pool.query(
@@ -56,11 +56,11 @@ async function queryFacts(): Promise<MeterFact[]> {
       `SELECT meter_id,
               COALESCE(SUM(total_consumption_kl) FILTER (WHERE summary_date = $1), 0) AS today,
               COALESCE(SUM(total_consumption_kl) FILTER (WHERE summary_date = $2), 0) AS yesterday,
-              COALESCE(SUM(total_consumption_kl), 0) AS month
+              COALESCE(SUM(total_consumption_kl) FILTER (WHERE summary_date >= $3), 0) AS month
        FROM water_daily_summary
-       WHERE summary_date >= $3
+       WHERE summary_date >= $4
        GROUP BY meter_id`,
-      [today, yesterday, monthStart]
+      [today, yesterday, monthStart, scanFrom]
     ),
   ]);
 

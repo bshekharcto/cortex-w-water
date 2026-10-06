@@ -16,7 +16,7 @@ import billingRoutes from "./routes/billing.js";
 import alarmsRoutes from "./routes/alarms.js";
 import sitesRoutes from "./routes/sites.js";
 import gisRoutes from "./routes/gis.js";
-import dashboardRoutes from "./routes/dashboard.js";
+import dashboardRoutes, { warmDashboardCaches } from "./routes/dashboard.js";
 import { startTelemetrySyncScheduler } from "./services/telemetrySyncWorker.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -201,6 +201,7 @@ async function start() {
     console.log(`[cortex-w bff] Listening on :${config.PORT}`);
     // Start local in-process recurring scheduler (every 15 mins)
     startTelemetrySyncScheduler(15 * 60 * 1000);
+    warmDashboardCaches();
   });
 }
 

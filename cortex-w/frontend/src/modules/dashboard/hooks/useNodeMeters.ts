@@ -1,47 +1,33 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useMemo } from 'react';
 import type { MeterRow } from '../models/dashboardRows';
-import { fetchNodeMeters, describeError } from '../services/dashboardDataService';
+import { fetchNodeMeters } from '../services/dashboardDataService';
+import { useKeyedFetch } from './useKeyedFetch';
+
+const NO_METERS: MeterRow[] = [];
 
 /**
  * Fetches the meters directly attached to a node. Only meaningful for a
- * real leaf (a node with no further children) — call this once
- * useNodeChildren for the same id has come back empty.
+ * real leaf (a node with no further children) — pass a null `nodeId` until
+ * the node is known to be a leaf, which skips the fetch.
+ *
+ * `rawMeters` is the full, unfiltered list (use it for counts/KPIs);
+ * `meters` is the search/status-filtered view for the table.
  */
 export function useNodeMeters(
   nodeId: string | null,
   searchQuery: string = '',
   statusFilter: 'ALL' | 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN' = 'ALL'
 ) {
-  const [meters, setMeters] = useState<MeterRow[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const loadMeters = useCallback(async () => {
-    if (!nodeId) {
-      setMeters([]);
-      setIsLoading(false);
-      return;
-    }
-    setIsLoading(true);
-    setError(null);
-    try {
-      const data = await fetchNodeMeters(nodeId);
-      setMeters(data);
-    } catch (err) {
-      console.error('[useNodeMeters] Failed to load node meters:', err);
-      setMeters([]);
-      setError(describeError(err, 'Failed to load meters'));
-    } finally {
-      setIsLoading(false);
-    }
-  }, [nodeId]);
-
-  useEffect(() => {
-    loadMeters();
-  }, [loadMeters]);
+  const { data, isLoading, error, refetch } = useKeyedFetch<MeterRow[]>(
+    nodeId,
+    (id) => fetchNodeMeters(id as string),
+    NO_METERS,
+    nodeId !== null,
+    'Failed to load meters'
+  );
 
   const filteredMeters = useMemo(() => {
-    let result = meters;
+    let result = data;
 
     if (statusFilter !== 'ALL') {
       result = result.filter((m) => m.connectivityStatus === statusFilter);
@@ -60,13 +46,13 @@ export function useNodeMeters(
     }
 
     return result;
-  }, [meters, searchQuery, statusFilter]);
+  }, [data, searchQuery, statusFilter]);
 
   return {
     meters: filteredMeters,
-    rawMeters: meters,
+    rawMeters: data,
     isLoading,
     error,
-    refetch: loadMeters,
+    refetch,
   };
 }

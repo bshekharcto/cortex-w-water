@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { config } from '../config/env.js';
 import { pool } from '../db/pool.js';
+import { localDate } from '../services/localDate.js';
 
 const router = Router();
 
@@ -109,18 +110,18 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       yesterday AS (
         SELECT meter_id, total_consumption_kl AS yesterday_kl
         FROM water_daily_summary
-        WHERE summary_date = (CURRENT_DATE - INTERVAL '1 day')::date
+        WHERE summary_date = ($1::date - INTERVAL '1 day')::date
       ),
       last10d AS (
         SELECT meter_id, SUM(total_consumption_kl) AS last10d_kl
         FROM water_daily_summary
-        WHERE summary_date >= (CURRENT_DATE - INTERVAL '10 days')::date
+        WHERE summary_date >= ($1::date - INTERVAL '10 days')::date
         GROUP BY meter_id
       ),
       month_total AS (
         SELECT meter_id, total_consumption_kl AS month_kl
         FROM water_monthly_summary
-        WHERE summary_month = DATE_TRUNC('month', CURRENT_DATE)::date
+        WHERE summary_month = DATE_TRUNC('month', $1::date)::date
       )
       SELECT
         lr.meter_id, lr.decoded_at AS last_seen, lr.current_reading_kl,
@@ -132,7 +133,7 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       LEFT JOIN yesterday y ON y.meter_id = lr.meter_id
       LEFT JOIN last10d l10 ON l10.meter_id = lr.meter_id
       LEFT JOIN month_total m ON m.meter_id = lr.meter_id
-    `).catch((err) => {
+    `, [localDate(0)]).catch((err) => {
       console.warn('[gis] DB telemetry query notice:', err.message);
       return { rows: [] };
     }),
@@ -572,7 +573,7 @@ router.get('/meter-detail/:assetId', async (req, res) => {
              SELECT DISTINCT ON (date_key) date_key, date_key::date AS day, forward_flow_l
              FROM raw_telemetry_packets
              WHERE meter_id = $1
-               AND date_key::date >= (date_trunc('month', CURRENT_DATE)::date - INTERVAL '1 day')
+               AND date_key::date >= (date_trunc('month', $2::date)::date - INTERVAL '1 day')
              -- same-day retry packets can decode to a garbled lower reading
              -- than an earlier packet that day; take the highest (correct)
              -- reading per day, not just whichever arrived last.
@@ -584,8 +585,8 @@ router.get('/meter-detail/:assetId', async (req, res) => {
            )
            SELECT COALESCE(SUM(GREATEST(delta_kl, 0)), 0)::numeric AS month_kl
            FROM deltas
-           WHERE day >= date_trunc('month', CURRENT_DATE)::date`,
-          [meterIdForReadings]
+           WHERE day >= date_trunc('month', $2::date)::date`,
+          [meterIdForReadings, localDate(0)]
         );
         monthToDateM3 = monthRes.rows[0] ? Number(Number(monthRes.rows[0].month_kl).toFixed(3)) : null;
       } catch (err: any) {

@@ -105,7 +105,8 @@ export function aggregateNodeKpis(nodes: NodeRow[]): DashboardKpis {
   );
 
   return {
-    childAreaCount: nodes.length,
+    // Real areas only: the synthetic "Others" group isn't a configured sub-area.
+    childAreaCount: nodes.filter((n) => !n.synthetic).length,
     totalDevices,
     connected,
     disconnected,
@@ -116,7 +117,7 @@ export function aggregateNodeKpis(nodes: NodeRow[]): DashboardKpis {
     yesterdayFlowM3: Number(yesterdayFlowM3.toFixed(2)),
     todayFlowM3: Number(todayFlowM3.toFixed(2)),
     monthToDateFlowM3: Number(monthToDateFlowM3.toFixed(2)),
-    dataTimestamp: latestTimestamp || new Date().toISOString(),
+    dataTimestamp: latestTimestamp,
   };
 }
 
@@ -164,6 +165,6 @@ export function aggregateMeterKpis(
     yesterdayFlowM3: flowTotals?.yesterdayFlowM3 ?? 0,
     todayFlowM3: flowTotals?.todayFlowM3 ?? 0,
     monthToDateFlowM3: flowTotals?.monthToDateFlowM3 ?? 0,
-    dataTimestamp: latestTimestamp || new Date().toISOString(),
+    dataTimestamp: latestTimestamp,
   };
 }

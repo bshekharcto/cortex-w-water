@@ -1,6 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useMemo } from 'react';
 import type { NodeRow } from '../models/dashboardRows';
-import { fetchNodeChildren, describeError } from '../services/dashboardDataService';
+import { fetchNodeChildren } from '../services/dashboardDataService';
+import { useKeyedFetch } from './useKeyedFetch';
+
+const NO_NODES: NodeRow[] = [];
 
 /**
  * Fetches the direct children of a node — or the real top-level sites when
@@ -8,51 +11,30 @@ import { fetchNodeChildren, describeError } from '../services/dashboardDataServi
  * the drill-down, however deep the real hierarchy actually goes.
  *
  * `enabled: false` skips fetching entirely (used when this hook is reused
- * to look up a sibling list only in some branches — e.g. recovering a leaf
- * node's own totals from its parent's children — so it doesn't redundantly
- * re-fetch the root list on every render where that branch isn't active).
+ * to look up a sibling list only in some branches — e.g. recovering a node's
+ * own row from its parent's children — so it doesn't redundantly re-fetch on
+ * every render where that branch isn't active).
  */
 export function useNodeChildren(parentId: string | null, searchQuery: string = '', enabled: boolean = true) {
-  const [nodes, setNodes] = useState<NodeRow[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(enabled);
-  const [error, setError] = useState<string | null>(null);
-
-  const loadNodes = useCallback(async () => {
-    if (!enabled) {
-      setNodes([]);
-      setIsLoading(false);
-      return;
-    }
-    setIsLoading(true);
-    setError(null);
-    try {
-      const data = await fetchNodeChildren(parentId);
-      setNodes(data);
-    } catch (err) {
-      console.error('[useNodeChildren] Failed to load node children:', err);
-      // Drop the previous node's rows so a failure never shows stale data.
-      setNodes([]);
-      setError(describeError(err));
-    } finally {
-      setIsLoading(false);
-    }
-  }, [parentId, enabled]);
-
-  useEffect(() => {
-    loadNodes();
-  }, [loadNodes]);
+  const { data, isLoading, error, refetch } = useKeyedFetch<NodeRow[]>(
+    parentId,
+    fetchNodeChildren,
+    NO_NODES,
+    enabled,
+    'Failed to load areas'
+  );
 
   const filteredNodes = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return nodes;
-    return nodes.filter((n) => n.name.toLowerCase().includes(q));
-  }, [nodes, searchQuery]);
+    if (!q) return data;
+    return data.filter((n) => n.name.toLowerCase().includes(q));
+  }, [data, searchQuery]);
 
   return {
     nodes: filteredNodes,
-    rawNodes: nodes,
+    rawNodes: data,
     isLoading,
     error,
-    refetch: loadNodes,
+    refetch,
   };
 }

@@ -1,5 +1,6 @@
 import { ingestDateIntoPostgres, getPostgresAggregatedSummary } from './telemetryDbService.js';
 import { pool } from '../db/pool.js';
+import { localDate } from './localDate.js';
 
 let isSyncing = false;
 let lastSyncStartTime = 0;
@@ -36,18 +37,12 @@ export async function syncLatestTelemetry(customDates?: string[]): Promise<SyncR
   lastSyncStartTime = Date.now();
   const startTime = Date.now();
   
-  const now = new Date();
-  const todayStr = now.toISOString().slice(0, 10);
-  
-  // Yesterday (bridges UTC vs local IST rollover)
-  const yesterday = new Date(now);
-  yesterday.setUTCDate(now.getUTCDate() - 1);
-  const yesterdayStr = yesterday.toISOString().slice(0, 10);
-
+  // Days are local-day keys (see localDate.ts). Using the UTC date here would
+  // leave the new local day un-synced until 05:30 IST and skew "yesterday".
+  const todayStr = localDate(0);
+  const yesterdayStr = localDate(-1);
   // 2 days ago (resilience for weekend or delayed ingestion)
-  const twoDaysAgo = new Date(now);
-  twoDaysAgo.setUTCDate(now.getUTCDate() - 2);
-  const twoDaysAgoStr = twoDaysAgo.toISOString().slice(0, 10);
+  const twoDaysAgoStr = localDate(-2);
 
   // Default target dates: today, yesterday, 2-days-ago, and operational baseline 2026-09-06
   const targetDates = Array.from(

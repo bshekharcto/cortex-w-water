@@ -19,6 +19,11 @@ const EnvSchema = z.object({
   JWT_LOCAL_SIGNING_SECRET: z.string().default('change-me-in-real-deployment'),
   SEED_FRESHNESS_HOURS: z.coerce.number().default(36),
   CORS_ORIGIN: z.string().default('*'),
+  // Zone whose midnight defines "today" / "yesterday" / "month" for flow figures.
+  TELEMETRY_TIMEZONE: z.string().default('Asia/Kolkata'),
+  // A meter that reported within this many hours counts as CONNECTED when
+  // neither the DMA report nor the asset inventory gives a status.
+  METER_CONNECTED_WINDOW_HOURS: z.coerce.number().positive().default(24),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema>;

@@ -1,5 +1,6 @@
 import { Router, type Response } from 'express';
 import { fetchUpstreamOrThrow, UpstreamError } from '../services/upstreamProxy.js';
+import { singleFlight } from '../services/inflight.js';
 import { getAuthToken } from './gis.js';
 import {
   getRoots,
@@ -20,10 +21,16 @@ import {
 
 const router = Router();
 
-// Warm the slow sources at startup (meter inventory ~1min, telemetry scan
-// ~10s) so the first dashboard load isn't the one that pays for them.
-getInventory().catch((err) => console.warn('[dashboard] Inventory warm-up failed:', err?.message || err));
-getMeterFacts().catch((err) => console.warn('[dashboard] Telemetry warm-up failed:', err?.message || err));
+/**
+ * Warm the slow sources (meter inventory ~1min, telemetry scan ~10s) so the
+ * first dashboard load isn't the one that pays for them. Called once from the
+ * long-running server's startup, not at import, so serverless cold starts
+ * (which only import the app) don't each trigger a full load.
+ */
+export function warmDashboardCaches(): void {
+  getInventory().catch((err) => console.warn('[dashboard] Inventory warm-up failed:', err?.message || err));
+  getMeterFacts().catch((err) => console.warn('[dashboard] Telemetry warm-up failed:', err?.message || err));
+}
 
 // Real implementation, generic over depth: cog-core-api's real site hierarchy
 // (GET /api/site/, see services/siteTree.ts) supplies node identity/structure
@@ -46,22 +53,26 @@ interface CachedDmaReport {
   rows: any[];
 }
 const dmaReportCache = new Map<number, CachedDmaReport>();
+const dmaReportInflight = new Map<number, Promise<any[]>>();
 const DMA_REPORT_CACHE_TTL_MS = 60 * 1000;
 
-async function fetchRealDmaReport(siteId: number, authHeader?: string): Promise<any[]> {
-  const now = Date.now();
+function fetchRealDmaReport(siteId: number, authHeader?: string): Promise<any[]> {
   const cached = dmaReportCache.get(siteId);
-  if (cached && now - cached.timestamp < DMA_REPORT_CACHE_TTL_MS) {
-    return cached.rows;
+  if (cached && Date.now() - cached.timestamp < DMA_REPORT_CACHE_TTL_MS) {
+    return Promise.resolve(cached.rows);
   }
+  // Concurrent requests for the same node share one (large) upstream fetch.
+  return singleFlight(dmaReportInflight, siteId, () => loadDmaReport(siteId, authHeader));
+}
 
+async function loadDmaReport(siteId: number, authHeader?: string): Promise<any[]> {
   const token = await getAuthToken(authHeader);
   const headers: Record<string, string> = token ? { Authorization: token } : {};
   const path = `/api/water/dma-report/zones/${siteId}`;
   const data = await fetchUpstreamOrThrow('GET', path, { headers });
   if (!Array.isArray(data)) throw new UpstreamError(path, 200, 'response was not a list');
   // An empty list is a legitimate answer (a leaf node has no children).
-  if (data.length > 0) dmaReportCache.set(siteId, { timestamp: now, rows: data });
+  if (data.length > 0) dmaReportCache.set(siteId, { timestamp: Date.now(), rows: data });
   return data;
 }
 
@@ -171,12 +182,12 @@ function toMeterRow(id: string, emb: Map<string, any>, ctx: Ctx) {
     assetId: e?.assetId ?? inv?.assetId ?? null,
     devEui: f?.devEui ?? null,
     meterId: id,
-    meterType: 'Axioma Qalcosonic W1',
     consumerId: e?.consumerId ?? inv?.consumerId,
     consumerName: e?.consumerName ?? inv?.consumerName,
     address: e?.address ?? inv?.address,
-    meterSize: '15mm',
-    totalizerM3: e?.totalizer ?? f?.totalizerM3 ?? 0,
+    // null (not 0) when no source has a reading, so "no data" never reads as 0 m³.
+    // Meter type/size aren't carried by any upstream endpoint, so they aren't sent.
+    totalizerM3: e?.totalizer ?? f?.totalizerM3 ?? null,
     latestReadingAt: e?.decodedAt || f?.lastSeen?.toISOString() || undefined,
     connectivityStatus: connOf(id, emb, ctx),
   };
@@ -222,7 +233,16 @@ async function computeOthers(
   return { ids, emb, totals: summarize(ids, emb, ctx) };
 }
 
-function othersNodeRow(parent: SiteNode, totals: Totals) {
+/**
+ * Freshness for a node row: the DMA report's own timestamp when the node has
+ * one, otherwise when the inventory (which decides membership) was loaded —
+ * never "now", which would claim data is fresher than it is.
+ */
+function freshness(reportTimestamp: string | undefined, ctx: Ctx): string {
+  return reportTimestamp || new Date(ctx.inv.loadedAt).toISOString();
+}
+
+function othersNodeRow(parent: SiteNode, totals: Totals, ctx: Ctx) {
   return {
     id: `${OTHERS_ID_PREFIX}${parent.id}`,
     name: OTHERS_NAME,
@@ -230,9 +250,11 @@ function othersNodeRow(parent: SiteNode, totals: Totals) {
     parentId: String(parent.id),
     parentName: parent.name,
     hasChildren: false,
+    // A synthetic group, not a real site-tree node: the UI must not count it as a configured area.
+    synthetic: true,
     meterCount: totals.totalDevices,
     ...totals,
-    dataTimestamp: new Date().toISOString(),
+    dataTimestamp: freshness(undefined, ctx),
   };
 }
 
@@ -282,9 +304,9 @@ router.get('/nodes', async (req, res) => {
             parentId: null,
             parentName: null,
             hasChildren: hasRealChildren,
-            meterCount: hasRealChildren ? 0 : ids.size,
+            meterCount: ids.size,
             ...totals,
-            dataTimestamp: new Date().toISOString(),
+            dataTimestamp: freshness(rows[0]?.timestamp, ctx),
           };
         })
       );
@@ -299,9 +321,13 @@ router.get('/nodes', async (req, res) => {
       rows.map(async (r: any) => {
         const node = await getNode(r.id, authHeader);
         const childCount = await hasStructuralChildren(r.id, authHeader);
-        const ids = node ? await memberIds(node, [r], ctx, authHeader) : new Set<string>(
-          (r.meters || []).map((m: any) => m.meterId).filter(Boolean)
-        );
+        // A row the site tree doesn't know still gets the same vetting as
+        // everywhere else: only meters the inventory knows (household-mapped).
+        const ids: Set<string> = node
+          ? await memberIds(node, [r], ctx, authHeader)
+          : new Set<string>(
+              (r.meters || []).map((m: any) => m.meterId).filter((id: string) => id && ctx.inv.byMeter.has(id))
+            );
         const totals = summarize(ids, embeddedOf([r]), ctx);
         return {
           id: String(r.id),
@@ -312,14 +338,14 @@ router.get('/nodes', async (req, res) => {
           hasChildren: childCount,
           meterCount: ids.size,
           ...totals,
-          dataTimestamp: r.timestamp || new Date().toISOString(),
+          dataTimestamp: freshness(r.timestamp, ctx),
         };
       })
     );
     const parentNode = await getNode(parentId, authHeader);
     if (parentNode && rows.length > 0) {
       const others = await computeOthers(parentNode, rows, ctx, authHeader);
-      if (others) results.push(othersNodeRow(parentNode, others.totals));
+      if (others) results.push(othersNodeRow(parentNode, others.totals, ctx));
     }
     return res.json(results);
   } catch (err: any) {

@@ -1,4 +1,5 @@
 import { fetchUpstreamOrThrow, UpstreamError } from './upstreamProxy.js';
+import { singleFlight } from './inflight.js';
 import { getAuthToken } from '../routes/gis.js';
 
 // Real site/zone/DMA hierarchy, sourced entirely from cog-core-api's
@@ -28,12 +29,18 @@ let cache: CachedTree | null = null;
 // the per-site dma-report cache is appropriate.
 const TREE_CACHE_TTL_MS = 5 * 60 * 1000;
 
-async function fetchSiteTree(authHeader?: string): Promise<CachedTree> {
-  const now = Date.now();
-  if (cache && now - cache.timestamp < TREE_CACHE_TTL_MS) {
-    return cache;
-  }
+const inflight = new Map<0, Promise<CachedTree>>();
 
+function fetchSiteTree(authHeader?: string): Promise<CachedTree> {
+  if (cache && Date.now() - cache.timestamp < TREE_CACHE_TTL_MS) {
+    return Promise.resolve(cache);
+  }
+  // Concurrent callers (every getNode/hasStructuralChildren in a request)
+  // share one /api/site/ fetch.
+  return singleFlight(inflight, 0, () => loadSiteTree(authHeader));
+}
+
+async function loadSiteTree(authHeader?: string): Promise<CachedTree> {
   const token = await getAuthToken(authHeader);
   const headers: Record<string, string> = token ? { Authorization: token } : {};
   let rows: any[];
@@ -78,7 +85,7 @@ async function fetchSiteTree(authHeader?: string): Promise<CachedTree> {
   }
 
   const result: CachedTree = {
-    timestamp: now,
+    timestamp: Date.now(), // when the fetch finished, so a slow upstream doesn't shorten the TTL
     byId,
     childrenOf,
     roots: childrenOf.get(0) || [],

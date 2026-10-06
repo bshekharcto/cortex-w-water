@@ -32,16 +32,28 @@ export interface InventoryMeter {
 export interface Inventory {
   byMeter: Map<string, InventoryMeter>;
   bySite: Map<number, string[]>;
+  /** When this copy finished loading (ms since epoch) — the freshness of the membership data. */
+  loadedAt: number;
 }
 
 const PAGE_SIZE = 2000;
+const PAGE_CONCURRENCY = 6; // ~14 pages in total; don't open them all at once
+const PAGE_ATTEMPTS = 3;
+const PAGE_RETRY_BASE_MS = 500;
 const TTL_MS = 15 * 60 * 1000;
+// After a failed load, don't start another for this long — otherwise every
+// request would kick off a fresh ~1 minute, 14-page load against a struggling
+// upstream.
+const FAILURE_COOLDOWN_MS = 60 * 1000;
 const METER_CLASS = 'Water Meter';
 
 let cache: { timestamp: number; inventory: Inventory } | null = null;
 let inflight: Promise<Inventory> | null = null;
+let lastFailure: { at: number; error: Error } | null = null;
 
-async function fetchPage(page: number, authHeader?: string): Promise<any> {
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fetchPageOnce(page: number, authHeader?: string): Promise<any> {
   const token = await getAuthToken(authHeader);
   const headers: Record<string, string> = token ? { Authorization: token } : {};
   const data = (await fetchUpstreamOrThrow('POST', '/api/asset/query', {
@@ -54,11 +66,45 @@ async function fetchPage(page: number, authHeader?: string): Promise<any> {
   return data;
 }
 
+/** One page, retried with exponential backoff on network/timeout/5xx (a 4xx won't improve by retrying). */
+async function fetchPage(page: number, authHeader?: string): Promise<any> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fetchPageOnce(page, authHeader);
+    } catch (err) {
+      const status = err instanceof UpstreamError ? err.upstreamStatus : null;
+      const retryable = status === null || status >= 500;
+      if (!retryable || attempt >= PAGE_ATTEMPTS) throw err;
+      await sleep(PAGE_RETRY_BASE_MS * 2 ** (attempt - 1));
+    }
+  }
+}
+
+/** Runs `task(i)` for 0..count-1 with at most `limit` in flight; rejects on the first failure. */
+async function mapLimited<T>(count: number, limit: number, task: (i: number) => Promise<T>): Promise<T[]> {
+  const out = new Array<T>(count);
+  let next = 0;
+  let failed = false;
+  const worker = async () => {
+    while (!failed && next < count) {
+      const i = next++;
+      try {
+        out[i] = await task(i);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, count) }, worker));
+  return out;
+}
+
 async function loadInventory(authHeader?: string): Promise<Inventory> {
   const first = await fetchPage(0, authHeader);
   const totalPages: number = first.totalPages ?? 1;
-  const rest = await Promise.all(
-    Array.from({ length: Math.max(totalPages - 1, 0) }, (_, i) => fetchPage(i + 1, authHeader))
+  const rest = await mapLimited(Math.max(totalPages - 1, 0), PAGE_CONCURRENCY, (i) =>
+    fetchPage(i + 1, authHeader)
   );
 
   const byMeter = new Map<string, InventoryMeter>();
@@ -80,7 +126,7 @@ async function loadInventory(authHeader?: string): Promise<Inventory> {
       bySite.get(a.siteId)!.push(a.name);
     }
   }
-  return { byMeter, bySite };
+  return { byMeter, bySite, loadedAt: Date.now() };
 }
 
 function refresh(authHeader?: string): Promise<Inventory> {
@@ -91,7 +137,12 @@ function refresh(authHeader?: string): Promise<Inventory> {
           throw new UpstreamError('/api/asset/query', 200, 'returned no mapped meters');
         }
         cache = { timestamp: Date.now(), inventory };
+        lastFailure = null;
         return inventory;
+      })
+      .catch((err) => {
+        lastFailure = { at: Date.now(), error: err };
+        throw err;
       })
       .finally(() => {
         inflight = null;
@@ -100,21 +151,27 @@ function refresh(authHeader?: string): Promise<Inventory> {
   return inflight;
 }
 
+function inCooldown(): boolean {
+  return lastFailure !== null && Date.now() - lastFailure.at < FAILURE_COOLDOWN_MS;
+}
+
 /**
  * Returns the inventory. With a cached copy this never waits: a stale copy is
  * returned immediately and refreshed in the background (a failed refresh
- * keeps the stale copy). Only the very first load (nothing cached yet) waits,
- * and if that fails it throws — callers must not present a missing inventory
- * as "no meters".
+ * keeps the stale copy and backs off for a minute). Only the very first load
+ * (nothing cached yet) waits, and if that fails it throws — callers must not
+ * present a missing inventory as "no meters". During the cooldown that throw
+ * is immediate rather than another full load attempt.
  */
 export async function getInventory(authHeader?: string): Promise<Inventory> {
   if (cache) {
-    if (Date.now() - cache.timestamp > TTL_MS) {
+    if (Date.now() - cache.timestamp > TTL_MS && !inCooldown()) {
       refresh(authHeader).catch((err) =>
         console.warn('[assetInventory] Background refresh failed, serving stale copy:', err?.message || err)
       );
     }
     return cache.inventory;
   }
+  if (!inflight && inCooldown()) throw lastFailure!.error;
   return refresh(authHeader);
 }
