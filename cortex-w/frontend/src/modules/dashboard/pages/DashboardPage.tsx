@@ -72,7 +72,12 @@ export function DashboardPage() {
 
   // Real root-to-current name chain, resolved fresh from the live site tree
   // every time — correct on a deep link or refresh, not just on in-app clicks.
-  const { ancestors, isLoading: ancestorsLoading } = useNodeAncestors(currentNodeId);
+  const {
+    ancestors,
+    isLoading: ancestorsLoading,
+    error: ancestorsError,
+    refetch: refetchAncestors,
+  } = useNodeAncestors(currentNodeId);
   const parentId = ancestors.length > 1 ? ancestors[ancestors.length - 2].id : null;
 
   // Children of the current node (or the real top-level sites at the root).
@@ -85,8 +90,9 @@ export function DashboardPage() {
   } = useNodeChildren(currentNodeId, searchQuery);
 
   // A node with zero children, once loaded, is a real leaf — show its
-  // meters instead of a further drill-down table.
-  const isLeafView = currentNodeId !== null && !childrenLoading && rawChildNodes.length === 0;
+  // meters instead of a further drill-down table. A failed children fetch is
+  // NOT an empty node, so it never counts as a leaf.
+  const isLeafView = currentNodeId !== null && !childrenLoading && !childrenError && rawChildNodes.length === 0;
 
   const {
     meters,
@@ -98,7 +104,11 @@ export function DashboardPage() {
   // A leaf's own totals (yesterday/today/month flow) live on its row in its
   // PARENT's children list, not on the (empty) call to itself — so at a
   // leaf, also fetch the sibling list to recover them for the KPI row.
-  const { rawNodes: siblingNodes } = useNodeChildren(parentId, '', isLeafView && parentId !== null);
+  const {
+    rawNodes: siblingNodes,
+    error: siblingsError,
+    refetch: refetchSiblings,
+  } = useNodeChildren(parentId, '', isLeafView && parentId !== null);
   const currentNodeTotals = useMemo<NodeRow | undefined>(
     () => siblingNodes.find((n) => n.id === currentNodeId),
     [siblingNodes, currentNodeId]
@@ -124,7 +134,11 @@ export function DashboardPage() {
 
   const handleRetryAll = () => {
     refetchChildren();
-    if (isLeafView) refetchMeters();
+    if (ancestorsError) refetchAncestors();
+    if (isLeafView) {
+      refetchMeters();
+      if (parentId !== null) refetchSiblings();
+    }
   };
 
   const handleSelectNode = (node: NodeRow) => {
@@ -137,7 +151,10 @@ export function DashboardPage() {
     ? 'Search areas...'
     : `Search areas in ${ancestors[ancestors.length - 1]?.name || ''}...`;
 
-  const activeError = childrenError || (isLeafView && metersError) || undefined;
+  // First failure wins; while any source has failed the page shows the error
+  // banner instead of KPIs/tables, so zeros never stand in for missing data.
+  const activeError =
+    childrenError || ancestorsError || (isLeafView && (metersError || siblingsError)) || undefined;
 
   const currentLocality = ancestors.map((n) => n.name).join(' - ') || 'Dashboard';
 
@@ -192,65 +209,70 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* 3. KPI Row */}
-      <DashboardKpiRow
-        isLeaf={isLeafView}
-        kpis={kpis}
-        isLoading={isLoading}
-        selectedStatusFilter={statusFilter}
-        onStatusFilterChange={setStatusFilter}
-      />
-
-      {/* 4. Filter Bar */}
-      <section className="cw-section" style={{ marginBottom: 16 }}>
-        <FilterBar
-          searchValue={searchQuery}
-          onSearchChange={setSearchQuery}
-          searchPlaceholder={searchPlaceholder}
-          onReset={searchQuery || statusFilter !== 'ALL' ? handleResetFilters : undefined}
-        >
-          {isLeafView && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label htmlFor="dashboard-status-filter" style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)', whiteSpace: 'nowrap' }}>
-                Status:
-              </label>
-              <select
-                id="dashboard-status-filter"
-                className="cw-filter-select"
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as any)}
-                style={{
-                  background: 'var(--cw-bg-input, #fff)',
-                  border: '1px solid var(--cw-border, #cbd5e1)',
-                  borderRadius: 'var(--cw-radius, 6px)',
-                  padding: '6px 12px',
-                  fontSize: '0.85rem',
-                  color: 'var(--cw-text, #1e293b)',
-                }}
-              >
-                <option value="ALL">All Statuses</option>
-                <option value="CONNECTED">Connected</option>
-                <option value="DISCONNECTED">Disconnected</option>
-                <option value="NEVER_SEEN">Never Seen</option>
-              </select>
-            </div>
-          )}
-        </FilterBar>
-      </section>
-
-      {/* 5. Scope-specific Data Table */}
-      {isLeafView ? (
-        <NodeMeterTable
-          meters={meters}
-          isLoading={metersLoading}
-          onSelectMeter={(meter) => setSelectedMeter(meter)}
+      {!activeError && (
+        <>
+        {/* 3. KPI Row */}
+        <DashboardKpiRow
+          isLeaf={isLeafView}
+          kpis={kpis}
+          isLoading={isLoading}
+          selectedStatusFilter={statusFilter}
+          onStatusFilterChange={setStatusFilter}
         />
-      ) : (
-        <NodeOverviewTable
-          nodes={childNodes}
-          isLoading={childrenLoading}
-          onSelectNode={handleSelectNode}
-        />
+
+        {/* 4. Filter Bar */}
+        <section className="cw-section" style={{ marginBottom: 16 }}>
+          <FilterBar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder={searchPlaceholder}
+            onReset={searchQuery || statusFilter !== 'ALL' ? handleResetFilters : undefined}
+          >
+            {isLeafView && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <label htmlFor="dashboard-status-filter" style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)', whiteSpace: 'nowrap' }}>
+                  Status:
+                </label>
+                <select
+                  id="dashboard-status-filter"
+                  className="cw-filter-select"
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value as any)}
+                  style={{
+                    background: 'var(--cw-bg-input, #fff)',
+                    border: '1px solid var(--cw-border, #cbd5e1)',
+                    borderRadius: 'var(--cw-radius, 6px)',
+                    padding: '6px 12px',
+                    fontSize: '0.85rem',
+                    color: 'var(--cw-text, #1e293b)',
+                  }}
+                >
+                  <option value="ALL">All Statuses</option>
+                  <option value="CONNECTED">Connected</option>
+                  <option value="DISCONNECTED">Disconnected</option>
+                  <option value="NEVER_SEEN">Never Seen</option>
+                </select>
+              </div>
+            )}
+          </FilterBar>
+        </section>
+
+        {/* 5. Scope-specific Data Table */}
+        {isLeafView ? (
+          <NodeMeterTable
+            meters={meters}
+            isLoading={metersLoading}
+            onSelectMeter={(meter) => setSelectedMeter(meter)}
+          />
+        ) : (
+          <NodeOverviewTable
+            nodes={childNodes}
+            isLoading={childrenLoading}
+            onSelectNode={handleSelectNode}
+          />
+        )}
+
+        </>
       )}
 
       {/* 6. Meter 360° History Drawer */}

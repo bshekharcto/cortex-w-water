@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { NodeRow } from '../models/dashboardRows';
-import { fetchNodeChildren } from '../services/dashboardDataService';
+import { fetchNodeChildren, describeError } from '../services/dashboardDataService';
 
 /**
  * Fetches the direct children of a node — or the real top-level sites when
@@ -28,9 +28,11 @@ export function useNodeChildren(parentId: string | null, searchQuery: string = '
     try {
       const data = await fetchNodeChildren(parentId);
       setNodes(data);
-    } catch (err: any) {
+    } catch (err) {
       console.error('[useNodeChildren] Failed to load node children:', err);
-      setError(err?.message || 'Failed to load');
+      // Drop the previous node's rows so a failure never shows stale data.
+      setNodes([]);
+      setError(describeError(err));
     } finally {
       setIsLoading(false);
     }

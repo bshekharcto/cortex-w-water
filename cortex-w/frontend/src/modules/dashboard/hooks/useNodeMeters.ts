@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { MeterRow } from '../models/dashboardRows';
-import { fetchNodeMeters } from '../services/dashboardDataService';
+import { fetchNodeMeters, describeError } from '../services/dashboardDataService';
 
 /**
  * Fetches the meters directly attached to a node. Only meaningful for a
@@ -27,9 +27,10 @@ export function useNodeMeters(
     try {
       const data = await fetchNodeMeters(nodeId);
       setMeters(data);
-    } catch (err: any) {
+    } catch (err) {
       console.error('[useNodeMeters] Failed to load node meters:', err);
-      setError(err?.message || 'Failed to load meters');
+      setMeters([]);
+      setError(describeError(err, 'Failed to load meters'));
     } finally {
       setIsLoading(false);
     }

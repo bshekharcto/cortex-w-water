@@ -1,10 +1,29 @@
-import { Router } from 'express';
-import { proxyUpstream } from '../services/upstreamProxy.js';
+import { Router, type Response } from 'express';
+import { fetchUpstreamOrThrow, UpstreamError } from '../services/upstreamProxy.js';
 import { getAuthToken } from './gis.js';
-import { pool } from '../db/pool.js';
-import { getRoots, getNode, hasStructuralChildren, getAncestorChain } from '../services/siteTree.js';
+import {
+  getRoots,
+  getNode,
+  hasStructuralChildren,
+  getAncestorChain,
+  getDescendantIds,
+  type SiteNode,
+} from '../services/siteTree.js';
+import { getInventory, type Inventory } from '../services/assetInventory.js';
+import {
+  OTHERS_NAME,
+  OTHERS_ID_PREFIX,
+  getMeterFacts,
+  connectivityOf,
+  type MeterFact,
+} from '../services/unassignedMeters.js';
 
 const router = Router();
+
+// Warm the slow sources at startup (meter inventory ~1min, telemetry scan
+// ~10s) so the first dashboard load isn't the one that pays for them.
+getInventory().catch((err) => console.warn('[dashboard] Inventory warm-up failed:', err?.message || err));
+getMeterFacts().catch((err) => console.warn('[dashboard] Telemetry warm-up failed:', err?.message || err));
 
 // Real implementation, generic over depth: cog-core-api's real site hierarchy
 // (GET /api/site/, see services/siteTree.ts) supplies node identity/structure
@@ -19,8 +38,9 @@ const router = Router();
 // Shared per-site cache for the (large — full meter lists embedded per node)
 // upstream DMA report, so sibling requests for the same parent within a
 // short window don't each independently re-fetch it. Same TTL pattern as
-// gis.ts's gisCache. Failed fetches are never cached — an outage should
-// keep retrying, not get frozen in as "this node has zero devices."
+// gis.ts's gisCache. A failed fetch throws (UpstreamError) and is never
+// cached — an outage must surface and keep retrying, not be frozen in (or
+// passed off) as "this node has zero devices."
 interface CachedDmaReport {
   timestamp: number;
   rows: any[];
@@ -37,26 +57,197 @@ async function fetchRealDmaReport(siteId: number, authHeader?: string): Promise<
 
   const token = await getAuthToken(authHeader);
   const headers: Record<string, string> = token ? { Authorization: token } : {};
-  const upstream = await proxyUpstream('GET', `/api/water/dma-report/zones/${siteId}`, { headers }).catch(
-    () => ({ status: 500, data: null })
-  );
-  const rows = Array.isArray(upstream.data) ? upstream.data : [];
-  if (rows.length > 0) {
-    dmaReportCache.set(siteId, { timestamp: now, rows });
-  }
-  return rows;
+  const path = `/api/water/dma-report/zones/${siteId}`;
+  const data = await fetchUpstreamOrThrow('GET', path, { headers });
+  if (!Array.isArray(data)) throw new UpstreamError(path, 200, 'response was not a list');
+  // An empty list is a legitimate answer (a leaf node has no children).
+  if (data.length > 0) dmaReportCache.set(siteId, { timestamp: now, rows: data });
+  return data;
 }
 
-function sumRows(rows: any[]) {
-  return {
-    totalDevices: rows.reduce((s, r) => s + (r.totalDevices || 0), 0),
-    connected: rows.reduce((s, r) => s + (r.connected || 0), 0),
-    disconnected: rows.reduce((s, r) => s + (r.disconnected || 0), 0),
-    neverSeen: rows.reduce((s, r) => s + (r.neverSeen || 0), 0),
-    yesterdayFlowM3: Number(rows.reduce((s, r) => s + (r.yesterdayFlow || 0), 0).toFixed(2)),
-    todayFlowM3: Number(rows.reduce((s, r) => s + (r.todayFlow || 0), 0).toFixed(2)),
-    monthToDateFlowM3: Number(rows.reduce((s, r) => s + (r.monthlyFlow || 0), 0).toFixed(2)),
+type Conn = 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN';
+
+interface Totals {
+  totalDevices: number;
+  connected: number;
+  disconnected: number;
+  neverSeen: number;
+  yesterdayFlowM3: number;
+  todayFlowM3: number;
+  monthToDateFlowM3: number;
+}
+
+// cog-core-api's own asset status, as a fallback for meters its DMA report
+// doesn't cover (cross-checked against the DMA report's connectivityStatus:
+// ACTIVE ~ CONNECTED, INACTIVE ~ DISCONNECTED, NOT_REPORTING ~ NEVER_SEEN).
+const ASSET_STATUS_TO_CONN: Record<string, Conn> = {
+  ACTIVE: 'CONNECTED',
+  INACTIVE: 'DISCONNECTED',
+  NOT_REPORTING: 'NEVER_SEEN',
+};
+
+/**
+ * Where each fact about a meter comes from. Membership (which node a meter
+ * sits under) is decided by cog-core-api only: the DMA report's embedded
+ * meters plus the asset inventory's site assignment. Our Postgres telemetry
+ * never decides membership — it only fills in last-seen / totalizer / dev_eui
+ * / flows for meters upstream doesn't report those for.
+ */
+interface Ctx {
+  inv: Inventory;
+  facts: Map<string, MeterFact>;
+}
+
+async function loadCtx(authHeader?: string): Promise<Ctx> {
+  const [inv, facts] = await Promise.all([getInventory(authHeader), getMeterFacts()]);
+  return { inv, facts: new Map(facts.map((f) => [f.meterId, f])) };
+}
+
+function embeddedOf(...rowSets: any[][]): Map<string, any> {
+  const map = new Map<string, any>();
+  for (const rows of rowSets) {
+    for (const r of rows) for (const m of r.meters || []) if (m.meterId) map.set(m.meterId, m);
+  }
+  return map;
+}
+
+/** Meter ids under `node`: assets attached to it or any descendant, plus any embedded in its DMA row(s). */
+async function memberIds(
+  node: SiteNode,
+  embeddedRows: any[],
+  ctx: Ctx,
+  authHeader?: string
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  // The inventory holds only household-mapped meters, so it also vets the DMA
+  // report's embedded ones (which today are all mapped already).
+  for (const r of embeddedRows) {
+    for (const m of r.meters || []) {
+      if (m.meterId && ctx.inv.byMeter.has(m.meterId)) ids.add(m.meterId);
+    }
+  }
+  const siteIds = [node.id, ...(await getDescendantIds(node.id, authHeader))];
+  for (const sid of siteIds) for (const id of ctx.inv.bySite.get(sid) || []) ids.add(id);
+  return ids;
+}
+
+function connOf(id: string, emb: Map<string, any>, ctx: Ctx): Conn {
+  const e = emb.get(id);
+  if (e?.connectivityStatus) return e.connectivityStatus as Conn;
+  const inv = ctx.inv.byMeter.get(id);
+  if (inv && ASSET_STATUS_TO_CONN[inv.status]) return ASSET_STATUS_TO_CONN[inv.status];
+  const fact = ctx.facts.get(id);
+  return fact ? connectivityOf(fact.lastSeen) : 'NEVER_SEEN';
+}
+
+function summarize(ids: Iterable<string>, emb: Map<string, any>, ctx: Ctx): Totals {
+  const t: Totals = {
+    totalDevices: 0, connected: 0, disconnected: 0, neverSeen: 0,
+    yesterdayFlowM3: 0, todayFlowM3: 0, monthToDateFlowM3: 0,
   };
+  for (const id of ids) {
+    t.totalDevices++;
+    const c = connOf(id, emb, ctx);
+    if (c === 'CONNECTED') t.connected++;
+    else if (c === 'DISCONNECTED') t.disconnected++;
+    else t.neverSeen++;
+    const e = emb.get(id);
+    const f = ctx.facts.get(id);
+    t.yesterdayFlowM3 += e ? e.yesterdayFlow || 0 : f?.yesterdayM3 ?? 0;
+    t.todayFlowM3 += e ? e.todayFlow || 0 : f?.todayM3 ?? 0;
+    t.monthToDateFlowM3 += e ? e.monthlyFlow || 0 : f?.monthM3 ?? 0;
+  }
+  t.yesterdayFlowM3 = Number(t.yesterdayFlowM3.toFixed(2));
+  t.todayFlowM3 = Number(t.todayFlowM3.toFixed(2));
+  t.monthToDateFlowM3 = Number(t.monthToDateFlowM3.toFixed(2));
+  return t;
+}
+
+function toMeterRow(id: string, emb: Map<string, any>, ctx: Ctx) {
+  const e = emb.get(id);
+  const inv = ctx.inv.byMeter.get(id);
+  const f = ctx.facts.get(id);
+  return {
+    assetId: e?.assetId ?? inv?.assetId ?? null,
+    devEui: f?.devEui ?? null,
+    meterId: id,
+    meterType: 'Axioma Qalcosonic W1',
+    consumerId: e?.consumerId ?? inv?.consumerId,
+    consumerName: e?.consumerName ?? inv?.consumerName,
+    address: e?.address ?? inv?.address,
+    meterSize: '15mm',
+    totalizerM3: e?.totalizer ?? f?.totalizerM3 ?? 0,
+    latestReadingAt: e?.decodedAt || f?.lastSeen?.toISOString() || undefined,
+    connectivityStatus: connOf(id, emb, ctx),
+  };
+}
+
+/** A node's own embedded meter row, which lives in its PARENT's DMA report. */
+async function ownEmbeddedRows(node: SiteNode, authHeader?: string): Promise<any[]> {
+  if (node.parentId == null) return [];
+  const siblings = await fetchRealDmaReport(node.parentId, authHeader);
+  return siblings.filter((r: any) => r.id === node.id);
+}
+
+interface OthersGroup {
+  ids: string[];
+  emb: Map<string, any>;
+  totals: Totals;
+}
+
+/**
+ * Meters that belong under `parent` but not under any of its real children
+ * (attached straight to the site, or with no zone/DMA) — surfaced as one
+ * synthetic "Others" child so no meter is dropped. Null when there are none.
+ */
+async function computeOthers(
+  parent: SiteNode,
+  childRows: any[],
+  ctx: Ctx,
+  authHeader?: string
+): Promise<OthersGroup | null> {
+  const own = await ownEmbeddedRows(parent, authHeader);
+  const parentIds = await memberIds(parent, [...own, ...childRows], ctx, authHeader);
+
+  const inChild = new Set<string>();
+  for (const r of childRows) {
+    const child = await getNode(r.id, authHeader);
+    const ids = child ? await memberIds(child, [r], ctx, authHeader) : new Set<string>();
+    for (const id of ids) inChild.add(id);
+  }
+
+  const ids = [...parentIds].filter((id) => !inChild.has(id));
+  if (ids.length === 0) return null;
+  const emb = embeddedOf(own, childRows);
+  return { ids, emb, totals: summarize(ids, emb, ctx) };
+}
+
+function othersNodeRow(parent: SiteNode, totals: Totals) {
+  return {
+    id: `${OTHERS_ID_PREFIX}${parent.id}`,
+    name: OTHERS_NAME,
+    level: (parent.level ?? 0) + 1,
+    parentId: String(parent.id),
+    parentName: parent.name,
+    hasChildren: false,
+    meterCount: totals.totalDevices,
+    ...totals,
+    dataTimestamp: new Date().toISOString(),
+  };
+}
+
+/**
+ * Failures are reported as failures: a 502 when cog-core-api (or the
+ * Postgres telemetry) can't answer, a 500 for anything else — never a 200
+ * with an empty list, which the UI would render as "this node has no data".
+ */
+function sendError(res: Response, what: string, err: any) {
+  const upstream = err instanceof UpstreamError;
+  console.warn(`[dashboard] ${what} failed:`, err?.message || err);
+  res.status(upstream ? 502 : 500).json({
+    error: upstream ? 'UPSTREAM_UNAVAILABLE' : 'INTERNAL_ERROR',
+    message: upstream ? 'The water platform did not respond. Please retry.' : `Could not ${what}.`,
+  });
 }
 
 /**
@@ -71,21 +262,27 @@ router.get('/nodes', async (req, res) => {
   const parentIdParam = (req.query.parentId as string) || '';
 
   try {
+    const ctx = await loadCtx(authHeader);
+
     if (!parentIdParam || parentIdParam === 'root') {
       const roots = await getRoots(authHeader);
       const results = await Promise.all(
         roots.map(async (root) => {
           const rows = await fetchRealDmaReport(root.id, authHeader);
-          const totals = sumRows(rows);
-          const childCount = await hasStructuralChildren(root.id, authHeader);
+          const hasRealChildren = await hasStructuralChildren(root.id, authHeader);
+          // A top-level site's total is every meter attached to it or listed
+          // under any of its children — including meters attached straight to
+          // the site, which the DMA report never lists.
+          const ids = await memberIds(root, rows, ctx, authHeader);
+          const totals = summarize(ids, embeddedOf(rows), ctx);
           return {
             id: String(root.id),
             name: root.name,
             level: root.level,
             parentId: null,
             parentName: null,
-            hasChildren: childCount,
-            meterCount: 0, // real top-level sites never carry meters directly in this data model
+            hasChildren: hasRealChildren,
+            meterCount: hasRealChildren ? 0 : ids.size,
             ...totals,
             dataTimestamp: new Date().toISOString(),
           };
@@ -98,10 +295,14 @@ router.get('/nodes', async (req, res) => {
     if (!Number.isFinite(parentId)) return res.json([]);
 
     const rows = await fetchRealDmaReport(parentId, authHeader);
-    const results = await Promise.all(
+    const results: any[] = await Promise.all(
       rows.map(async (r: any) => {
         const node = await getNode(r.id, authHeader);
         const childCount = await hasStructuralChildren(r.id, authHeader);
+        const ids = node ? await memberIds(node, [r], ctx, authHeader) : new Set<string>(
+          (r.meters || []).map((m: any) => m.meterId).filter(Boolean)
+        );
+        const totals = summarize(ids, embeddedOf([r]), ctx);
         return {
           id: String(r.id),
           name: node?.name || r.name,
@@ -109,22 +310,20 @@ router.get('/nodes', async (req, res) => {
           parentId: parentIdParam,
           parentName: node?.parentName ?? null,
           hasChildren: childCount,
-          meterCount: Array.isArray(r.meters) ? r.meters.length : 0,
-          totalDevices: r.totalDevices || 0,
-          connected: r.connected || 0,
-          disconnected: r.disconnected || 0,
-          neverSeen: r.neverSeen || 0,
-          yesterdayFlowM3: r.yesterdayFlow || 0,
-          todayFlowM3: r.todayFlow || 0,
-          monthToDateFlowM3: r.monthlyFlow || 0,
+          meterCount: ids.size,
+          ...totals,
           dataTimestamp: r.timestamp || new Date().toISOString(),
         };
       })
     );
+    const parentNode = await getNode(parentId, authHeader);
+    if (parentNode && rows.length > 0) {
+      const others = await computeOthers(parentNode, rows, ctx, authHeader);
+      if (others) results.push(othersNodeRow(parentNode, others.totals));
+    }
     return res.json(results);
   } catch (err: any) {
-    console.warn('[dashboard] Error fetching nodes:', err?.message || err);
-    return res.json([]);
+    return sendError(res, 'load dashboard nodes', err);
   }
 });
 
@@ -136,89 +335,65 @@ router.get('/nodes', async (req, res) => {
  */
 router.get('/nodes/:nodeId/ancestors', async (req, res) => {
   try {
+    if (req.params.nodeId.startsWith(OTHERS_ID_PREFIX)) {
+      const parentKey = req.params.nodeId.slice(OTHERS_ID_PREFIX.length);
+      const parentChain = Number.isFinite(Number(parentKey))
+        ? await getAncestorChain(Number(parentKey), req.headers.authorization)
+        : [];
+      return res.json([
+        ...parentChain.map((n) => ({ id: String(n.id), name: n.name, level: n.level })),
+        { id: req.params.nodeId, name: OTHERS_NAME, level: null },
+      ]);
+    }
     const nodeId = Number(req.params.nodeId);
     if (!Number.isFinite(nodeId)) return res.json([]);
     const chain = await getAncestorChain(nodeId, req.headers.authorization);
     return res.json(chain.map((n) => ({ id: String(n.id), name: n.name, level: n.level })));
   } catch (err: any) {
-    console.warn('[dashboard] Error resolving ancestors:', err?.message || err);
-    return res.json([]);
+    return sendError(res, 'resolve node ancestors', err);
   }
 });
 
-// Real dev_eui, looked up from our own synced telemetry (raw_telemetry_packets)
-// by meter_id — never fabricated. cog-core-api's dma-report endpoint doesn't
-// return a devEui field at all (confirmed against a live payload), so this is
-// the only real source for it. Batched per-node to avoid one query per meter;
-// falls back to an empty map (every meter renders "no dev_eui yet") if the
-// lookup itself fails, rather than fabricating anything.
-async function fetchDevEuiMap(meterIds: string[]): Promise<Map<string, string>> {
-  const map = new Map<string, string>();
-  if (meterIds.length === 0) return map;
-  try {
-    const result = await pool.query(
-      `SELECT DISTINCT ON (meter_id) meter_id, dev_eui
-       FROM raw_telemetry_packets
-       WHERE meter_id = ANY($1::text[])
-       ORDER BY meter_id, decoded_at DESC`,
-      [meterIds]
-    );
-    for (const row of result.rows) {
-      if (row.dev_eui) map.set(row.meter_id, row.dev_eui);
-    }
-  } catch (err: any) {
-    console.warn('[dashboard] Failed to look up dev_eui from Postgres:', err?.message || err);
-  }
-  return map;
-}
-
-async function mapMeterRows(match: any): Promise<any[]> {
-  const meters = match.meters || [];
-  const devEuiMap = await fetchDevEuiMap(meters.map((m: any) => m.meterId).filter(Boolean));
-
-  return meters.map((m: any) => ({
-    assetId: m.assetId ?? null,
-    devEui: devEuiMap.get(m.meterId) || null,
-    meterId: m.meterId,
-    meterType: 'Axioma Qalcosonic W1',
-    consumerId: m.consumerId,
-    consumerName: m.consumerName,
-    address: m.address,
-    meterSize: '15mm',
-    totalizerM3: m.totalizer ?? 0,
-    latestReadingAt: m.decodedAt || undefined,
-    connectivityStatus: m.connectivityStatus || 'NEVER_SEEN',
-  }));
-}
-
 /**
  * GET /api/dashboard/nodes/:nodeId/meters
- * Returns the real meter list directly attached to this node. A node's own
- * meters live embedded in its PARENT's dma-report response (not in a call to
- * the node itself, which returns its children instead) — so this resolves
- * the node's parent from the real site tree, re-fetches that parent's report
- * (cheap: shared cache above), and picks out this node's row.
+ * Returns the meters under this node: those embedded in its row of its
+ * PARENT's dma-report (the node's own call returns its children instead), plus
+ * any assets the inventory attaches to the node. For a node id of the form
+ * `others:<parentId>` it returns the meters under that parent that no real
+ * child lists. Consumer details come from the DMA report or, where that
+ * doesn't list a meter, the asset inventory's household.
  */
 router.get('/nodes/:nodeId/meters', async (req, res) => {
   try {
-    const nodeId = Number(req.params.nodeId);
-    if (!Number.isFinite(nodeId)) return res.json([]);
     const authHeader = req.headers.authorization;
+    const ctx = await loadCtx(authHeader);
 
-    const node = await getNode(nodeId, authHeader);
-    if (!node || node.parentId == null) {
-      // No parent = a real top-level site = never carries meters directly.
-      return res.json([]);
+    if (req.params.nodeId.startsWith(OTHERS_ID_PREFIX)) {
+      const parent = await getNode(Number(req.params.nodeId.slice(OTHERS_ID_PREFIX.length)), authHeader);
+      if (!parent) return res.json([]);
+      const childRows = await fetchRealDmaReport(parent.id, authHeader);
+      const others = await computeOthers(parent, childRows, ctx, authHeader);
+      return res.json((others?.ids ?? []).map((id) => toMeterRow(id, others!.emb, ctx)));
     }
 
-    const rows = await fetchRealDmaReport(node.parentId, authHeader);
-    const match = rows.find((r: any) => String(r.id) === String(nodeId));
-    if (!match) return res.json([]);
+    const nodeId = Number(req.params.nodeId);
+    if (!Number.isFinite(nodeId)) return res.json([]);
 
-    return res.json(await mapMeterRows(match));
+    const node = await getNode(nodeId, authHeader);
+    if (!node) return res.json([]);
+
+    if (node.parentId == null) {
+      // A top-level site with children shows them (and its "Others"); one
+      // without carries its meters directly.
+      if (await hasStructuralChildren(nodeId, authHeader)) return res.json([]);
+    }
+
+    const own = await ownEmbeddedRows(node, authHeader);
+    const ids = await memberIds(node, own, ctx, authHeader);
+    const emb = embeddedOf(own);
+    return res.json([...ids].map((id) => toMeterRow(id, emb, ctx)));
   } catch (err: any) {
-    console.warn('[dashboard] Error fetching node meters:', err?.message || err);
-    return res.json([]);
+    return sendError(res, 'load node meters', err);
   }
 });
 

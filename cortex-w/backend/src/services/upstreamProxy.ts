@@ -13,6 +13,45 @@ import { config } from '../config/env.js';
  *
  * The frontend never sees these — it talks to a clean, consistent BFF contract.
  */
+// A hung upstream must fail the request, not hang it. The slowest legitimate
+// call (a 2,000-row asset/query page) takes ~10s, so 60s leaves ample margin.
+const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS) || 60_000;
+
+/** An upstream call that failed (network error, timeout, or a non-2xx / malformed response). */
+export class UpstreamError extends Error {
+  constructor(
+    public readonly path: string,
+    public readonly upstreamStatus: number | null,
+    detail: string
+  ) {
+    super(`Upstream ${path} failed: ${detail}`);
+    this.name = 'UpstreamError';
+  }
+}
+
+/**
+ * Like proxyUpstream, but never lets a failure pass as data: a thrown fetch
+ * (network/timeout) or a non-2xx status becomes an UpstreamError, so callers
+ * can't mistake an outage for an empty result.
+ */
+export async function fetchUpstreamOrThrow(
+  method: string,
+  path: string,
+  opts: Parameters<typeof proxyUpstream>[2] = {}
+): Promise<unknown> {
+  let res: Awaited<ReturnType<typeof proxyUpstream>>;
+  try {
+    res = await proxyUpstream(method, path, opts);
+  } catch (err: any) {
+    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+    throw new UpstreamError(path, null, timedOut ? `timed out after ${UPSTREAM_TIMEOUT_MS}ms` : err?.message || String(err));
+  }
+  if (res.status < 200 || res.status >= 300) {
+    throw new UpstreamError(path, res.status, `HTTP ${res.status}`);
+  }
+  return res.data;
+}
+
 export async function proxyUpstream(
   method: string,
   path: string,
@@ -44,6 +83,7 @@ export async function proxyUpstream(
       ...opts.headers,
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   });
 
   if (res.status === 204) {

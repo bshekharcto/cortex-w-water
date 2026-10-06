@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { ScopeNode } from '../models/dashboardScope';
-import { fetchNodeAncestors } from '../services/dashboardDataService';
+import { fetchNodeAncestors, describeError } from '../services/dashboardDataService';
 
 /**
  * Resolves the real root-to-node name chain for the current node id — the
@@ -11,6 +11,7 @@ import { fetchNodeAncestors } from '../services/dashboardDataService';
 export function useNodeAncestors(nodeId: string | null) {
   const [ancestors, setAncestors] = useState<ScopeNode[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(!!nodeId);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!nodeId) {
@@ -19,9 +20,14 @@ export function useNodeAncestors(nodeId: string | null) {
       return;
     }
     setIsLoading(true);
+    setError(null);
     try {
       const chain = await fetchNodeAncestors(nodeId);
       setAncestors(chain);
+    } catch (err) {
+      console.error('[useNodeAncestors] Failed to resolve breadcrumb:', err);
+      setAncestors([]);
+      setError(describeError(err, 'Failed to resolve the breadcrumb'));
     } finally {
       setIsLoading(false);
     }
@@ -31,5 +37,5 @@ export function useNodeAncestors(nodeId: string | null) {
     load();
   }, [load]);
 
-  return { ancestors, isLoading };
+  return { ancestors, isLoading, error, refetch: load };
 }
