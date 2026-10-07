@@ -4,6 +4,8 @@ import { pool } from '../db/pool.js';
 import { fetchUpstreamOrThrow, UpstreamError } from './upstreamProxy.js';
 import { singleFlight } from './inflight.js';
 import { getAuthToken } from '../routes/gis.js';
+import { requireClient } from './clientContext.js';
+import { runInBackground } from './background.js';
 
 // The master meter inventory from cog-core-api: every Water Meter asset with
 // the site it is attached to, its status and its household (consumer name,
@@ -11,6 +13,11 @@ import { getAuthToken } from '../routes/gis.js';
 // built on, and it is the only upstream source that knows meters attached
 // directly to a site (no zone/DMA) — GET /api/water/dma-report/zones/{id}
 // only lists meters that sit under a child node.
+//
+// PER CLIENT: every table row and in-memory copy below is keyed by the signed-in
+// client (see clientContext.ts). The refresh runs with that client's own token
+// and keeps only assets whose site the client owns, so one client's inventory
+// can never contain, or be served to, another's.
 //
 // Only meters with a mapped household are kept. The Cognecto "Water Executive
 // Summary" reports 19,092 "Households Mapped" of 27,996 "Meters Configured",
@@ -69,8 +76,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // ---------------------------------------------------------------------------
 
 async function fetchPageOnce(page: number): Promise<any> {
-  // The shared snapshot always uses the service account, never one user's
-  // token, which may expire mid-run.
+  // The client's own token (carried through the request's context).
   const token = await getAuthToken();
   const headers: Record<string, string> = token ? { Authorization: token } : {};
   const data = (await fetchUpstreamOrThrow('POST', '/api/asset/query', {
@@ -107,34 +113,65 @@ interface Row {
   address: string | null;
 }
 
-/** The mapped Water Meters in one upstream page. */
-function mappedMeters(page: any): Row[] {
-  const byId = new Map<string, Row>();
-  for (const a of page.content as any[]) {
-    if (a.assetClassName !== METER_CLASS || !a.name || typeof a.siteId !== 'number') continue;
-    if (!a.household) continue; // unmapped meter: no household linked
-    byId.set(a.name, {
-      meterId: a.name,
-      assetId: a.id,
-      siteId: a.siteId,
-      status: a.status ?? null,
-      consumerId: a.household.customId || null,
-      consumerName: a.household.name || null,
-      address: a.household.location || null,
-    });
-  }
-  return [...byId.values()];
+interface OwnerRow {
+  meterId: string;
+  assetId: number;
+  siteId: number;
 }
 
-async function upsertRows(rows: Row[], runId: number): Promise<void> {
+/**
+ * The Water Meters in one upstream page that sit under one of the client's own
+ * sites: every one as an owner row, and those with a household also as a
+ * mapped (inventory) row. Assets of any other site are dropped here even if
+ * upstream sent them.
+ */
+/** Postgres text can't hold NUL bytes, which some upstream strings contain. */
+const clean = (v: unknown): string | null => (typeof v === 'string' ? v.replace(/\u0000/g, '') : null);
+
+function clientMeters(page: any): { mapped: Row[]; owned: OwnerRow[] } {
+  const ctx = requireClient();
+  const mapped = new Map<string, Row>();
+  const owned = new Map<string, OwnerRow>();
+  for (const a of page.content as any[]) {
+    const name = clean(a.name);
+    if (a.assetClassName !== METER_CLASS || !name || typeof a.siteId !== 'number') continue;
+    if (!ctx.unscoped && !ctx.siteIds.has(a.siteId)) continue;
+    owned.set(name, { meterId: name, assetId: a.id, siteId: a.siteId });
+    if (!a.household) continue; // unmapped meter: no household linked
+    mapped.set(name, {
+      meterId: name,
+      assetId: a.id,
+      siteId: a.siteId,
+      status: clean(a.status),
+      consumerId: clean(a.household.customId) || null,
+      consumerName: clean(a.household.name) || null,
+      address: clean(a.household.location) || null,
+    });
+  }
+  return { mapped: [...mapped.values()], owned: [...owned.values()] };
+}
+
+async function upsertOwners(key: string, rows: OwnerRow[], runId: number): Promise<void> {
   if (rows.length === 0) return;
   await pool.query(
-    `INSERT INTO asset_inventory
-       (meter_id, asset_id, site_id, status, consumer_id, consumer_name, address, run_id, refreshed_at)
-     SELECT t.meter_id, t.asset_id, t.site_id, t.status, t.consumer_id, t.consumer_name, t.address, $8::bigint, NOW()
+    `INSERT INTO client_meter_owner (client_key, meter_id, asset_id, site_id, run_id)
+     SELECT $1, t.meter_id, t.asset_id, t.site_id, $5::bigint
+     FROM UNNEST($2::text[], $3::bigint[], $4::int[]) AS t(meter_id, asset_id, site_id)
+     ON CONFLICT (client_key, meter_id) DO UPDATE SET
+       asset_id = EXCLUDED.asset_id, site_id = EXCLUDED.site_id, run_id = EXCLUDED.run_id`,
+    [key, rows.map((r) => r.meterId), rows.map((r) => r.assetId), rows.map((r) => r.siteId), runId]
+  );
+}
+
+async function upsertRows(key: string, rows: Row[], runId: number): Promise<void> {
+  if (rows.length === 0) return;
+  await pool.query(
+    `INSERT INTO client_asset_inventory
+       (client_key, meter_id, asset_id, site_id, status, consumer_id, consumer_name, address, run_id, refreshed_at)
+     SELECT $9, t.meter_id, t.asset_id, t.site_id, t.status, t.consumer_id, t.consumer_name, t.address, $8::bigint, NOW()
      FROM UNNEST($1::text[], $2::bigint[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[])
        AS t(meter_id, asset_id, site_id, status, consumer_id, consumer_name, address)
-     ON CONFLICT (meter_id) DO UPDATE SET
+     ON CONFLICT (client_key, meter_id) DO UPDATE SET
        asset_id = EXCLUDED.asset_id, site_id = EXCLUDED.site_id, status = EXCLUDED.status,
        consumer_id = EXCLUDED.consumer_id, consumer_name = EXCLUDED.consumer_name,
        address = EXCLUDED.address, run_id = EXCLUDED.run_id, refreshed_at = EXCLUDED.refreshed_at`,
@@ -147,6 +184,7 @@ async function upsertRows(rows: Row[], runId: number): Promise<void> {
       rows.map((r) => r.consumerName),
       rows.map((r) => r.address),
       runId,
+      key,
     ]
   );
 }
@@ -177,13 +215,15 @@ interface RefreshState {
  */
 export async function refreshInventory(opts: { budgetMs: number; force?: boolean }): Promise<RefreshOutcome> {
   const started = Date.now();
+  const key = requireClient().key;
 
+  await pool.query(`INSERT INTO client_inventory_refresh (client_key) VALUES ($1) ON CONFLICT (client_key) DO NOTHING`, [key]);
   const locked = await pool.query<RefreshState>(
-    `UPDATE asset_inventory_refresh
+    `UPDATE client_inventory_refresh
         SET locked_until = NOW() + ($1 || ' milliseconds')::interval
-      WHERE id = 1 AND (locked_until IS NULL OR locked_until < NOW())
+      WHERE client_key = $2 AND (locked_until IS NULL OR locked_until < NOW())
       RETURNING run_id, next_page, total_pages, in_progress, completed_at`,
-    [String(LOCK_MS)]
+    [String(LOCK_MS), key]
   );
   if (locked.rowCount === 0) return 'busy';
 
@@ -200,8 +240,8 @@ export async function refreshInventory(opts: { budgetMs: number; force?: boolean
       nextPage = 0;
       totalPages = null;
       await pool.query(
-        `UPDATE asset_inventory_refresh SET run_id = $1, next_page = 0, total_pages = NULL, in_progress = TRUE WHERE id = 1`,
-        [runId]
+        `UPDATE client_inventory_refresh SET run_id = $1, next_page = 0, total_pages = NULL, in_progress = TRUE WHERE client_key = $2`,
+        [runId, key]
       );
     }
 
@@ -221,7 +261,9 @@ export async function refreshInventory(opts: { budgetMs: number; force?: boolean
       for (const r of settled) {
         if (r.status === 'fulfilled') {
           if (totalPages === null) totalPages = r.value.totalPages ?? 1;
-          await upsertRows(mappedMeters(r.value), runId);
+          const { mapped, owned } = clientMeters(r.value);
+          await upsertOwners(key, owned, runId);
+          await upsertRows(key, mapped, runId);
         } else if (!firstFailure) {
           firstFailure = r.reason;
         }
@@ -231,10 +273,10 @@ export async function refreshInventory(opts: { budgetMs: number; force?: boolean
       nextPage = pages[pages.length - 1] + 1;
       lastBatchMs = Date.now() - batchStart;
       await pool.query(
-        `UPDATE asset_inventory_refresh
+        `UPDATE client_inventory_refresh
             SET next_page = $1, total_pages = $2, locked_until = NOW() + ($3 || ' milliseconds')::interval
-          WHERE id = 1`,
-        [nextPage, totalPages, String(LOCK_MS)]
+          WHERE client_key = $4`,
+        [nextPage, totalPages, String(LOCK_MS), key]
       );
     }
 
@@ -242,8 +284,8 @@ export async function refreshInventory(opts: { budgetMs: number; force?: boolean
 
     // Whole run done: drop meters upstream no longer returns, then publish.
     const counts = await pool.query<{ seen: string; total: string }>(
-      `SELECT count(*) FILTER (WHERE run_id = $1) AS seen, count(*) AS total FROM asset_inventory`,
-      [runId]
+      `SELECT count(*) FILTER (WHERE run_id = $1) AS seen, count(*) AS total FROM client_asset_inventory WHERE client_key = $2`,
+      [runId, key]
     );
     const seen = Number(counts.rows[0].seen);
     const total = Number(counts.rows[0].total);
@@ -253,12 +295,13 @@ export async function refreshInventory(opts: { budgetMs: number; force?: boolean
       // answer than half the estate vanishing. Keep the old rows.
       console.warn(`[assetInventory] Run ${runId} saw ${seen} of ${total} stored meters; keeping the rest.`);
     } else {
-      await pool.query(`DELETE FROM asset_inventory WHERE run_id <> $1`, [runId]);
+      await pool.query(`DELETE FROM client_asset_inventory WHERE client_key = $2 AND run_id <> $1`, [runId, key]);
+      await pool.query(`DELETE FROM client_meter_owner WHERE client_key = $2 AND run_id <> $1`, [runId, key]);
     }
-    const completedAt = await publishSnapshot();
+    const completedAt = await publishSnapshot(key);
     await pool.query(
-      `UPDATE asset_inventory_refresh SET in_progress = FALSE, completed_at = $1, locked_until = NULL WHERE id = 1`,
-      [completedAt]
+      `UPDATE client_inventory_refresh SET in_progress = FALSE, completed_at = $1, locked_until = NULL WHERE client_key = $2`,
+      [completedAt, key]
     );
     console.log(`[assetInventory] Refresh ${runId} complete: ${seen} mapped meters in ${Date.now() - started}ms.`);
     return 'completed';
@@ -266,7 +309,7 @@ export async function refreshInventory(opts: { budgetMs: number; force?: boolean
     // Release the lock (a completed run already cleared it). An unfinished run
     // stays in_progress and is resumed by the next call.
     await pool
-      .query(`UPDATE asset_inventory_refresh SET locked_until = NULL WHERE id = 1`)
+      .query(`UPDATE client_inventory_refresh SET locked_until = NULL WHERE client_key = $1`, [key])
       .catch(() => undefined);
   }
 }
@@ -275,9 +318,10 @@ export async function refreshInventory(opts: { budgetMs: number; force?: boolean
 type SnapshotRow = [meterId: string, assetId: number, siteId: number, status: string | null, consumerId: string | null, consumerName: string | null, address: string | null];
 
 /** Builds the single-row gzipped copy of the table readers fetch; returns its completion time. */
-async function publishSnapshot(): Promise<Date> {
+async function publishSnapshot(key: string): Promise<Date> {
   const rows = await pool.query(
-    `SELECT meter_id, asset_id, site_id, status, consumer_id, consumer_name, address FROM asset_inventory`
+    `SELECT meter_id, asset_id, site_id, status, consumer_id, consumer_name, address FROM client_asset_inventory WHERE client_key = $1`,
+    [key]
   );
   const doc: SnapshotRow[] = rows.rows.map((r) => [
     r.meter_id, Number(r.asset_id), r.site_id, r.status, r.consumer_id, r.consumer_name, r.address,
@@ -285,9 +329,9 @@ async function publishSnapshot(): Promise<Date> {
   const data = (await gzipAsync(Buffer.from(JSON.stringify(doc)))).toString('base64');
   const now = (await pool.query<{ now: Date }>(`SELECT NOW() AS now`)).rows[0].now;
   await pool.query(
-    `INSERT INTO asset_inventory_snapshot (id, completed_at, row_count, data_gz_b64) VALUES (1, $1, $2, $3)
-     ON CONFLICT (id) DO UPDATE SET completed_at = EXCLUDED.completed_at, row_count = EXCLUDED.row_count, data_gz_b64 = EXCLUDED.data_gz_b64`,
-    [now, doc.length, data]
+    `INSERT INTO client_inventory_snapshot (client_key, completed_at, row_count, data_gz_b64) VALUES ($4, $1, $2, $3)
+     ON CONFLICT (client_key) DO UPDATE SET completed_at = EXCLUDED.completed_at, row_count = EXCLUDED.row_count, data_gz_b64 = EXCLUDED.data_gz_b64`,
+    [now, doc.length, data, key]
   );
   return now;
 }
@@ -296,12 +340,15 @@ async function publishSnapshot(): Promise<Date> {
 // Reading (Postgres -> request)
 // ---------------------------------------------------------------------------
 
-let memory: { completedAt: number; checkedAt: number; inventory: Inventory } | null = null;
-const loading = new Map<'snapshot', Promise<Inventory>>();
+// In-memory copies, one per client.
+const memories = new Map<string, { completedAt: number; checkedAt: number; inventory: Inventory }>();
+const loading = new Map<string, Promise<Inventory>>();
 
-async function readSnapshot(): Promise<Inventory> {
+async function readSnapshot(key: string): Promise<Inventory> {
+  const memory = memories.get(key);
   const state = await pool.query<{ completed_at: Date | null }>(
-    `SELECT completed_at FROM asset_inventory_snapshot WHERE id = 1`
+    `SELECT completed_at FROM client_inventory_snapshot WHERE client_key = $1`,
+    [key]
   );
   const completedAt = state.rows[0]?.completed_at ?? null;
 
@@ -312,11 +359,11 @@ async function readSnapshot(): Promise<Inventory> {
     const deadline = Date.now() + REQUEST_PATH_BUDGET_MS;
     for (;;) {
       // Someone (another worker) may have finished it while this one waited.
-      const published = await pool.query(`SELECT 1 FROM asset_inventory_snapshot WHERE id = 1`);
-      if (published.rowCount) return readSnapshot();
+      const published = await pool.query(`SELECT 1 FROM client_inventory_snapshot WHERE client_key = $1`, [key]);
+      if (published.rowCount) return readSnapshot(key);
       // force: with no published snapshot, "fresh" state alone isn't enough.
       const outcome = await refreshInventory({ budgetMs: deadline - Date.now(), force: true });
-      if (outcome === 'completed') return readSnapshot();
+      if (outcome === 'completed') return readSnapshot(key);
       if (Date.now() >= deadline) {
         throw new UpstreamError('asset inventory', null, 'is still being prepared for the first time; retry shortly');
       }
@@ -336,10 +383,11 @@ async function readSnapshot(): Promise<Inventory> {
   }
 
   const doc = await pool.query<{ completed_at: Date; data_gz_b64: string }>(
-    `SELECT completed_at, data_gz_b64 FROM asset_inventory_snapshot WHERE id = 1`
+    `SELECT completed_at, data_gz_b64 FROM client_inventory_snapshot WHERE client_key = $1`,
+    [key]
   );
   const snapshot = doc.rows[0];
-  if (!snapshot) return readSnapshot(); // replaced between the two reads; look again
+  if (!snapshot) return readSnapshot(key); // replaced between the two reads; look again
   const rows: SnapshotRow[] = JSON.parse((await gunzipAsync(Buffer.from(snapshot.data_gz_b64, 'base64'))).toString());
   const byMeter = new Map<string, InventoryMeter>();
   const bySite = new Map<number, string[]>();
@@ -358,7 +406,7 @@ async function readSnapshot(): Promise<Inventory> {
   }
   const loadedAt = snapshot.completed_at.getTime();
   const inventory: Inventory = { byMeter, bySite, loadedAt };
-  memory = { completedAt: loadedAt, checkedAt: Date.now(), inventory };
+  memories.set(key, { completedAt: loadedAt, checkedAt: Date.now(), inventory });
   return inventory;
 }
 
@@ -370,9 +418,11 @@ async function readSnapshot(): Promise<Inventory> {
  * missing inventory as "no meters".
  */
 export async function getInventory(): Promise<Inventory> {
+  const key = requireClient().key;
+  const memory = memories.get(key);
   if (memory && Date.now() - memory.checkedAt < MEMORY_CHECK_MS) return memory.inventory;
   try {
-    return await singleFlight(loading, 'snapshot', readSnapshot);
+    return await singleFlight(loading, key, () => readSnapshot(key));
   } catch (err: any) {
     if (memory) {
       console.warn('[assetInventory] Could not check Postgres, serving the last snapshot:', err?.message || err);
@@ -385,7 +435,5 @@ export async function getInventory(): Promise<Inventory> {
 
 /** Starts a refresh in the background if the snapshot is due; never throws, never blocks. */
 export function refreshInventoryInBackground(): void {
-  refreshInventory({ budgetMs: REQUEST_PATH_BUDGET_MS }).catch((err) =>
-    console.warn('[assetInventory] Background refresh failed:', err?.message || err)
-  );
+  runInBackground(refreshInventory({ budgetMs: REQUEST_PATH_BUDGET_MS }));
 }

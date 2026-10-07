@@ -5,8 +5,8 @@
 window.__CORTEX_W_RUNTIME_CONFIG__ = {
   APP_DATA_MODE: 'api', // 'seed' | 'api' | 'hybrid'
   API_BASE_URL: '/api',
-  GOOGLE_MAPS_API_KEY: 'AIzaSyDPTspFcq0ZZ_Nbjg7HkSQ1toulXqW2XdQ',
-  SHOW_DEMO_AUTH: true,
+  GOOGLE_MAPS_API_KEY: '', // set via frontend/.env or container env; never commit
+  SHOW_DEMO_AUTH: false,
   ENABLE_HYDRAULIC_SEED: true,
   METER_FRESHNESS_HOURS: 36,
 };

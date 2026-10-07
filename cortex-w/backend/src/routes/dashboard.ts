@@ -20,17 +20,18 @@ import {
   type MeterFact,
 } from '../services/unassignedMeters.js';
 import { pageMeters, parseMeterQuery } from '../services/meterPage.js';
+import { requireClient } from '../services/clientContext.js';
 
 const router = Router();
 
 /**
  * Warm the sources (meter inventory snapshot from Postgres, telemetry scan,
- * and every node's DMA report) so the first dashboard load isn't the one that
- * pays for them. Called once from the long-running server's startup, not at
- * import, so serverless cold starts (which only import the app) don't each
- * trigger a full load.
+ * and every node's DMA report) for one client, so their first dashboard load
+ * isn't the one that pays for them. Runs inside that client's context, with
+ * their own token — there is no global warm-up, because there is no
+ * client-less data to warm.
  */
-export function warmDashboardCaches(): void {
+export function warmClientCaches(): void {
   const warn = (what: string) => (err: any) => console.warn(`[dashboard] ${what} warm-up failed:`, err?.message || err);
   getInventory().catch(warn('Inventory'));
   getMeterFacts().catch(warn('Telemetry'));
@@ -61,18 +62,20 @@ interface CachedDmaReport {
   timestamp: number;
   rows: any[];
 }
-const dmaReportCache = new Map<number, CachedDmaReport>();
-const dmaReportInflight = new Map<number, Promise<any[]>>();
+// Keyed by client + site: a report is only ever served back to the client it was fetched for.
+const dmaReportCache = new Map<string, CachedDmaReport>();
+const dmaReportInflight = new Map<string, Promise<any[]>>();
 const DMA_REPORT_FRESH_MS = 60 * 1000;
 const DMA_REPORT_STALE_MAX_MS = 10 * 60 * 1000;
 
 function fetchRealDmaReport(siteId: number, authHeader?: string): Promise<any[]> {
-  const cached = dmaReportCache.get(siteId);
+  const cacheKey = `${requireClient().key}:${siteId}`;
+  const cached = dmaReportCache.get(cacheKey);
   const age = cached ? Date.now() - cached.timestamp : Infinity;
   if (cached && age < DMA_REPORT_FRESH_MS) return Promise.resolve(cached.rows);
 
   // Concurrent requests for the same node share one (large) upstream fetch.
-  const refresh = singleFlight(dmaReportInflight, siteId, () => loadDmaReport(siteId, authHeader));
+  const refresh = singleFlight(dmaReportInflight, cacheKey, () => loadDmaReport(siteId, cacheKey, authHeader));
   if (cached && age < DMA_REPORT_STALE_MAX_MS) {
     refresh.catch((err) =>
       console.warn(`[dashboard] Background refresh of DMA report ${siteId} failed, serving stale:`, err?.message || err)
@@ -82,7 +85,7 @@ function fetchRealDmaReport(siteId: number, authHeader?: string): Promise<any[]>
   return refresh;
 }
 
-async function loadDmaReport(siteId: number, authHeader?: string): Promise<any[]> {
+async function loadDmaReport(siteId: number, cacheKey: string, authHeader?: string): Promise<any[]> {
   const token = await getAuthToken(authHeader);
   const headers: Record<string, string> = token ? { Authorization: token } : {};
   const path = `/api/water/dma-report/zones/${siteId}`;
@@ -90,7 +93,7 @@ async function loadDmaReport(siteId: number, authHeader?: string): Promise<any[]
   if (!Array.isArray(data)) throw new UpstreamError(path, 200, 'response was not a list');
   // An empty list is a legitimate answer (a leaf node has no children), and
   // is cached too so opening a leaf doesn't cost an upstream round trip.
-  dmaReportCache.set(siteId, { timestamp: Date.now(), rows: data });
+  dmaReportCache.set(cacheKey, { timestamp: Date.now(), rows: data });
   return data;
 }
 

@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { getAuthToken, getLiveGisData } from './gis.js';
 import { pool } from '../db/pool.js';
+import { requireClient } from '../services/clientContext.js';
 
 const router = Router();
 
@@ -100,22 +101,23 @@ router.get('/:id/detail', async (req, res) => {
     const today = localDate(0);
     const last30Days = localDate(-30);
 
-    // Determine customId
-    let customId = idOrCustomId;
-    let initialHousehold: any = null;
-
-    if (!idOrCustomId.startsWith('WS/')) {
-      // Find household by numeric ID
-      const pageRes = await proxyUpstream('POST', '/api/household/page', {
-        body: { page: 0, size: 1, query: `\`id<EQ:NU>${idOrCustomId}\`` },
-        headers,
-      }).catch(() => null);
-      const pageData = pageRes?.data as any;
-      if (pageData?.content?.[0]) {
-        initialHousehold = pageData.content[0];
-        customId = initialHousehold.customId || customId;
-      }
-    }
+    // The household must be one this client can see. cog-core-api's
+    // household-meter-details lookup below is NOT scoped to the caller, so
+    // without this check any id would return another client's consumer data.
+    // /api/household/page IS scoped to the caller's token, so it decides.
+    const BT = '`';
+    const lookup = /^\d+$/.test(idOrCustomId)
+      ? `${BT}id<EQ:NU>${idOrCustomId}${BT}`
+      : `${BT}customId<CT:AN>${idOrCustomId}${BT}`;
+    const ownRes = await proxyUpstream('POST', '/api/household/page', {
+      body: { page: 0, size: 5, query: lookup },
+      headers,
+    }).catch(() => null);
+    const initialHousehold: any = ((ownRes?.data as any)?.content ?? []).find(
+      (h: any) => String(h.id) === idOrCustomId || h.customId === idOrCustomId
+    );
+    if (!initialHousehold) return res.status(404).json({ error: 'Household not found' });
+    const customId: string = initialHousehold.customId || idOrCustomId;
 
     // 1. Fetch meter details & swap history from upstream
     const hmdRes = await proxyUpstream('POST', '/api/water/household-meter-details', {
@@ -176,9 +178,10 @@ router.get('/:id/detail', async (req, res) => {
           `SELECT DISTINCT ON (date_key) date_key, decoded_at, forward_flow_l
            FROM raw_telemetry_packets
            WHERE meter_id = $1
+             AND meter_id IN (SELECT meter_id FROM client_meter_owner WHERE client_key = $2)
            ORDER BY date_key DESC, forward_flow_l DESC, decoded_at DESC
            LIMIT 10`,
-          [meterIdForReadings]
+          [meterIdForReadings, requireClient().key]
         );
         const realRows = readingsRes.rows.reverse(); // oldest -> newest for charting
         dailyReadings = realRows.map((r: any, idx: number) => {
