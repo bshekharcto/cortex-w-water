@@ -3,6 +3,7 @@ import { pool } from '../db/pool.js';
 import { proxyUpstream } from './upstreamProxy.js';
 import { getAuthToken } from '../routes/gis.js';
 import { requireClient } from './clientContext.js';
+import { runInBackground } from './background.js';
 import { getInventory } from './assetInventory.js';
 
 /**
@@ -284,9 +285,7 @@ export async function getPostgresAggregatedSummary(
     }
   } else if (!skipIngestion) {
     // Otherwise kick off non-blocking background ingestion
-    ensureDaysIngested(days, toDate).catch((err) =>
-      console.warn('[telemetryDb] Background ingestion note:', err.message)
-    );
+    runInBackground(ensureDaysIngested(days, toDate));
   }
 
   // 3. PostgreSQL SQL Aggregation: Overall KPIs

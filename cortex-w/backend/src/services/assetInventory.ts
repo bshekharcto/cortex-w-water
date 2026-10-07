@@ -5,6 +5,7 @@ import { fetchUpstreamOrThrow, UpstreamError } from './upstreamProxy.js';
 import { singleFlight } from './inflight.js';
 import { getAuthToken } from '../routes/gis.js';
 import { requireClient } from './clientContext.js';
+import { runInBackground } from './background.js';
 
 // The master meter inventory from cog-core-api: every Water Meter asset with
 // the site it is attached to, its status and its household (consumer name,
@@ -434,7 +435,5 @@ export async function getInventory(): Promise<Inventory> {
 
 /** Starts a refresh in the background if the snapshot is due; never throws, never blocks. */
 export function refreshInventoryInBackground(): void {
-  refreshInventory({ budgetMs: REQUEST_PATH_BUDGET_MS }).catch((err) =>
-    console.warn('[assetInventory] Background refresh failed:', err?.message || err)
-  );
+  runInBackground(refreshInventory({ budgetMs: REQUEST_PATH_BUDGET_MS }));
 }

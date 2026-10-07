@@ -96,6 +96,27 @@ async function releaseLease(clientKey: string, status: ClientSyncStatus): Promis
  * and a run that is cut off simply continues on the next tick: ingestion is
  * idempotent and already-filled past days are skipped.
  */
+/**
+ * Syncs ONE client now (used right after login so a lapsed client catches up
+ * immediately instead of waiting for the next scheduled run). Honours the same
+ * lease as the scheduled sync, so it never overlaps one. Never throws.
+ */
+export async function syncClientNow(client: ClientCtx, opts: { budgetMs?: number } = {}): Promise<ClientSyncReport> {
+  const budget = opts.budgetMs ?? syncBudgetMs();
+  const deadline = Date.now() + budget;
+  try {
+    const got = await acquireLease(client.key, Number.isFinite(budget) ? budget + 30_000 : 10 * 60_000);
+    if (!got) return { client: client.key, status: 'busy', packetsAdded: 0, dates: [] };
+    const report = await runWithClient(client, () => syncClientTelemetry(undefined, deadline));
+    await releaseLease(client.key, report.status);
+    console.log(`[telemetrySync] Post-login sync for client ${client.key}: ${report.status} (+${report.packetsAdded} packets)`);
+    return report;
+  } catch (err: any) {
+    console.warn(`[telemetrySync] Post-login sync for client ${client.key} failed:`, err?.message || err);
+    return { client: client.key, status: 'error', packetsAdded: 0, dates: [], error: err?.message || String(err) };
+  }
+}
+
 export async function syncLatestTelemetry(customDates?: string[], opts: { budgetMs?: number } = {}): Promise<SyncResult> {
   const started = Date.now();
   const budget = opts.budgetMs ?? syncBudgetMs();
@@ -161,10 +182,12 @@ async function syncClientTelemetry(customDates: string[] | undefined, deadline: 
   // Days are local-day keys (see localDate.ts). Using the UTC date here would
   // leave the new local day un-synced until 05:30 IST and skew "yesterday".
   const todayStr = localDate(0);
-  // Today, yesterday, 2 days ago (resilience for delayed ingestion), and the operational baseline.
-  const targetDates = Array.from(
-    new Set([todayStr, localDate(-1), localDate(-2), '2026-09-06', ...(customDates || [])])
-  );
+  // Today first, then back SYNC_BACKFILL_DAYS days (newest first), then the operational
+  // baseline. A past day that already has data is skipped with one cheap count, so
+  // checking the whole window every run costs little and heals any gap, e.g. after
+  // the client's session lapsed. Budget-limited runs fill the newest gaps first.
+  const recent = Array.from({ length: config.SYNC_BACKFILL_DAYS }, (_, i) => localDate(-i));
+  const targetDates = Array.from(new Set([...recent, '2026-09-06', ...(customDates || [])]));
 
   let added = 0;
   const done: string[] = [];

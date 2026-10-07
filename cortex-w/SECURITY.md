@@ -46,10 +46,14 @@ syncs that client with it.
 - Each run is time-boxed (45s on Vercel, `SYNC_TIME_BUDGET_MS`), takes clients in rotation
   (least recently attempted first), and leases each client in `client_sync_state` so
   overlapping runs never sync the same client twice. A cut-off run continues on the next tick.
-- A token lasts about 7 days (set by cog-core-api). If nobody from a client signs in for
-  longer, its sync stops until someone does; opening the Command Center then refills missing
-  days within the 7/30-day window. The cron response and the job log flag sessions that are
-  expiring or expired. Logout deletes the stored token.
+- A token lasts about 7 days (set by cog-core-api; it has no renewal endpoint). If nobody from a
+  client signs in for longer, its scheduled sync stops. **Signing in heals it:** right after a
+  successful login the backend syncs that client in the background (kept alive with Vercel's
+  `waitUntil`), and every sync run checks the last `SYNC_BACKFILL_DAYS` (default 10) days and
+  fetches any day with no data, newest first. A lapse of up to 7 + 10 days therefore leaves no
+  gap once someone logs in; the Command Center, map, household and billing charts all recover
+  without anyone opening a particular page. The cron response and the job log flag sessions that
+  are expiring or expired. Logout deletes the stored token.
 
 ## Deploying
 
@@ -80,4 +84,5 @@ Migrations `009`-`011` only add tables. **Take an RDS snapshot before the first 
 - Authorisation within a client (who may write what) is decided by cog-core-api, which receives
   the user's own token. This service does not add roles of its own.
 - Logout cannot revoke a token at cog-core-api; it only forgets it here.
-- Telemetry ingestion keeps at most 3,000 frames per client per day (existing cap).
+- Telemetry ingestion keeps at most 3,000 frames per client per day (existing cap), so a backfilled
+  day is a sample, not the full day. Removing the cap needs saved cursors and a database change.

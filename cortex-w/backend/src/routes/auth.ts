@@ -5,6 +5,8 @@ import { config } from '../config/env.js';
 import { issueLocalToken } from '../middleware/auth.js';
 import { forgetToken, resolveClient, runWithClient } from '../services/clientContext.js';
 import { warmClientCaches } from './dashboard.js';
+import { runInBackground } from '../services/background.js';
+import { syncClientNow } from '../services/telemetrySyncWorker.js';
 
 const router = Router();
 
@@ -97,9 +99,15 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
   if (cognectoAuth) {
     // Start loading this client's data now, under their own token, so the
     // first dashboard they open isn't the one that pays for it.
-    resolveClient(cognectoAuth.token)
-      .then((client) => client && runWithClient(client, warmClientCaches))
-      .catch((err) => console.warn('[auth] post-login warm-up skipped:', err?.message || err));
+    // Also catch up any telemetry days missed while their session had lapsed.
+    // runInBackground keeps this alive after the response on Vercel (waitUntil).
+    runInBackground(
+      resolveClient(cognectoAuth.token).then(async (client) => {
+        if (!client) return;
+        runWithClient(client, warmClientCaches);
+        await syncClientNow(client);
+      })
+    );
     return res.json(cognectoAuth);
   }
   return res.status(401).json({ error: 'Invalid credentials' });

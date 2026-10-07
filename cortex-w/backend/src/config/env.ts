@@ -54,6 +54,10 @@ const EnvSchema = z.object({
   // Wall-clock budget for one sync run, in ms. 0 = automatic: 45s on Vercel (a
   // function is killed at 60s), unlimited on an always-on server.
   SYNC_TIME_BUDGET_MS: z.coerce.number().int().min(0).default(0),
+  // How many days back each sync run checks for missing telemetry (a day that already
+  // has data is skipped cheaply). Covers a gap after a client's session lapsed: with
+  // the 7-day token this heals a lapse of up to 7 + this many days.
+  SYNC_BACKFILL_DAYS: z.coerce.number().int().min(3).max(60).default(10),
   // Number of reverse proxies in front of the API (nginx = 1), so req.ip and
   // rate limiting see the real client. 0 = none.
   TRUST_PROXY: z.coerce.number().int().min(0).default(0),
