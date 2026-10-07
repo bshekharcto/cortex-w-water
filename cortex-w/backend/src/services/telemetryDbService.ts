@@ -2,6 +2,16 @@ import { localDate } from './localDate.js';
 import { pool } from '../db/pool.js';
 import { proxyUpstream } from './upstreamProxy.js';
 import { getAuthToken } from '../routes/gis.js';
+import { requireClient } from './clientContext.js';
+import { getInventory } from './assetInventory.js';
+
+/**
+ * raw_telemetry_packets has no owner column and is shared by every client, so
+ * EVERY read of it is restricted to the signed-in client's own meters
+ * (client_meter_owner, filled by the inventory refresh). `n` is the SQL
+ * parameter position that carries the client key.
+ */
+const ownedMeters = (n: number) => `meter_id IN (SELECT meter_id FROM client_meter_owner WHERE client_key = $${n})`;
 
 export interface TelemetrySummary {
   dateRange: { fromDate: string; toDate: string; days: number };
@@ -72,6 +82,10 @@ function getGatewayAlias(id: string): string {
  */
 export async function ingestDateIntoPostgres(date: string): Promise<number> {
   const token = await getAuthToken();
+  // Only frames of meters this client owns are stored, whatever upstream sends.
+  await getInventory();
+  const ownedRows = await pool.query('SELECT meter_id FROM client_meter_owner WHERE client_key = $1', [requireClient().key]);
+  const owned = new Set<string>(ownedRows.rows.map((r: any) => r.meter_id));
   let insertedTotal = 0;
   let cursor: string | undefined = undefined;
   let hasMore = true;
@@ -104,7 +118,7 @@ export async function ingestDateIntoPostgres(date: string): Promise<number> {
       if (items.length === 0) break;
 
       // Multi-row batch insert for ultra-fast ingestion
-      const validItems = items.filter(item => item.meterId && item.gatewayId && item.decodedAt);
+      const validItems = items.filter(item => item.meterId && item.gatewayId && item.decodedAt && owned.has(item.meterId));
       if (validItems.length > 0) {
         const valuePlaceholders: string[] = [];
         const values: any[] = [];
@@ -196,8 +210,8 @@ export async function ensureDaysIngested(
 
   for (const date of dates) {
     const checkRes = await pool.query(
-      'SELECT COUNT(*)::int as count FROM raw_telemetry_packets WHERE date_key = $1',
-      [date]
+      `SELECT COUNT(*)::int as count FROM raw_telemetry_packets WHERE date_key = $1 AND ${ownedMeters(2)}`,
+      [date, requireClient().key]
     );
     const count = checkRes.rows[0]?.count ?? 0;
 
@@ -233,7 +247,10 @@ export async function getPostgresAggregatedSummary(
   fromD.setUTCDate(ref.getUTCDate() - (days - 1));
   const fromDate = fromD.toISOString().slice(0, 10);
 
-  const cacheKey = `${days}d_summary_${toDate}_site_${siteId || 'ALL'}`;
+  // Cached summaries are per client, like everything else here.
+  const ck = requireClient().key;
+  const cacheKey = `c${ck}_${days}d_summary_${toDate}_site_${siteId || 'ALL'}`;
+  await getInventory(); // makes sure this client's meter-ownership rows exist before any read below
 
   // 1. Check cache table if not forcing refresh
   if (!forceRefresh) {
@@ -284,8 +301,8 @@ export async function getPostgresAggregatedSummary(
       COUNT(*) FILTER (WHERE reverse_flow > 0.05)::int as reverse_flow_count,
       MAX(decoded_at) as latest_frame_at
     FROM raw_telemetry_packets
-    WHERE date_key >= $1 AND date_key <= $2
-  `, [fromDate, toDate]);
+    WHERE date_key >= $1 AND date_key <= $2 AND ${ownedMeters(3)}
+  `, [fromDate, toDate, ck]);
 
   const kpiRow = kpiRes.rows[0] || {};
 
@@ -293,10 +310,10 @@ export async function getPostgresAggregatedSummary(
   const multiGwRes = await pool.query(`
     SELECT COUNT(*)::int as count FROM (
       SELECT meter_id FROM raw_telemetry_packets
-      WHERE date_key >= $1 AND date_key <= $2
+      WHERE date_key >= $1 AND date_key <= $2 AND ${ownedMeters(3)}
       GROUP BY meter_id HAVING COUNT(DISTINCT gateway_id) > 1
     ) sub
-  `, [fromDate, toDate]);
+  `, [fromDate, toDate, ck]);
   const multiGatewayMeters = multiGwRes.rows[0]?.count ?? 0;
 
   // 5. Gateway Aggregation List
@@ -309,10 +326,10 @@ export async function getPostgresAggregatedSummary(
       COALESCE(AVG(rssi)::numeric(10,1), -90)::float as avg_rssi,
       COALESCE(AVG(snr)::numeric(10,1), -10)::float as avg_snr
     FROM raw_telemetry_packets
-    WHERE date_key >= $1 AND date_key <= $2
+    WHERE date_key >= $1 AND date_key <= $2 AND ${ownedMeters(3)}
     GROUP BY gateway_id
     ORDER BY unique_meters DESC, frame_count DESC
-  `, [fromDate, toDate]);
+  `, [fromDate, toDate, ck]);
 
   const gateways = gwRes.rows.map((r: any) => {
     let status: 'reporting' | 'degraded' | 'stale' | 'no-traffic' = 'reporting';
@@ -343,10 +360,10 @@ export async function getPostgresAggregatedSummary(
         fcnt, fport, frequency, dr, adr, confirmed,
         ROW_NUMBER() OVER(PARTITION BY gateway_id, meter_id ORDER BY decoded_at DESC) as rn
       FROM raw_telemetry_packets
-      WHERE date_key >= $1 AND date_key <= $2
+      WHERE date_key >= $1 AND date_key <= $2 AND ${ownedMeters(3)}
     )
     SELECT * FROM ranked_frames WHERE rn = 1
-  `, [fromDate, toDate]);
+  `, [fromDate, toDate, ck]);
 
   const metersByGateway: Record<string, any[]> = {};
   for (const gw of gateways) {
@@ -401,10 +418,10 @@ export async function getPostgresAggregatedSummary(
       TO_CHAR(decoded_at, 'HH24:00') as hour_str,
       COUNT(*)::int as count
     FROM raw_telemetry_packets
-    WHERE date_key >= $1 AND date_key <= $2
+    WHERE date_key >= $1 AND date_key <= $2 AND ${ownedMeters(3)}
     GROUP BY hour_str
     ORDER BY hour_str ASC
-  `, [fromDate, toDate]);
+  `, [fromDate, toDate, ck]);
 
   const hourlyActivityMap = new Map<string, number>();
   for (let h = 0; h < 24; h++) {
@@ -430,17 +447,18 @@ export async function getPostgresAggregatedSummary(
       COUNT(*) FILTER (WHERE snr < -5 AND snr >= -12)::int as snr_fair,
       COUNT(*) FILTER (WHERE snr < -12)::int as snr_poor
     FROM raw_telemetry_packets
-    WHERE date_key >= $1 AND date_key <= $2
-  `, [fromDate, toDate]);
+    WHERE date_key >= $1 AND date_key <= $2 AND ${ownedMeters(3)}
+  `, [fromDate, toDate, ck]);
   const radioRow = radioRes.rows[0] || {};
 
   // 9. Recent raw frames (last 100)
   const framesRes = await pool.query(`
     SELECT *
     FROM raw_telemetry_packets
+    WHERE ${ownedMeters(1)}
     ORDER BY decoded_at DESC
     LIMIT 100
-  `);
+  `, [ck]);
 
   const recentFrames = framesRes.rows.map((r: any, idx: number) => ({
     id: `pg-frame-${idx}-${r.meter_id}`,

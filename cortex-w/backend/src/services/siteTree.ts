@@ -1,6 +1,7 @@
 import { fetchUpstreamOrThrow, UpstreamError } from './upstreamProxy.js';
 import { singleFlight } from './inflight.js';
 import { getAuthToken } from '../routes/gis.js';
+import { requireClient } from './clientContext.js';
 
 // Real site/zone/DMA hierarchy, sourced entirely from cog-core-api's
 // GET /api/site/ (note the trailing slash — /api/site without it is 405,
@@ -24,24 +25,28 @@ interface CachedTree {
   roots: SiteNode[];
 }
 
-let cache: CachedTree | null = null;
+// One tree per client: a client's hierarchy must never be served to another.
+const caches = new Map<string, CachedTree>();
 // Site hierarchy changes far less often than telemetry — a longer TTL than
 // the per-site dma-report cache is appropriate.
 const TREE_CACHE_TTL_MS = 5 * 60 * 1000;
 
-const inflight = new Map<0, Promise<CachedTree>>();
+const inflight = new Map<string, Promise<CachedTree>>();
 
-function fetchSiteTree(authHeader?: string): Promise<CachedTree> {
+function fetchSiteTree(_authHeader?: string): Promise<CachedTree> {
+  const client = requireClient();
+  const cache = caches.get(client.key);
   if (cache && Date.now() - cache.timestamp < TREE_CACHE_TTL_MS) {
     return Promise.resolve(cache);
   }
   // Concurrent callers (every getNode/hasStructuralChildren in a request)
-  // share one /api/site/ fetch.
-  return singleFlight(inflight, 0, () => loadSiteTree(authHeader));
+  // share one /api/site/ fetch — per client.
+  return singleFlight(inflight, client.key, () => loadSiteTree(client.key));
 }
 
-async function loadSiteTree(authHeader?: string): Promise<CachedTree> {
-  const token = await getAuthToken(authHeader);
+async function loadSiteTree(clientKey: string): Promise<CachedTree> {
+  const cache = caches.get(clientKey);
+  const token = await getAuthToken();
   const headers: Record<string, string> = token ? { Authorization: token } : {};
   let rows: any[];
   try {
@@ -91,7 +96,7 @@ async function loadSiteTree(authHeader?: string): Promise<CachedTree> {
     roots: childrenOf.get(0) || [],
   };
 
-  cache = result;
+  caches.set(clientKey, result);
   return result;
 }
 

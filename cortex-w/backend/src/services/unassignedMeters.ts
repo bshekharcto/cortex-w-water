@@ -1,6 +1,8 @@
 import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { localDate } from './localDate.js';
+import { requireClient } from './clientContext.js';
+import { getInventory } from './assetInventory.js';
 
 // Our own synced telemetry (raw_telemetry_packets) and daily rollup, used only
 // to ENRICH meters whose membership is decided by cog-core-api's inventory
@@ -27,10 +29,11 @@ const CONNECTED_WINDOW_MS = config.METER_CONNECTED_WINDOW_HOURS * 60 * 60 * 1000
 // Full scan of raw_telemetry_packets takes ~10s, so one result is shared by
 // every request inside the TTL window. Failed loads are never cached.
 const FACTS_TTL_MS = 5 * 60 * 1000;
-let cache: { timestamp: number; facts: MeterFact[] } | null = null;
-let inflight: Promise<MeterFact[]> | null = null;
+// Per client, and only over that client's own meters (client_meter_owner).
+const caches = new Map<string, { timestamp: number; facts: MeterFact[] }>();
+const inflights = new Map<string, Promise<MeterFact[]>>();
 
-async function queryFacts(): Promise<MeterFact[]> {
+async function queryFacts(key: string): Promise<MeterFact[]> {
   const today = localDate(0);
   const yesterday = localDate(-1);
   const monthStart = `${today.slice(0, 7)}-01`;
@@ -48,9 +51,11 @@ async function queryFacts(): Promise<MeterFact[]> {
                 (array_agg(forward_flow_l ORDER BY decoded_at DESC))[1] AS total,
                 MAX(decoded_at) AS last_seen
          FROM raw_telemetry_packets
+         WHERE meter_id IN (SELECT meter_id FROM client_meter_owner WHERE client_key = $1)
          GROUP BY meter_id
        ) p
-       LEFT JOIN gateways g ON g.gateway_id = p.gateway_id`
+       LEFT JOIN gateways g ON g.gateway_id = p.gateway_id`,
+      [key]
     ),
     pool.query(
       `SELECT meter_id,
@@ -59,8 +64,9 @@ async function queryFacts(): Promise<MeterFact[]> {
               COALESCE(SUM(total_consumption_kl) FILTER (WHERE summary_date >= $3), 0) AS month
        FROM water_daily_summary
        WHERE summary_date >= $4
+         AND meter_id IN (SELECT meter_id FROM client_meter_owner WHERE client_key = $5)
        GROUP BY meter_id`,
-      [today, yesterday, monthStart, scanFrom]
+      [today, yesterday, monthStart, scanFrom, key]
     ),
   ]);
 
@@ -91,17 +97,24 @@ async function queryFacts(): Promise<MeterFact[]> {
 }
 
 export async function getMeterFacts(): Promise<MeterFact[]> {
+  const key = requireClient().key;
+  const cache = caches.get(key);
   const now = Date.now();
   if (cache && now - cache.timestamp < FACTS_TTL_MS) return cache.facts;
+  // The ownership table is filled by the inventory refresh; make sure the
+  // client's has been, or this would read an empty set as "no telemetry".
+  await getInventory();
+  let inflight = inflights.get(key);
   if (!inflight) {
-    inflight = queryFacts()
+    inflight = queryFacts(key)
       .then((facts) => {
-        if (facts.length > 0) cache = { timestamp: Date.now(), facts };
+        if (facts.length > 0) caches.set(key, { timestamp: Date.now(), facts });
         return facts;
       })
       .finally(() => {
-        inflight = null;
+        inflights.delete(key);
       });
+    inflights.set(key, inflight);
   }
   try {
     return await inflight;

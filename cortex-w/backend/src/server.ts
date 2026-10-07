@@ -1,13 +1,15 @@
 import express from "express";
 import cors from "cors";
 import compression from "compression";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
 import { existsSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import { config } from "./config/env.js";
 import { pool } from "./db/pool.js";
-import { authMiddleware } from "./middleware/auth.js";
+import { authMiddleware, requireAuth } from "./middleware/auth.js";
 
 import authRoutes from "./routes/auth.js";
 import commandCenterRoutes from "./routes/commandCenter.js";
@@ -16,7 +18,7 @@ import billingRoutes from "./routes/billing.js";
 import alarmsRoutes from "./routes/alarms.js";
 import sitesRoutes from "./routes/sites.js";
 import gisRoutes from "./routes/gis.js";
-import dashboardRoutes, { warmDashboardCaches } from "./routes/dashboard.js";
+import dashboardRoutes from "./routes/dashboard.js";
 import { startTelemetrySyncScheduler } from "./services/telemetrySyncWorker.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -37,6 +39,9 @@ const allowedOrigins = config.CORS_ORIGIN.split(',')
   .filter(Boolean);
 const allowAnyOrigin = allowedOrigins.includes('*');
 
+app.set("trust proxy", config.TRUST_PROXY);
+app.use(helmet());
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -51,9 +56,21 @@ app.use(
 // uncompressed; this shrinks them substantially over the wire for free.
 app.use(compression());
 
-app.use(express.json());
+app.use(express.json({ limit: "100kb" }));
+
+// Coarse per-address ceiling; /auth/login has its own, much stricter limit.
+app.use(
+  rateLimit({
+    windowMs: 60 * 1000,
+    limit: 1200,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
+);
 
 app.use(authMiddleware);
+// Deny by default: everything except the public list requires a valid token.
+app.use(requireAuth);
 
 // ============================================================
 // Root
@@ -65,7 +82,6 @@ app.get("/", (_req, res) => {
     status: "ok",
     service: "cortex-w-backend",
     message: "Cortex-W backend is running",
-    dataMode: config.APP_DATA_MODE,
   });
 });
 
@@ -81,7 +97,6 @@ app.get("/health", async (_req, res) => {
       status: "ok",
       service: "cortex-w-backend",
       database: "connected",
-      dataMode: config.APP_DATA_MODE,
     });
   } catch (err) {
     console.error("[health] Database connection failed:", err);
@@ -96,40 +111,32 @@ app.get("/health", async (_req, res) => {
 
 // ============================================================
 // API Routes
-// Support both /api/* and /*
+// Mounted under /api only
 // ============================================================
 
 // Authentication
 app.use("/api/auth", authRoutes);
-app.use("/auth", authRoutes);
 
 // Command Center
 app.use("/api/command-center", commandCenterRoutes);
-app.use("/command-center", commandCenterRoutes);
 
 // Households
 app.use("/api/households", householdsRoutes);
-app.use("/households", householdsRoutes);
 
 // Billing
 app.use("/api/billing", billingRoutes);
-app.use("/billing", billingRoutes);
 
 // Alarms
 app.use("/api/alarms", alarmsRoutes);
-app.use("/alarms", alarmsRoutes);
 
 // Sites
 app.use("/api/sites", sitesRoutes);
-app.use("/sites", sitesRoutes);
 
 // GIS
 app.use("/api/gis", gisRoutes);
-app.use("/gis", gisRoutes);
 
 // Dashboard
 app.use("/api/dashboard", dashboardRoutes);
-app.use("/dashboard", dashboardRoutes);
 
 // ============================================================
 // Run Database Migrations
@@ -155,6 +162,7 @@ async function runMigrations() {
     "005_raw_telemetry.sql",
     "007_water_rollup_tables.sql",
     "008_asset_inventory.sql",
+    "009_client_scoping.sql",
   ];
 
   for (const file of migrations) {
@@ -214,7 +222,6 @@ async function start() {
     console.log(`[cortex-w bff] Listening on :${config.PORT}`);
     // Start local in-process recurring scheduler (every 15 mins)
     startTelemetrySyncScheduler(15 * 60 * 1000);
-    warmDashboardCaches();
   });
 }
 

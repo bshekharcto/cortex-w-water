@@ -1,6 +1,7 @@
 import { localDate } from '../services/localDate.js';
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
+import { requireClient } from '../services/clientContext.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { getAuthToken, getLiveGisData } from './gis.js';
@@ -225,9 +226,10 @@ router.get('/:id/detail', async (req, res) => {
           `SELECT DISTINCT ON (date_key) date_key, decoded_at, forward_flow_l
            FROM raw_telemetry_packets
            WHERE meter_id = $1
+             AND meter_id IN (SELECT meter_id FROM client_meter_owner WHERE client_key = $2)
            ORDER BY date_key DESC, forward_flow_l DESC, decoded_at DESC
            LIMIT 10`,
-          [meterIdForReadings]
+          [meterIdForReadings, requireClient().key]
         );
         const realRows = readingsRes.rows.reverse(); // oldest -> newest for charting
         dailyReadings = realRows.map((r: any, idx: number) => {

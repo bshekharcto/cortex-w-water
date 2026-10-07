@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto';
 import { localDate } from '../services/localDate.js';
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
@@ -6,7 +7,8 @@ import { proxyUpstream } from '../services/upstreamProxy.js';
 import { fetchAndAggregateTelemetry } from '../services/telemetryAggregator.js';
 import { getPostgresAggregatedSummary } from '../services/telemetryDbService.js';
 import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
-import { refreshInventory } from '../services/assetInventory.js';
+import { refreshInventory, getInventory } from '../services/assetInventory.js';
+import { activeClients, requireClient, runWithClient, scopeSiteIds } from '../services/clientContext.js';
 
 const router = Router();
 
@@ -14,13 +16,16 @@ const router = Router();
 
 router.all('/sync-cron', async (req, res) => {
   try {
-    // Optional Vercel CRON_SECRET authorization check
+    // The scheduler must present CRON_SECRET; with none configured the
+    // endpoint is disabled rather than open.
     const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret) {
-      const authHeader = req.headers.authorization;
-      if (authHeader !== `Bearer ${cronSecret}`) {
-        return res.status(401).json({ error: 'Unauthorized: invalid CRON_SECRET' });
-      }
+    if (!cronSecret) {
+      return res.status(503).json({ error: 'sync-cron disabled: CRON_SECRET not configured' });
+    }
+    const presented = Buffer.from(req.headers.authorization ?? '');
+    const expected = Buffer.from(`Bearer ${cronSecret}`);
+    if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const customDate = req.query.date as string | undefined;
@@ -35,12 +40,20 @@ router.all('/sync-cron', async (req, res) => {
     // The same cron tick also advances the dashboard's inventory snapshot.
     // A serverless invocation can't finish a whole refresh, so it does a
     // time-boxed chunk; the next tick resumes where this one stopped.
+    // Only clients that currently have a live session are refreshed, each with
+    // its own token (there is no service account to run as).
     const [result, inventory] = await Promise.all([
       syncLatestTelemetry(customDates),
-      refreshInventory({ budgetMs: 40_000 }).catch((err) => {
-        console.warn('[commandCenter] Inventory refresh failed:', err?.message || err);
-        return 'error' as const;
-      }),
+      Promise.all(
+        activeClients().map((client) =>
+          runWithClient(client, () =>
+            refreshInventory({ budgetMs: 40_000 }).catch((err) => {
+              console.warn(`[commandCenter] Inventory refresh failed (client ${client.key}):`, err?.message || err);
+              return 'error' as const;
+            })
+          )
+        )
+      ),
     ]);
     return res.json({
       status: result.success ? 'success' : 'error',
@@ -61,6 +74,7 @@ router.get('/summary', async (req, res) => {
     const date = (req.query.date as string) || localDate(0);
     const refresh = req.query.refresh === 'true';
     const siteId = (req.query.siteId as string) || (req.query.siteIds as string) || 'ALL';
+    if (scopeSiteIds(requireClient(), siteId) === null) return res.status(404).json({ error: 'Unknown site' });
 
     try {
       const pgSummary = await getPostgresAggregatedSummary(days, date, refresh, siteId);
@@ -80,9 +94,12 @@ router.get('/feed', async (req, res) => {
   try {
     const limit = parseInt((req.query.limit as string) || '100', 10);
     try {
+      await getInventory(); // the client's meter-ownership rows must exist
       const result = await pool.query(
-        'SELECT * FROM raw_telemetry_packets ORDER BY decoded_at DESC LIMIT $1',
-        [limit]
+        `SELECT * FROM raw_telemetry_packets
+          WHERE meter_id IN (SELECT meter_id FROM client_meter_owner WHERE client_key = $2)
+          ORDER BY decoded_at DESC LIMIT $1`,
+        [Math.min(Math.max(limit || 100, 1), 1000), requireClient().key]
       );
       if (result.rows.length > 0) {
         return res.json(
@@ -179,8 +196,10 @@ router.get('/gateway-summary', async (req, res) => {
   }
   // Upstream: siteIds is comma-joined for this endpoint (spec 28.2)
   const { fromDate, toDate, siteIds } = req.query as Record<string, string>;
+  const scoped = scopeSiteIds(requireClient(), siteIds);
+  if (!scoped) return res.status(404).json({ error: 'Unknown site' });
   const upstream = await proxyUpstream('GET', '/api/water/gateway-meter-summary', {
-    query: { siteIds: siteIds ?? '', fromDate, toDate },
+    query: { siteIds: scoped.join(','), fromDate, toDate },
     headers: { Authorization: req.headers.authorization ?? '' },
   });
   res.status(upstream.status).json(upstream.data);
@@ -198,9 +217,10 @@ router.get('/meter-health', async (req, res) => {
     })));
   }
   // Upstream: siteIds as repeated query params (spec 28.2)
-  const siteIds = (req.query.siteIds as string)?.split(',') ?? [];
+  const scoped = scopeSiteIds(requireClient(), req.query.siteIds as string | undefined);
+  if (!scoped) return res.status(404).json({ error: 'Unknown site' });
   const upstream = await proxyUpstream('GET', '/api/water/meter-health', {
-    query: { siteIds },
+    query: { siteIds: scoped.map(String) },
     headers: { Authorization: req.headers.authorization ?? '' },
   });
   res.status(upstream.status).json(upstream.data);
@@ -214,8 +234,10 @@ router.get('/gateway-performance', async (req, res) => {
     })));
   }
   const { fromDate, toDate, siteIds } = req.query as Record<string, string>;
+  const scoped = scopeSiteIds(requireClient(), siteIds);
+  if (!scoped) return res.status(404).json({ error: 'Unknown site' });
   const upstream = await proxyUpstream('GET', '/api/water/gateway-performance', {
-    query: { siteIds: (siteIds ?? '').split(','), fromDate, toDate },
+    query: { siteIds: scoped.map(String), fromDate, toDate },
     headers: { Authorization: req.headers.authorization ?? '' },
   });
   res.status(upstream.status).json(upstream.data);
@@ -244,8 +266,14 @@ router.post('/latest-meter-status', async (req, res) => {
       numberOfElements: result.rows.length,
     });
   }
+  const body = { ...(req.body ?? {}) };
+  if (body.siteIds !== undefined) {
+    const scoped = scopeSiteIds(requireClient(), Array.isArray(body.siteIds) ? body.siteIds.map(String) : String(body.siteIds));
+    if (!scoped) return res.status(404).json({ error: 'Unknown site' });
+    body.siteIds = scoped;
+  }
   const upstream = await proxyUpstream('POST', '/api/water/latest-meter-status/page', {
-    body: req.body,
+    body,
     headers: { Authorization: req.headers.authorization ?? '' },
   });
   res.status(upstream.status).json(upstream.data);

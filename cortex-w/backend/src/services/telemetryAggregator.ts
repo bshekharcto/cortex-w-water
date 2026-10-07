@@ -1,6 +1,8 @@
 import { localDate } from './localDate.js';
 import { proxyUpstream } from './upstreamProxy.js';
 import { getAuthToken } from '../routes/gis.js';
+import { requireClient } from './clientContext.js';
+import { createHash } from 'node:crypto';
 import { pool } from '../db/pool.js';
 
 export interface TelemetrySummaryResponse {
@@ -52,7 +54,15 @@ interface CacheEntry {
   data: TelemetrySummaryResponse;
 }
 
+// Keyed by client + date; summaries are never shared between clients.
 const memoryCache = new Map<string, CacheEntry>();
+
+/** Storage key for a client's summary of one day (telemetry_daily_summary.date_key is VARCHAR(20)). */
+function summaryKey(date: string): string {
+  const key = requireClient().key;
+  const plain = `${key}:${date}`;
+  return plain.length <= 20 ? plain : `${createHash('sha1').update(key).digest('hex').slice(0, 9)}:${date}`;
+}
 const LIVE_CACHE_TTL_MS = 60 * 1000; // 60s cache for today's date
 
 let dbTableInitialized = false;
@@ -103,8 +113,9 @@ export async function fetchAndAggregateTelemetry(
   const todayStr = localDate(0);
   const isPastDate = date < todayStr;
 
+  const sk = summaryKey(date);
   // 1. Check in-memory cache
-  const cached = memoryCache.get(date);
+  const cached = memoryCache.get(sk);
   const now = Date.now();
   if (cached && !forceRefresh) {
     if (isPastDate || now - cached.timestamp < LIVE_CACHE_TTL_MS) {
@@ -116,10 +127,10 @@ export async function fetchAndAggregateTelemetry(
   await ensureDbTable();
   if (!forceRefresh) {
     try {
-      const res = await pool.query('SELECT summary_json FROM telemetry_daily_summary WHERE date_key = $1', [date]);
+      const res = await pool.query('SELECT summary_json FROM telemetry_daily_summary WHERE date_key = $1', [sk]);
       if (res.rows.length > 0) {
         const stored = res.rows[0].summary_json as TelemetrySummaryResponse;
-        memoryCache.set(date, { timestamp: now, data: stored });
+        memoryCache.set(sk, { timestamp: now, data: stored });
         return { ...stored, isCached: true };
       }
     } catch {
@@ -449,7 +460,7 @@ export async function fetchAndAggregateTelemetry(
   };
 
   // Cache in memory
-  memoryCache.set(date, { timestamp: now, data: summaryData });
+  memoryCache.set(sk, { timestamp: now, data: summaryData });
 
   // Store in PostgreSQL for permanent retrieval (especially past dates)
   try {
@@ -457,7 +468,7 @@ export async function fetchAndAggregateTelemetry(
       `INSERT INTO telemetry_daily_summary (date_key, summary_json, updated_at)
        VALUES ($1, $2, NOW())
        ON CONFLICT (date_key) DO UPDATE SET summary_json = $2, updated_at = NOW()`,
-      [date, summaryData]
+      [sk, summaryData]
     );
   } catch (err: any) {
     // Non-blocking fallback

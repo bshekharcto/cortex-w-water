@@ -2,6 +2,7 @@ import { ingestDateIntoPostgres, getPostgresAggregatedSummary } from './telemetr
 import { pool } from '../db/pool.js';
 import { localDate } from './localDate.js';
 import { refreshInventory } from './assetInventory.js';
+import { activeClients, requireClient, runWithClient } from './clientContext.js';
 
 let isSyncing = false;
 let lastSyncStartTime = 0;
@@ -22,6 +23,34 @@ export interface SyncResult {
  * inserts new packets into PostgreSQL with deduplication, and pre-warms the summary cache.
  */
 export async function syncLatestTelemetry(customDates?: string[]): Promise<SyncResult> {
+  // There is no service account: each client is synced with its OWN live
+  // session token, and only while it has one (see clientContext.activeClients).
+  const clients = activeClients();
+  const started = Date.now();
+  const total: SyncResult = {
+    success: true, packetsAdded: 0, syncedDates: [], durationMs: 0, timestamp: new Date().toISOString(),
+  };
+  if (clients.length === 0) {
+    console.log('[telemetrySync] No client is signed in; nothing to sync.');
+    return total;
+  }
+  const dates = new Set<string>();
+  for (const client of clients) {
+    const r = await runWithClient(client, () => syncClientTelemetry(customDates));
+    total.packetsAdded += r.packetsAdded;
+    r.syncedDates.forEach((d) => dates.add(d));
+    if (!r.success) {
+      total.success = false;
+      total.error = [total.error, `client ${client.key}: ${r.error}`].filter(Boolean).join('; ');
+    }
+  }
+  total.syncedDates = [...dates];
+  total.durationMs = Date.now() - started;
+  return total;
+}
+
+async function syncClientTelemetry(customDates?: string[]): Promise<SyncResult> {
+  const clientKey = requireClient().key;
   const nowMs = Date.now();
   if (isSyncing && (nowMs - lastSyncStartTime) < SYNC_LOCK_TIMEOUT_MS) {
     console.log('[telemetrySync] Sync already in progress, skipping duplicate call.');
@@ -67,8 +96,10 @@ export async function syncLatestTelemetry(customDates?: string[]): Promise<SyncR
         // For past dates: if already sufficiently backfilled in PostgreSQL, skip re-fetching
         if (date < todayStr && !customDates?.includes(date)) {
           const countRes = await pool.query(
-            'SELECT COUNT(*)::int as count FROM raw_telemetry_packets WHERE date_key = $1',
-            [date]
+            `SELECT COUNT(*)::int as count FROM raw_telemetry_packets
+              WHERE date_key = $1
+                AND meter_id IN (SELECT meter_id FROM client_meter_owner WHERE client_key = $2)`,
+            [date, clientKey]
           );
           const existingCount = countRes.rows[0]?.count ?? 0;
           if (existingCount >= 200) {
@@ -142,9 +173,15 @@ export function startTelemetrySyncScheduler(intervalMs: number = 15 * 60 * 1000)
   // A long-running server has no time limit, so it finishes a whole inventory
   // refresh in one go (a no-op when the stored snapshot is still fresh).
   const refreshInventoryNow = () =>
-    refreshInventory({ budgetMs: Infinity }).catch((err) => {
-      console.warn('[telemetrySyncScheduler] Inventory refresh warning:', err.message);
-    });
+    Promise.all(
+      activeClients().map((client) =>
+        runWithClient(client, () =>
+          refreshInventory({ budgetMs: Infinity }).catch((err) => {
+            console.warn(`[telemetrySyncScheduler] Inventory refresh warning (client ${client.key}):`, err.message);
+          })
+        )
+      )
+    );
 
   // Initial sync delayed by 5 seconds to let database migrations complete
   setTimeout(() => {
