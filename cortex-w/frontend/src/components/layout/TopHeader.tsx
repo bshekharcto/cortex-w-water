@@ -1,5 +1,4 @@
 import { useLocation } from 'react-router-dom';
-import { Bell, RefreshCw } from 'lucide-react';
 import { runtimeConfig } from '@/config/runtimeConfig';
 
 const ROUTE_TITLES: Record<string, string> = {
@@ -38,8 +37,6 @@ export function TopHeader() {
         <span className={`cw-data-badge cw-data-badge--${dataMode}`}>
           {dataMode === 'seed' ? 'SEED DATA' : dataMode === 'api' ? 'LIVE' : 'HYBRID'}
         </span>
-        <button className="cw-icon-btn" aria-label="Refresh"><RefreshCw size={16} /></button>
-        <button className="cw-icon-btn" aria-label="Notifications"><Bell size={16} /></button>
       </div>
     </header>
   );

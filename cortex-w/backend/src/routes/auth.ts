@@ -16,7 +16,7 @@ const SEED_USERS: Record<string, { password: string; displayName: string; role: 
 
 async function loginCognecto(username: string, password: string) {
   try {
-    const targetUrl = `${config.COGNECTO_API_URL || 'https://api.cognecto.com'}/api/auth/login`;
+    const targetUrl = `${config.COGNECTO_API_URL ?? config.UPSTREAM_API_BASE_URL}/api/auth/login`;
     const res = await fetch(targetUrl, {
       method: 'POST',
       headers: {

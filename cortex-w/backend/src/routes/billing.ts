@@ -1,3 +1,4 @@
+import { localDate } from '../services/localDate.js';
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
@@ -22,8 +23,8 @@ async function handleBillingList(req: any, res: any) {
     // is supplied — a fixed calendar date here would look "frozen in time"
     // once that window is in the past (same class of bug as the Command
     // Center TARGET_DATE issue).
-    const defaultEndDate = new Date().toISOString().slice(0, 10);
-    const defaultStartDate = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const defaultEndDate = localDate(0);
+    const defaultStartDate = localDate(-90);
     const startDate = (req.body?.startDate ?? req.query?.startDate ?? defaultStartDate) as string;
     const endDate = (req.body?.endDate ?? req.query?.endDate ?? defaultEndDate) as string;
     const search = ((req.body?.search ?? req.query?.search ?? '') as string).trim().toLowerCase();

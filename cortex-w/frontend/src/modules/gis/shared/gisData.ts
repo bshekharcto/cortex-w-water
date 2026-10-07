@@ -50,6 +50,8 @@ export interface GisMeter {
   rssi: number;
   snr: number;
   status: 'active' | 'weak' | 'silent';
+  /** Set when the meter comes from a source that reports connectivity (the Dashboard) rather than RF signal quality; the drawer then labels the badge with it. */
+  connectivityStatus?: 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN';
   batteryStatus: 'Normal' | 'Abnormal';
   batteryVoltage: number;
   batteryPercentage: number;

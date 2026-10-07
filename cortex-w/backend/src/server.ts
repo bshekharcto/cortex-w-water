@@ -16,7 +16,7 @@ import billingRoutes from "./routes/billing.js";
 import alarmsRoutes from "./routes/alarms.js";
 import sitesRoutes from "./routes/sites.js";
 import gisRoutes from "./routes/gis.js";
-import dashboardRoutes from "./routes/dashboard.js";
+import dashboardRoutes, { warmDashboardCaches } from "./routes/dashboard.js";
 import { startTelemetrySyncScheduler } from "./services/telemetrySyncWorker.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -27,10 +27,22 @@ const app = express();
 // Middleware
 // ============================================================
 
+// Browser origins allowed to call this API cross-origin come from CORS_ORIGIN
+// (comma-separated; "*" = any, development only). Requests with no Origin
+// header (same-origin, curl, server-to-server) are always let through, and a
+// disallowed origin simply gets no CORS headers, so its browser blocks it.
+// Auth is a bearer token, not a cookie, so credentialed CORS isn't needed.
+const allowedOrigins = config.CORS_ORIGIN.split(',')
+  .map((o) => o.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+const allowAnyOrigin = allowedOrigins.includes('*');
+
 app.use(
   cors({
-    origin: true,
-    credentials: true,
+    origin: (origin, callback) => {
+      if (!origin || allowAnyOrigin) return callback(null, true);
+      return callback(null, allowedOrigins.includes(origin));
+    },
   }),
 );
 
@@ -142,6 +154,7 @@ async function runMigrations() {
       : []),
     "005_raw_telemetry.sql",
     "007_water_rollup_tables.sql",
+    "008_asset_inventory.sql",
   ];
 
   for (const file of migrations) {
@@ -201,6 +214,7 @@ async function start() {
     console.log(`[cortex-w bff] Listening on :${config.PORT}`);
     // Start local in-process recurring scheduler (every 15 mins)
     startTelemetrySyncScheduler(15 * 60 * 1000);
+    warmDashboardCaches();
   });
 }
 

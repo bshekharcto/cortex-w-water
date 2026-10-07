@@ -1,5 +1,7 @@
 import { ingestDateIntoPostgres, getPostgresAggregatedSummary } from './telemetryDbService.js';
 import { pool } from '../db/pool.js';
+import { localDate } from './localDate.js';
+import { refreshInventory } from './assetInventory.js';
 
 let isSyncing = false;
 let lastSyncStartTime = 0;
@@ -36,18 +38,12 @@ export async function syncLatestTelemetry(customDates?: string[]): Promise<SyncR
   lastSyncStartTime = Date.now();
   const startTime = Date.now();
   
-  const now = new Date();
-  const todayStr = now.toISOString().slice(0, 10);
-  
-  // Yesterday (bridges UTC vs local IST rollover)
-  const yesterday = new Date(now);
-  yesterday.setUTCDate(now.getUTCDate() - 1);
-  const yesterdayStr = yesterday.toISOString().slice(0, 10);
-
+  // Days are local-day keys (see localDate.ts). Using the UTC date here would
+  // leave the new local day un-synced until 05:30 IST and skew "yesterday".
+  const todayStr = localDate(0);
+  const yesterdayStr = localDate(-1);
   // 2 days ago (resilience for weekend or delayed ingestion)
-  const twoDaysAgo = new Date(now);
-  twoDaysAgo.setUTCDate(now.getUTCDate() - 2);
-  const twoDaysAgoStr = twoDaysAgo.toISOString().slice(0, 10);
+  const twoDaysAgoStr = localDate(-2);
 
   // Default target dates: today, yesterday, 2-days-ago, and operational baseline 2026-09-06
   const targetDates = Array.from(
@@ -143,12 +139,20 @@ export function startTelemetrySyncScheduler(intervalMs: number = 15 * 60 * 1000)
     )} mins)`
   );
 
+  // A long-running server has no time limit, so it finishes a whole inventory
+  // refresh in one go (a no-op when the stored snapshot is still fresh).
+  const refreshInventoryNow = () =>
+    refreshInventory({ budgetMs: Infinity }).catch((err) => {
+      console.warn('[telemetrySyncScheduler] Inventory refresh warning:', err.message);
+    });
+
   // Initial sync delayed by 5 seconds to let database migrations complete
   setTimeout(() => {
     console.log('[telemetrySyncScheduler] Running initial telemetry sync on startup...');
     syncLatestTelemetry().catch((err) => {
       console.warn('[telemetrySyncScheduler] Initial sync warning:', err.message);
     });
+    refreshInventoryNow();
   }, 5000);
 
   // Recurring background interval
@@ -157,5 +161,6 @@ export function startTelemetrySyncScheduler(intervalMs: number = 15 * 60 * 1000)
     syncLatestTelemetry().catch((err) => {
       console.warn('[telemetrySyncScheduler] Scheduled sync warning:', err.message);
     });
+    refreshInventoryNow();
   }, intervalMs);
 }
