@@ -419,14 +419,20 @@ router.get('/meter-detail/:assetId', async (req, res) => {
   try {
     const assetId = req.params.assetId;
     const meterId = (req.query.meterId as string) || '';
-    // The asset must be one of this client's own meters (404, not 403, so ids can't be probed).
+    // The asset must be one of this client's own meters, and so must any meterId
+    // passed with it: cog-core-api's household-meter-details lookup is not
+    // scoped to the caller, so an own assetId with someone else's meterId
+    // would otherwise return their consumer details. 404, not 403, so ids
+    // can't be probed.
     if (!requireClient().unscoped) {
       await getInventory();
-      const owns = await pool.query(
-        'SELECT 1 FROM client_meter_owner WHERE client_key = $1 AND asset_id = $2',
-        [requireClient().key, Number(assetId)]
-      );
-      if (!Number.isInteger(Number(assetId)) || owns.rowCount === 0) return res.status(404).json({ error: 'Meter not found' });
+      const owns = Number.isInteger(Number(assetId))
+        ? await pool.query(
+            `SELECT 1 FROM client_meter_owner WHERE client_key = $1 AND asset_id = $2 AND ($3 = '' OR meter_id = $3)`,
+            [requireClient().key, Number(assetId), meterId]
+          )
+        : { rowCount: 0 };
+      if (owns.rowCount === 0) return res.status(404).json({ error: 'Meter not found' });
     }
     const authHeader = req.headers.authorization;
     const headers: Record<string, string> = {};

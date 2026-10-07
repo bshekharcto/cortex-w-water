@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
+import { PgRateLimitStore } from '../middleware/pgRateLimitStore.js';
 import { config } from '../config/env.js';
 import { issueLocalToken } from '../middleware/auth.js';
 import { forgetToken, resolveClient, runWithClient } from '../services/clientContext.js';
@@ -67,6 +68,10 @@ const loginLimiter = rateLimit({
   // guessed at from many IPs.
   keyGenerator: (req) => `${ipKeyGenerator(req.ip ?? '')}|${String(req.body?.username ?? '').toLowerCase()}`,
   skipSuccessfulRequests: true,
+  // Shared across serverless instances; if Postgres is unreachable, fail open
+  // (login itself still needs upstream) rather than lock everyone out.
+  store: new PgRateLimitStore('login'),
+  passOnStoreError: true,
   message: { error: 'Too many login attempts. Try again later.' },
 });
 

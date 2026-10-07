@@ -8,6 +8,7 @@ import { fetchAndAggregateTelemetry } from '../services/telemetryAggregator.js';
 import { getPostgresAggregatedSummary } from '../services/telemetryDbService.js';
 import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
 import { refreshInventory, getInventory } from '../services/assetInventory.js';
+import { sessionReport } from '../services/sessionStore.js';
 import { syncClients, requireClient, runWithClient, scopeSiteIds } from '../services/clientContext.js';
 
 const router = Router();
@@ -55,14 +56,20 @@ router.all('/sync-cron', async (req, res) => {
         )
       )),
     ]);
+    // Which clients' sessions are healthy, so a lapsed one is noticed (no tokens in here).
+    const sessions = await sessionReport();
+    for (const s of sessions) {
+      if (s.status !== 'ok') console.warn(`[commandCenter] Session for client ${s.client} is ${s.status} (expires ${s.expiresAt}); sync stops until someone from that client logs in.`);
+    }
     return res.json({
-      status: result.success ? 'success' : 'error',
+      status: result.success ? (result.incomplete ? 'partial' : 'success') : 'error',
       inventory,
+      sessions,
       ...result,
     });
   } catch (err: any) {
     console.error('[commandCenter] Cron sync failed:', err);
-    return res.status(500).json({ error: 'Sync failed', message: err.message });
+    return res.status(500).json({ error: 'Sync failed' });
   }
 });
 
@@ -86,7 +93,7 @@ router.get('/summary', async (req, res) => {
     }
   } catch (err: any) {
     console.error('[commandCenter] Error generating telemetry summary:', err);
-    res.status(500).json({ error: 'Failed to aggregate telemetry', message: err.message });
+    res.status(500).json({ error: 'Failed to aggregate telemetry' });
   }
 });
 
@@ -134,7 +141,7 @@ router.get('/feed', async (req, res) => {
     res.json((summary.recentFrames || []).slice(0, limit));
   } catch (err: any) {
     console.error('[commandCenter] Error getting live feed:', err);
-    res.status(500).json({ error: 'Failed to get live feed', message: err.message });
+    res.status(500).json({ error: 'Failed to get live feed' });
   }
 });
 

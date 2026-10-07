@@ -8,7 +8,9 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "seed": "tsx src/db/seed/runSeed.ts",
-    "migrate:neon": "tsx src/scripts/migrateToNeon.ts"
+    "migrate:neon": "tsx src/scripts/migrateToNeon.ts",
+    "test:isolation": "node test/isolation.test.mjs",
+    "test:crypto": "tsx test/sessionStore.test.ts"
   },
   "dependencies": {
     "compression": "^1.8.2",

@@ -80,7 +80,8 @@ function getGatewayAlias(id: string): string {
 /**
  * Ingests a single day's packets into PostgreSQL raw_telemetry_packets
  */
-export async function ingestDateIntoPostgres(date: string): Promise<number> {
+/** `deadline` (ms since epoch) stops paging between pages once passed; the caller treats a passed deadline as 'maybe incomplete'. */
+export async function ingestDateIntoPostgres(date: string, deadline: number = Infinity): Promise<number> {
   const token = await getAuthToken();
   // Only frames of meters this client owns are stored, whatever upstream sends.
   await getInventory();
@@ -92,7 +93,7 @@ export async function ingestDateIntoPostgres(date: string): Promise<number> {
   let page = 0;
   const maxPages = 6; // up to 3000 records per day
 
-  while (hasMore && page < maxPages) {
+  while (hasMore && page < maxPages && Date.now() < deadline) {
     const payload: { page: number; size: number; cursor?: string } = { page, size: 500 };
     if (cursor) payload.cursor = cursor;
 

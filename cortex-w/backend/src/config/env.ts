@@ -51,6 +51,9 @@ const EnvSchema = z.object({
   // Stop syncing a client this long after anyone from it last used the app.
   // 0 = no idle limit: sync until the stored token expires (about 7 days).
   CLIENT_SYNC_MAX_IDLE_HOURS: z.coerce.number().min(0).default(0),
+  // Wall-clock budget for one sync run, in ms. 0 = automatic: 45s on Vercel (a
+  // function is killed at 60s), unlimited on an always-on server.
+  SYNC_TIME_BUDGET_MS: z.coerce.number().int().min(0).default(0),
   // Number of reverse proxies in front of the API (nginx = 1), so req.ip and
   // rate limiting see the real client. 0 = none.
   TRUST_PROXY: z.coerce.number().int().min(0).default(0),

@@ -116,3 +116,27 @@ export async function deleteSession(rawJwt: string): Promise<void> {
     console.warn('[sessions] could not delete session:', err?.message || err);
   }
 }
+
+export interface SessionStatus {
+  client: string;
+  expiresAt: string;
+  lastSeen: string;
+  status: 'ok' | 'expiring' | 'expired';
+}
+
+/** Stored sessions with their health, for the ops report (never includes a token). */
+export async function sessionReport(): Promise<SessionStatus[]> {
+  if (!sessionsPersisted()) return [];
+  try {
+    const r = await pool.query('SELECT client_key, expires_at, last_seen FROM client_sessions ORDER BY client_key');
+    const now = Date.now();
+    return r.rows.map((row: any) => {
+      const exp = new Date(row.expires_at).getTime();
+      const status = exp <= now ? 'expired' : exp - now < 24 * 3600 * 1000 ? 'expiring' : 'ok';
+      return { client: row.client_key, expiresAt: new Date(exp).toISOString(), lastSeen: new Date(row.last_seen).toISOString(), status };
+    });
+  } catch (err: any) {
+    console.warn('[sessions] could not build session report:', err?.message || err);
+    return [];
+  }
+}

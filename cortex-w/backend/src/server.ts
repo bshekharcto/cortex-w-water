@@ -10,6 +10,7 @@ import { fileURLToPath } from "url";
 import { config } from "./config/env.js";
 import { pool } from "./db/pool.js";
 import { authMiddleware, requireAuth } from "./middleware/auth.js";
+import { errorHandler, notFound, wrapAsync } from "./middleware/errors.js";
 
 import authRoutes from "./routes/auth.js";
 import commandCenterRoutes from "./routes/commandCenter.js";
@@ -22,6 +23,10 @@ import dashboardRoutes from "./routes/dashboard.js";
 import { startTelemetrySyncScheduler } from "./services/telemetrySyncWorker.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+for (const r of [authRoutes, commandCenterRoutes, householdsRoutes, billingRoutes, alarmsRoutes, sitesRoutes, gisRoutes, dashboardRoutes]) {
+  wrapAsync(r);
+}
 
 const app = express();
 
@@ -138,6 +143,10 @@ app.use("/api/gis", gisRoutes);
 // Dashboard
 app.use("/api/dashboard", dashboardRoutes);
 
+// Any unmatched API path is a JSON 404; any error becomes a generic 500 (detail stays in the log).
+app.use("/api", notFound);
+app.use(errorHandler);
+
 // ============================================================
 // Run Database Migrations
 // ============================================================
@@ -164,6 +173,7 @@ async function runMigrations() {
     "008_asset_inventory.sql",
     "009_client_scoping.sql",
     "010_client_sessions.sql",
+    "011_sync_state_and_rate_limits.sql",
   ];
 
   for (const file of migrations) {
