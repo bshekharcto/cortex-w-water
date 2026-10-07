@@ -30,6 +30,7 @@ services:
       COGNECTO_API_URL: https://api.cognecto.com
       JWT_LOCAL_SIGNING_SECRET: ${JWT_LOCAL_SIGNING_SECRET:?set JWT_LOCAL_SIGNING_SECRET in .env}
       CRON_SECRET: ${CRON_SECRET:-}
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:-}
       TRUST_PROXY: 1
       CORS_ORIGIN: http://localhost:8088
     depends_on:

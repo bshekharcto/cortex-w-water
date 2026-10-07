@@ -9,6 +9,12 @@ if (existsSync('.env')) {
   }
 }
 
+/** The 32 key bytes in a SESSION_ENCRYPTION_KEY value, or null if it isn't one. */
+export function sessionKeyBytes(v: string): Buffer | null {
+  const b = /^[0-9a-fA-F]{64}$/.test(v) ? Buffer.from(v, 'hex') : Buffer.from(v, 'base64');
+  return b.length === 32 ? b : null;
+}
+
 const DEFAULT_JWT_SECRET = 'change-me-in-real-deployment';
 
 const EnvSchema = z.object({
@@ -35,6 +41,16 @@ const EnvSchema = z.object({
   UPSTREAM_JWT_ISSUER: z.string().optional(),
   // Shared secret the scheduler must present to /command-center/sync-cron.
   CRON_SECRET: z.string().min(16).optional(),
+  // 32-byte key (64 hex chars, or base64) that encrypts stored session tokens.
+  // Without it nothing is persisted: scheduled sync then only covers clients
+  // with a live session on THIS process. Generate: openssl rand -hex 32
+  SESSION_ENCRYPTION_KEY: z
+    .string()
+    .optional()
+    .refine((v) => !v || sessionKeyBytes(v) !== null, 'SESSION_ENCRYPTION_KEY must be 32 bytes as 64 hex chars or base64'),
+  // Stop syncing a client this long after anyone from it last used the app.
+  // 0 = no idle limit: sync until the stored token expires (about 7 days).
+  CLIENT_SYNC_MAX_IDLE_HOURS: z.coerce.number().min(0).default(0),
   // Number of reverse proxies in front of the API (nginx = 1), so req.ip and
   // rate limiting see the real client. 0 = none.
   TRUST_PROXY: z.coerce.number().int().min(0).default(0),
@@ -77,6 +93,7 @@ if (parsed.NODE_ENV === 'production') {
     problems.push('CORS_ORIGIN must list explicit origins, not "*"');
   }
   if (!parsed.CRON_SECRET) problems.push('CRON_SECRET is required');
+  if (!parsed.SESSION_ENCRYPTION_KEY) problems.push('SESSION_ENCRYPTION_KEY is required (stored sessions drive scheduled sync)');
   if (problems.length > 0) {
     throw new Error(`Insecure production configuration:\n - ${problems.join('\n - ')}`);
   }

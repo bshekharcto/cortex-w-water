@@ -163,6 +163,7 @@ async function runMigrations() {
     "007_water_rollup_tables.sql",
     "008_asset_inventory.sql",
     "009_client_scoping.sql",
+    "010_client_sessions.sql",
   ];
 
   for (const file of migrations) {

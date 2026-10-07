@@ -8,7 +8,7 @@ import { fetchAndAggregateTelemetry } from '../services/telemetryAggregator.js';
 import { getPostgresAggregatedSummary } from '../services/telemetryDbService.js';
 import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
 import { refreshInventory, getInventory } from '../services/assetInventory.js';
-import { activeClients, requireClient, runWithClient, scopeSiteIds } from '../services/clientContext.js';
+import { syncClients, requireClient, runWithClient, scopeSiteIds } from '../services/clientContext.js';
 
 const router = Router();
 
@@ -40,12 +40,12 @@ router.all('/sync-cron', async (req, res) => {
     // The same cron tick also advances the dashboard's inventory snapshot.
     // A serverless invocation can't finish a whole refresh, so it does a
     // time-boxed chunk; the next tick resumes where this one stopped.
-    // Only clients that currently have a live session are refreshed, each with
-    // its own token (there is no service account to run as).
+    // Every client with a valid (stored or live) session is refreshed, each
+    // with its own token — there is no service account to run as.
     const [result, inventory] = await Promise.all([
       syncLatestTelemetry(customDates),
-      Promise.all(
-        activeClients().map((client) =>
+      syncClients().then((clients) => Promise.all(
+        clients.map((client) =>
           runWithClient(client, () =>
             refreshInventory({ budgetMs: 40_000 }).catch((err) => {
               console.warn(`[commandCenter] Inventory refresh failed (client ${client.key}):`, err?.message || err);
@@ -53,7 +53,7 @@ router.all('/sync-cron', async (req, res) => {
             })
           )
         )
-      ),
+      )),
     ]);
     return res.json({
       status: result.success ? 'success' : 'error',

@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { proxyUpstream } from './upstreamProxy.js';
 import { singleFlight } from './inflight.js';
+import { deleteSession, loadSessions, saveSession } from './sessionStore.js';
 
 /**
  * Who a request is acting for. A "client" is a customer organisation (e.g.
@@ -141,51 +142,72 @@ export async function resolveClient(rawJwt: string): Promise<ClientCtx | null> {
     }
     resolved.set(id, { ctx, checkedAt: Date.now(), expiresAtMs });
     noteActiveClient(ctx, expiresAtMs);
+    void saveSession(ctx.key, rawJwt, expiresAtMs); // best-effort, throttled, encrypted
     return ctx;
   });
 }
 
 // ---------------------------------------------------------------------------
-// Active clients (for background work)
+// Clients for background work
 // ---------------------------------------------------------------------------
 //
 // Background jobs (telemetry sync, inventory refresh) have no service account
-// to run as. They run only for clients that currently have a live session,
-// using that session's own token — so a client's data is fetched while that
-// client is logged in, and not otherwise. The newest token seen per client is
-// held in memory only (never persisted) and dropped when it expires or the
-// client has been idle longer than ACTIVE_WINDOW_MS.
+// to run as. They act for a client using that client's own session token:
+//  - tokens seen by THIS process (memory), and
+//  - the newest token per client, stored ENCRYPTED in client_sessions (see
+//    sessionStore.ts), so a serverless cron — a fresh process with no
+//    memory — can still act for a client whose users logged in earlier.
+// A client therefore syncs while it has an unexpired session (about 7 days
+// after its last login, or less with CLIENT_SYNC_MAX_IDLE_HOURS). Every token
+// is re-validated with upstream before use; one that upstream no longer
+// accepts is deleted.
 
-const ACTIVE_WINDOW_MS = (Number(process.env.CLIENT_ACTIVE_WINDOW_HOURS) || 12) * 60 * 60 * 1000;
-const active = new Map<string, { ctx: ClientCtx; lastSeen: number; expiresAtMs: number }>();
+const active = new Map<string, { ctx: ClientCtx; expiresAtMs: number }>();
 
 function noteActiveClient(ctx: ClientCtx, expiresAtMs: number) {
-  active.set(ctx.key, { ctx, lastSeen: Date.now(), expiresAtMs });
+  active.set(ctx.key, { ctx, expiresAtMs });
 }
 
-/** Marks the client as in use right now (called on every authenticated request). */
+/** Records that this client's session was used just now (the stored copy's last_seen is refreshed, throttled). */
 export function touchClient(ctx: ClientCtx) {
+  if (ctx.unscoped || !ctx.token) return;
+  const raw = ctx.token.slice('Bearer '.length);
   const a = active.get(ctx.key);
-  if (a && a.ctx.token === ctx.token) a.lastSeen = Date.now();
+  void saveSession(ctx.key, raw, a?.ctx.token === ctx.token ? a.expiresAtMs : tokenExpiryMs(raw));
 }
 
-/** Clients with a live, recently-used session. */
-export function activeClients(): ClientCtx[] {
+/**
+ * Every client that can be synced right now, each with a token upstream has
+ * just confirmed. Safe to call from any process at any time.
+ */
+export async function syncClients(): Promise<ClientCtx[]> {
+  const byKey = new Map<string, ClientCtx>();
   const now = Date.now();
-  const out: ClientCtx[] = [];
   for (const [key, a] of active) {
-    if (a.expiresAtMs <= now || now - a.lastSeen > ACTIVE_WINDOW_MS) active.delete(key);
-    else out.push(a.ctx);
+    if (a.expiresAtMs <= now) active.delete(key);
+    else byKey.set(key, a.ctx);
   }
-  return out;
+  for (const stored of await loadSessions()) {
+    if (byKey.has(stored.clientKey)) continue; // a live in-memory session was already validated this process
+    try {
+      const ctx = await resolveClient(stored.token);
+      if (ctx) byKey.set(ctx.key, ctx);
+      else await deleteSession(stored.token); // upstream no longer accepts it
+    } catch (err: any) {
+      // Upstream unreachable: keep the row, try again next round.
+      console.warn(`[sessions] could not validate stored session for client ${stored.clientKey}:`, err?.message || err);
+    }
+  }
+  return [...byKey.values()];
 }
 
-/** Forgets a client's session (logout). */
+/** Forgets a session everywhere (logout). */
 export function forgetToken(rawJwt: string) {
   const id = hash(rawJwt);
   const r = resolved.get(id);
   resolved.delete(id);
   if (r && active.get(r.ctx.key)?.ctx.token === r.ctx.token) active.delete(r.ctx.key);
+  void deleteSession(rawJwt);
 }
 
 // ---------------------------------------------------------------------------
