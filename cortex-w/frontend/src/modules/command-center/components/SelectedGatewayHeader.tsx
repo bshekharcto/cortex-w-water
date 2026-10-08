@@ -1,5 +1,8 @@
 import { X } from 'lucide-react';
 import { GatewayItem, GatewayTabType } from '../types/commandCenter.types';
+import { useNow, formatAgo } from '../utils/timeAgo';
+import { useWindowLabel } from '../utils/thresholds';
+import { CopyCell } from './CopyCell';
 
 interface Props {
   gateway: GatewayItem;
@@ -14,6 +17,8 @@ export function SelectedGatewayHeader({
   onTabChange,
   onClearSelection,
 }: Props) {
+  const windowLabel = useWindowLabel();
+  const nowMs = useNow();
   const statusBadge =
     gateway.status === 'reporting'
       ? 'cc-status-pill--green'
@@ -28,7 +33,7 @@ export function SelectedGatewayHeader({
       <div className="cc-gw-header-top">
         <div className="cc-gw-title-group">
           <h2 className="cc-gw-title">{gateway.alias}</h2>
-          <span className="cc-mono cc-gw-id">{gateway.gatewayId}</span>
+          <span className="cc-mono cc-gw-id"><CopyCell value={gateway.gatewayId} label="gateway ID" alwaysVisible /></span>
           <span className={`cc-status-pill ${statusBadge}`}>
             {gateway.status.toUpperCase()}
           </span>
@@ -50,13 +55,13 @@ export function SelectedGatewayHeader({
         </span>
         <span className="cc-gw-meta-sep">·</span>
         <span className="cc-gw-meta-item">
-          <strong>{gateway.frameCount}</strong> frames (24h)
+          <strong>{gateway.frameCount}</strong> frames stored ({windowLabel})
         </span>
         <span className="cc-gw-meta-sep">·</span>
         <span className="cc-gw-meta-item">
-          Last frame: <strong>{gateway.lastFrameText}</strong>
+          Last frame: <strong>{formatAgo(gateway.lastFrameDecodedAt, nowMs)}</strong>
         </span>
-        {gateway.avgRssi !== 0 && (
+        {gateway.avgRssi != null && gateway.avgSnr != null && (
           <>
             <span className="cc-gw-meta-sep">·</span>
             <span className="cc-gw-meta-item">
@@ -70,7 +75,7 @@ export function SelectedGatewayHeader({
         )}
       </div>
 
-      <div className="cc-gw-tabs-row">
+      <div className="cc-gw-tabs-row" role="tablist" aria-label="Gateway views">
         {(
           [
             { key: 'METERS', label: 'Meters' },
@@ -81,6 +86,8 @@ export function SelectedGatewayHeader({
         ).map((t) => (
           <button
             key={t.key}
+            role="tab"
+            aria-selected={activeTab === t.key}
             className={`cc-gw-tab ${activeTab === t.key ? 'cc-gw-tab--active' : ''}`}
             onClick={() => onTabChange(t.key)}
           >

@@ -1,4 +1,4 @@
-import { ingestDateIntoPostgres, getPostgresAggregatedSummary } from './telemetryDbService.js';
+import { ingestDateIntoPostgres, prewarmSummaries } from './telemetryDbService.js';
 import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { localDate } from './localDate.js';
@@ -224,16 +224,14 @@ async function syncClientTelemetry(customDates: string[] | undefined, deadline: 
       }
     }
 
-    // Pre-warm the 7D/30D summaries (SQL only) when there is comfortably time left.
+    // Keep this client's site x window summaries warm (skips combinations that are still fresh and unchanged),
+    // but only when there is comfortably time left in the run.
     if (!partial && deadline - Date.now() > PREWARM_MIN_LEFT_MS) {
-      for (const date of [todayStr, '2026-09-06']) {
-        if (deadline - Date.now() < PREWARM_MIN_LEFT_MS) break;
-        try {
-          await getPostgresAggregatedSummary(7, date, true, 'ALL', true);
-          await getPostgresAggregatedSummary(30, date, true, 'ALL', true);
-        } catch (cacheErr: any) {
-          console.warn(`[telemetrySync] Client ${clientKey}: cache pre-warm note for ${date}:`, cacheErr.message);
-        }
+      try {
+        const warm = await prewarmSummaries(added > 0, deadline - PREWARM_MIN_LEFT_MS / 2);
+        console.log(`[telemetrySync] Client ${clientKey}: cache pre-warm: ${warm.rebuilt} rebuilt, ${warm.skipped} still fresh.`);
+      } catch (cacheErr: any) {
+        console.warn(`[telemetrySync] Client ${clientKey}: cache pre-warm note:`, cacheErr.message);
       }
     }
     return { client: clientKey, status: partial ? 'partial' : 'complete', packetsAdded: added, dates: done };
@@ -270,13 +268,23 @@ export function startTelemetrySyncScheduler(intervalMs: number = 15 * 60 * 1000)
       )
     );
 
-  // Initial sync delayed by 5 seconds to let database migrations complete
-  setTimeout(() => {
-    console.log('[telemetrySyncScheduler] Running initial telemetry sync on startup...');
-    syncLatestTelemetry().catch((err) => {
-      console.warn('[telemetrySyncScheduler] Initial sync warning:', err.message);
-    });
+  // On startup, sync only if the store is stale. Restarting the dev server (tsx watch restarts on every
+  // save) must not re-ingest each time; the interval below keeps data fresh otherwise.
+  setTimeout(async () => {
     refreshInventoryNow();
+    try {
+      const res = await pool.query('SELECT MAX(decoded_at) AS latest FROM raw_telemetry_packets');
+      const latest: Date | null = res.rows[0]?.latest ?? null;
+      const ageMs = latest ? Date.now() - new Date(latest).getTime() : Infinity;
+      if (ageMs < intervalMs) {
+        console.log('[telemetrySyncScheduler] Store is fresh; skipping startup sync.');
+        return;
+      }
+      console.log('[telemetrySyncScheduler] Store is stale; running startup telemetry sync...');
+      await syncLatestTelemetry();
+    } catch (err: any) {
+      console.warn('[telemetrySyncScheduler] Startup sync check warning:', err.message);
+    }
   }, 5000);
 
   // Recurring background interval

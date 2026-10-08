@@ -1,11 +1,18 @@
 import { NetworkKpiData } from '../types/commandCenter.types';
+import { fmt } from '../utils/format';
+import { useNow, formatAgo } from '../utils/timeAgo';
+import { useWindowLabel } from '../utils/thresholds';
 
 interface Props {
   kpis?: NetworkKpiData | null;
   loading?: boolean;
+  /** Where the unique-meter numbers came from, shown on hover. */
+  upstream?: { siteIds: string; fromDate: string; toDate: string; totalUniqueMeters: number } | null;
 }
 
-export function NetworkKpiStrip({ kpis, loading }: Props) {
+export function NetworkKpiStrip({ kpis, loading, upstream }: Props) {
+  const windowLabel = useWindowLabel();
+  const nowMs = useNow();
   if (loading && !kpis) {
     return (
       <div className="cc-kpi-grid">
@@ -54,26 +61,20 @@ export function NetworkKpiStrip({ kpis, loading }: Props) {
       </div>
 
       {/* KPI 3 */}
-      <div className="cc-kpi-card">
+      <div
+        className="cc-kpi-card"
+        title={
+          upstream
+            ? `From the gateway-meter-summary report: sites ${upstream.siteIds}, ${upstream.fromDate} to ${upstream.toDate} (India days). Upstream total: ${upstream.totalUniqueMeters.toLocaleString()}.`
+            : 'Counted from the frames stored in Cortex for this window (not from the gateway-meter-summary report).'
+        }
+      >
         <div className="cc-kpi-top">
           <span className="cc-kpi-dot cc-kpi-dot--blue" />
           <span className="cc-kpi-label">UNIQUE METERS SEEN</span>
         </div>
         <div className="cc-kpi-value-row">
           <span className="cc-kpi-val">{kpis.uniqueMetersSeen.toLocaleString()}</span>
-          <span className="cc-kpi-sub">/ {kpis.configuredMeters.toLocaleString()} config</span>
-        </div>
-      </div>
-
-      {/* KPI 4 */}
-      <div className="cc-kpi-card">
-        <div className="cc-kpi-top">
-          <span className="cc-kpi-dot cc-kpi-dot--blue" />
-          <span className="cc-kpi-label">FRAMES RECEIVED (24H)</span>
-        </div>
-        <div className="cc-kpi-value-row">
-          <span className="cc-kpi-val">{kpis.framesReceived.toLocaleString()}</span>
-          <span className="cc-kpi-trend cc-kpi-trend--up">{kpis.framesTrend}</span>
         </div>
       </div>
 
@@ -84,7 +85,7 @@ export function NetworkKpiStrip({ kpis, loading }: Props) {
           <span className="cc-kpi-label">LAST NETWORK FRAME</span>
         </div>
         <div className="cc-kpi-value-row">
-          <span className="cc-kpi-val cc-kpi-val--sm">{kpis.lastFrameAge}</span>
+          <span className="cc-kpi-val cc-kpi-val--sm">{formatAgo(kpis.lastFrameAt, nowMs)}</span>
         </div>
       </div>
 
@@ -107,10 +108,26 @@ export function NetworkKpiStrip({ kpis, loading }: Props) {
           <span className="cc-kpi-label">AVG RSSI / SNR</span>
         </div>
         <div className="cc-kpi-value-row">
-          <span className="cc-kpi-val cc-kpi-val--sm">{kpis.avgRssi}</span>
+          <span className="cc-kpi-val cc-kpi-val--sm">{fmt(kpis.avgRssi)}</span>
           <span className="cc-kpi-unit">dBm</span>
-          <span className="cc-kpi-sub">· {kpis.avgSnr} dB</span>
+          <span className="cc-kpi-sub">· {fmt(kpis.avgSnr, ' dB')}</span>
         </div>
+      </div>
+
+      {/* Frames stored: demoted. It is informational only: ingestion currently keeps part of each day and the
+          stored days mix two data shapes, so it is neither the network's true total nor trendable. */}
+      <div
+        className="cc-kpi-card cc-kpi-card--muted"
+        title="Frames kept in Cortex for this window. Not the network's true total yet (ingestion stores only part of each day), so it is not shown as a trend."
+      >
+        <div className="cc-kpi-top">
+          <span className="cc-kpi-dot cc-kpi-dot--blue" />
+          <span className="cc-kpi-label">FRAMES STORED ({windowLabel})</span>
+        </div>
+        <div className="cc-kpi-value-row">
+          <span className="cc-kpi-val cc-kpi-val--sm">{kpis.framesReceived.toLocaleString()}</span>
+        </div>
+        <div className="cc-kpi-note">informational</div>
       </div>
     </div>
   );
