@@ -152,7 +152,7 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter, 
               <th>Last SNR</th>
               <th>FCnt</th>
               <th>FPort</th>
-              <th>Freq (MHz)</th>
+              <th>Freq (Hz)</th>
               <th>DR</th>
               <th>Other GWs</th>
               <th>Status</th>

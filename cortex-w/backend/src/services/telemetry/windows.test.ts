@@ -86,3 +86,12 @@ test('dateKeyOf and localDayStartIso agree', () => {
   assert.equal(localDayStartIso('2026-10-07'), '2026-10-06T18:30:00.000Z');
   assert.equal(localDayStartIso('2026-10-07', 'UTC'), '2026-10-07T00:00:00.000Z');
 });
+
+test('"Today" (days: 1) runs from local midnight to now, not the last 24 hours', () => {
+  const w = resolveWindow({ days: 1 }, NOW); // 16:00 IST on 6 Oct
+  assert.equal(w.fromTs, '2026-10-05T18:30:00.000Z'); // 00:00 IST on 6 Oct
+  assert.equal(w.toTs, NOW.toISOString());
+  assert.equal(w.fromDate, '2026-10-06');
+  assert.equal(w.toDate, '2026-10-06');
+  assert.equal(w.key, 'd1');
+});

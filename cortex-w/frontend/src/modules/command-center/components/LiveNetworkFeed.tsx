@@ -136,7 +136,7 @@ export function LiveNetworkFeed({ frames, onSelectMeter, onInspectFrame, meterCo
               <th>Meter ID</th>
               <th>DevEUI</th>
               <th>FCnt</th>
-              <th>Freq (MHz)</th>
+              <th>Freq (Hz)</th>
               <th>DR</th>
               <th>RSSI</th>
               <th>SNR</th>

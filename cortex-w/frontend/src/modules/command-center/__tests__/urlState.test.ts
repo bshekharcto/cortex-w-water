@@ -41,6 +41,7 @@ describe('URL state', () => {
   });
 
   it('accepts the window in any letter case', () => {
-    expect(parseUrlState('window=24h', {}, RANGE).window).toBe('24H');
+    expect(parseUrlState('window=today', {}, RANGE).window).toBe('TODAY');
+    expect(parseUrlState('window=24h', {}, RANGE).window).toBe('TODAY'); // old links
   });
 });

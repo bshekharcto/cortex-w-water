@@ -61,7 +61,7 @@ function toWindowParams(range: TimeWindow, custom: { from: string; to: string })
   switch (range) {
     case '1H': return { hours: 1 };
     case '6H': return { hours: 6 };
-    case '24H': return { hours: 24 };
+    case 'TODAY': return { days: 1 }; // today so far, from midnight India time
     case '30D': return { days: 30 };
     case 'CUSTOM': return { from: custom.from, to: custom.to };
     default: return { days: 7 };
@@ -521,7 +521,7 @@ export function CommandCenterPage() {
     return () => document.removeEventListener('keydown', onKey);
   }, [inspectedFrame, railDrawerOpen, framesViewMeter, selectedMeter]);
 
-  const windowLabel = timeRange === 'CUSTOM' ? 'custom range' : timeRange;
+  const windowLabel = timeRange === 'CUSTOM' ? 'custom range' : timeRange === 'TODAY' ? 'today' : timeRange;
 
   return (
     <ThresholdsProvider value={summaryData?.thresholds ?? null}>
@@ -575,6 +575,7 @@ export function CommandCenterPage() {
       {/* Network Health 8-KPI Strip with Skeleton Loaders */}
       <NetworkKpiStrip
         kpis={currentKpis}
+        upstream={summaryData?.upstream ?? null}
         loading={isSyncing && !summaryData}
       />
 

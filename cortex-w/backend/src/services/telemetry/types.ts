@@ -83,4 +83,6 @@ export interface TelemetrySummary {
     status: 'reporting' | 'degraded' | 'stale' | 'no-traffic';
   }>;
   recentFrames: FrameDto[];
+  /** The upstream gateway-meter-summary call behind the unique-meter numbers (null when none was used). */
+  upstream: { siteIds: string; fromDate: string; toDate: string; totalUniqueMeters: number } | null;
 }

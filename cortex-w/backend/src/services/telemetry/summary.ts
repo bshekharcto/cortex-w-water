@@ -26,7 +26,7 @@ export async function prewarmSummaries(newPackets: boolean, deadline: number = I
   const ck = requireClient().key;
   const roots = await getRoots().catch(() => []);
   const sites = ['ALL', ...roots.map((r) => String(r.id))];
-  const requests = [{ hours: 1 }, { hours: 6 }, { hours: 24 }, { days: 7 }, { days: 30 }];
+  const requests = [{ hours: 1 }, { hours: 6 }, { days: 1 }, { days: 7 }, { days: 30 }];
   const combos = sites.flatMap((siteId) => requests.map((req) => ({ siteId, win: resolveWindow(req) })));
   const keyOf = (c: { siteId: string; win: TelemetryWindow }) => summaryCacheKey(ck, c.win.key, c.siteId);
 
@@ -152,11 +152,15 @@ export async function getPostgresAggregatedSummary(
   const siteFilter = `AND ${own}${scoped ? ' AND gateway_id = ANY($6::text[])' : ''}`;
   const range: unknown[] = scoped ? [fromDate, toDate, fromTs, toTs, ck, siteGatewayIds] : [fromDate, toDate, fromTs, toTs, ck];
 
+  // The previous period is the equal span before this one; for "today" (d1) it is yesterday over the same
+  // elapsed hours, so today is compared with yesterday rather than with the tail of last night.
   const spanMs = Date.parse(toTs) - Date.parse(fromTs);
-  const prevFromTs = new Date(Date.parse(fromTs) - spanMs).toISOString();
+  const shiftMs = win.key === 'd1' ? 86400000 : spanMs;
+  const prevFromTs = new Date(Date.parse(fromTs) - shiftMs).toISOString();
+  const prevToTs = new Date(Date.parse(toTs) - shiftMs).toISOString();
   const prevRange: unknown[] = scoped
-    ? [dateKeyOf(prevFromTs), dateKeyOf(fromTs), prevFromTs, fromTs, ck, siteGatewayIds]
-    : [dateKeyOf(prevFromTs), dateKeyOf(fromTs), prevFromTs, fromTs, ck];
+    ? [dateKeyOf(prevFromTs), dateKeyOf(prevToTs), prevFromTs, prevToTs, ck, siteGatewayIds]
+    : [dateKeyOf(prevFromTs), dateKeyOf(prevToTs), prevFromTs, prevToTs, ck];
 
   const [kpiRes, multiGwRes, gwRes, framesRes, prevRes, earliestRes, gwMultiRes] = await Promise.all([
     pool.query(`
@@ -289,6 +293,9 @@ export async function getPostgresAggregatedSummary(
     },
     gateways,
     recentFrames,
+    upstream: upstreamSummary?.query
+      ? { ...upstreamSummary.query, totalUniqueMeters: upstreamSummary.totalUniqueMeters }
+      : null,
   };
 
   // 10. Cache in PostgreSQL

@@ -43,7 +43,7 @@ export function MeterFacetFilters({ value, onChange, drOptions, frequencyOptions
         <option value="">Freq: any</option>
         {frequencyOptions.map((f) => (
           <option key={f} value={String(f)}>
-            {formatFrequency(f)} MHz
+            {formatFrequency(f)} Hz
           </option>
         ))}
       </select>

@@ -13,7 +13,7 @@ export interface CcUrlState {
   mode: 'Gateways' | 'Meters';
 }
 
-const WINDOWS: TimeWindow[] = ['1H', '6H', '24H', '7D', '30D', 'CUSTOM'];
+const WINDOWS: TimeWindow[] = ['1H', '6H', 'TODAY', '7D', '30D', 'CUSTOM'];
 const TAB_TO_PARAM: Record<GatewayTabType, string> = { METERS: 'meters', FRAMES: 'frames', TRAFFIC: 'traffic', RADIO: 'radio' };
 const PARAM_TO_TAB = Object.fromEntries(Object.entries(TAB_TO_PARAM).map(([k, v]) => [v, k])) as Record<string, GatewayTabType>;
 const ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -39,7 +39,8 @@ export function parseUrlState(
   const q = new URLSearchParams(search);
   const id = (v: string | null | undefined) => (v && ID_RE.test(v) ? v : null);
 
-  const win = (q.get('window') ?? '').toUpperCase() as TimeWindow;
+  const raw = (q.get('window') ?? '').toUpperCase();
+  const win = (raw === '24H' ? 'TODAY' : raw) as TimeWindow; // links made before "24H" became "Today" still open
   let window: TimeWindow = WINDOWS.includes(win) ? win : DEFAULT_URL_STATE.window;
   let from = q.get('from') ?? defaultRange.from;
   let to = q.get('to') ?? defaultRange.to;

@@ -96,7 +96,7 @@ export function CommandCenterToolbar({
           >
             {(sites && sites.length > 0 ? sites : [{ id: 'ALL', name: 'All Sites' }]).map((s) => (
               <option key={s.id} value={s.id}>
-                {s.id === 'ALL' ? 'All Sites (Fleet)' : `Site: ${s.name} (${s.id})`}
+                {s.id === 'ALL' ? 'All Sites (Fleet)' : s.name}
               </option>
             ))}
           </select>
@@ -126,14 +126,14 @@ export function CommandCenterToolbar({
           </div>
 
           <div className="cc-time-group">
-            {(['1H', '6H', '24H', '7D', '30D', 'CUSTOM'] as TimeWindow[]).map((t) => (
+            {(['1H', '6H', 'TODAY', '7D', '30D', 'CUSTOM'] as TimeWindow[]).map((t) => (
               <button
                 key={t}
                 aria-pressed={timeRange === t}
                 className={`cc-time-btn ${timeRange === t ? 'cc-time-btn--active' : ''}`}
                 onClick={() => onTimeRangeChange(t)}
               >
-                {t}
+                {t === 'TODAY' ? 'Today' : t}
               </button>
             ))}
           </div>

@@ -9,6 +9,8 @@ export interface UpstreamGatewaySummary {
   gatewayCount: number;
   metersOnMultipleGateways: number;
   perGateway: Array<{ gatewayId: string; uniqueMeterCount: number }>;
+  /** What we asked for (added by us, not part of upstream's answer): lets the page show where its numbers came from. */
+  query?: { siteIds: string; fromDate: string; toDate: string };
 }
 
 /**
@@ -45,7 +47,7 @@ async function fetchGatewayMeterSummaryUncached(siteId: string, fromDate: string
     );
     const d = up.data as UpstreamGatewaySummary | null;
     if (up.status !== 200 || !d || !Array.isArray(d.perGateway)) return null;
-    return d;
+    return { ...d, query: { siteIds, fromDate, toDate } };
   } catch (err: any) {
     console.warn('[telemetryDb] gateway-meter-summary unavailable:', err.message);
     return null;

@@ -18,7 +18,7 @@ export const isWeakRssi = (t: NetworkHealthThresholds | null, v: number | null |
 export const isPoorSnr = (t: NetworkHealthThresholds | null, v: number | null | undefined) =>
   !!t && v != null && v < t.snrWeakDb;
 
-// Human label for the selected window ("6H", "7D", "Custom range"), so headings never claim 24H when it isn't.
+// Human label for the selected window ("6H", "today", "Custom range"), so headings never claim the wrong window when it isn't.
 const WindowLabelContext = createContext<string>('selected window');
 
 export function WindowLabelProvider({ value, children }: { value: string; children: ReactNode }) {

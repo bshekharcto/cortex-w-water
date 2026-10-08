@@ -78,7 +78,7 @@ export function MeterFramesView({ meter, win, onBack, onInspectFrame }: Props) {
               <th>Gateway</th>
               <th>FCnt</th>
               <th>FPort</th>
-              <th>Freq (MHz)</th>
+              <th>Freq (Hz)</th>
               <th>DR</th>
               <th>RSSI</th>
               <th>SNR</th>

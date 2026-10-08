@@ -103,7 +103,7 @@ export function GatewayMetersTable({
               <th>Last SNR</th>
               <th>FCnt</th>
               <th>FPort</th>
-              <th>Freq (MHz)</th>
+              <th>Freq (Hz)</th>
               <th>DR</th>
               <th>ADR</th>
               <th>Conf.</th>

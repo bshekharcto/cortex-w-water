@@ -23,10 +23,9 @@ describe('display formatting never invents values', () => {
     expect(yesNo(undefined)).toBe('—');
   });
 
-  it('frequency: upstream Hz is shown as MHz', () => {
-    expect(formatFrequency(865062500)).toBe('865.0625');
-    expect(formatFrequency(865985000, true)).toBe('865.985 MHz');
-    expect(formatFrequency(868.1)).toBe('868.1'); // already MHz
+  it('frequency: shown in Hz exactly as upstream sends it', () => {
+    expect(formatFrequency(865062500)).toBe('865062500');
+    expect(formatFrequency(865985000, true)).toBe('865985000 Hz');
     expect(formatFrequency(null)).toBe('—');
   });
 

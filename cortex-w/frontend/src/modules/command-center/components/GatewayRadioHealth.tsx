@@ -180,7 +180,7 @@ export function GatewayRadioHealth({ win, siteId, gateway, refreshToken, onSelec
   ];
   const drRows: Band[] = data.byDr.map((d) => ({ label: d.dr == null ? 'DR unknown' : `DR${d.dr}`, color: '#3B82F6', count: d.frames }));
   const freqRows: Band[] = data.byFrequency.map((f) => ({
-    label: f.frequencyHz == null ? 'Frequency unknown' : `${formatFrequency(f.frequencyHz)} MHz`,
+    label: f.frequencyHz == null ? 'Frequency unknown' : `${formatFrequency(f.frequencyHz)} Hz`,
     color: '#38BDF8',
     count: f.frames,
   }));
@@ -219,7 +219,7 @@ export function GatewayRadioHealth({ win, siteId, gateway, refreshToken, onSelec
         <Bars title="RSSI DISTRIBUTION" meta={`${data.totals.frames.toLocaleString()} frames`} rows={rssiRows} />
         <Bars title="SNR DISTRIBUTION" meta={`${data.totals.frames.toLocaleString()} frames`} rows={snrRows} />
         <Bars title="FRAMES BY DATA RATE" meta="share of frames" rows={drRows} />
-        <Bars title="FRAMES BY FREQUENCY" meta="MHz" rows={freqRows} />
+        <Bars title="FRAMES BY FREQUENCY" meta="Hz" rows={freqRows} />
         <MeterList title="STRONGEST METERS" rows={data.strongest} onSelect={onSelectMeter} />
         <MeterList title="WEAKEST METERS" rows={data.weakest} onSelect={onSelectMeter} />
       </div>

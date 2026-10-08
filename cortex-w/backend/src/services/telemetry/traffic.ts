@@ -107,13 +107,16 @@ export async function getTraffic(opts: { win: TelemetryWindow; gatewayId?: strin
   // "to" is exclusive in the queries; nudge the (inclusive) end of a custom range by 1 ms so it's covered
   const toTs = new Date(Date.parse(win.toTs) + 1).toISOString();
   const spanMs = Date.parse(toTs) - Date.parse(win.fromTs);
-  const prevFromTs = new Date(Date.parse(win.fromTs) - spanMs).toISOString();
+  // "Today" (d1) is compared with yesterday over the same elapsed hours; other windows with the equal span before
+  const shiftMs = win.key === 'd1' ? 86400000 : spanMs;
+  const prevFromTs = new Date(Date.parse(win.fromTs) - shiftMs).toISOString();
+  const prevToTs = new Date(Date.parse(toTs) - shiftMs).toISOString();
 
   const [current, previousRaw, cur, prev, earliest] = await Promise.all([
     series(bucket, win.fromTs, toTs, gateways, ck),
-    series(bucket, prevFromTs, win.fromTs, gateways, ck),
+    series(bucket, prevFromTs, prevToTs, gateways, ck),
     totals(win.fromTs, toTs, gateways, ck),
-    totals(prevFromTs, win.fromTs, gateways, ck),
+    totals(prevFromTs, prevToTs, gateways, ck),
     pool.query(`SELECT MIN(date_key) AS d FROM raw_telemetry_packets WHERE ${ownedMeters(1)}`, [ck]),
   ]);
 

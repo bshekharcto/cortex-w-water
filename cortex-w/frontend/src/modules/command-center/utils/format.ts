@@ -9,14 +9,10 @@ export function formatTrend(pct: number | null | undefined): string {
   return `${pct > 0 ? '↑' : pct < 0 ? '↓' : '→'} ${Math.abs(pct)}%`;
 }
 
-/**
- * LoRa frequency for display. Upstream sends Hz (e.g. 865062500); shown as MHz (865.0625).
- * A value that is already small (< 10,000) is assumed to be MHz.
- */
+/** LoRa frequency exactly as upstream sends it, in Hz (e.g. 865062500). */
 export function formatFrequency(value: number | null | undefined, withUnit = false): string {
   if (value === null || value === undefined) return '—';
-  const mhz = value >= 10000 ? value / 1e6 : value;
-  return `${Number(mhz.toFixed(4))}${withUnit ? ' MHz' : ''}`;
+  return `${Math.round(value)}${withUnit ? ' Hz' : ''}`;
 }
 
 /** Short label for the viewer's timezone, e.g. "GMT+5:30" or "UTC", used in column headers. */

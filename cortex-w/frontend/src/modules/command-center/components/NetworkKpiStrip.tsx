@@ -6,9 +6,11 @@ import { useWindowLabel } from '../utils/thresholds';
 interface Props {
   kpis?: NetworkKpiData | null;
   loading?: boolean;
+  /** Where the unique-meter numbers came from, shown on hover. */
+  upstream?: { siteIds: string; fromDate: string; toDate: string; totalUniqueMeters: number } | null;
 }
 
-export function NetworkKpiStrip({ kpis, loading }: Props) {
+export function NetworkKpiStrip({ kpis, loading, upstream }: Props) {
   const windowLabel = useWindowLabel();
   const nowMs = useNow();
   if (loading && !kpis) {
@@ -59,7 +61,14 @@ export function NetworkKpiStrip({ kpis, loading }: Props) {
       </div>
 
       {/* KPI 3 */}
-      <div className="cc-kpi-card">
+      <div
+        className="cc-kpi-card"
+        title={
+          upstream
+            ? `From the gateway-meter-summary report: sites ${upstream.siteIds}, ${upstream.fromDate} to ${upstream.toDate} (India days). Upstream total: ${upstream.totalUniqueMeters.toLocaleString()}.`
+            : 'Counted from the frames stored in Cortex for this window (not from the gateway-meter-summary report).'
+        }
+      >
         <div className="cc-kpi-top">
           <span className="cc-kpi-dot cc-kpi-dot--blue" />
           <span className="cc-kpi-label">UNIQUE METERS SEEN</span>

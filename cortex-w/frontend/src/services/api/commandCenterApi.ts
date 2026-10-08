@@ -19,6 +19,8 @@ export interface TelemetrySummaryResponse {
   refreshing?: boolean;
   gateways: GatewayItem[];
   recentFrames: RawFrameItem[];
+  /** The upstream call behind the unique-meter numbers (sites and dates), for checking against the report. */
+  upstream?: { siteIds: string; fromDate: string; toDate: string; totalUniqueMeters: number } | null;
 }
 
 /** Time window sent to the backend; the server resolves it against its own clock. */
