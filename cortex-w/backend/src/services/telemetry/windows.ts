@@ -24,7 +24,9 @@ export function windowRequestFromKey(win: TelemetryWindow): { hours?: number; da
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_DAYS = 90;
-const TZ = () => config.TELEMETRY_TIMEZONE;
+// TEMPORARY (for checking against the upstream report): Command Center windows use UTC days. Revert this line to
+// `config.TELEMETRY_TIMEZONE` to go back to IST days. Sync and stored date_keys are unaffected.
+const TZ = () => 'UTC';
 
 /**
  * date_key on stored packets is the day in the telemetry timezone (see localDate.ts), so every date bound
