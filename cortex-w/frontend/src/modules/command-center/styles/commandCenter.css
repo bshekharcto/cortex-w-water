@@ -340,7 +340,11 @@
   border-radius: 8px;
   display: flex;
   flex-direction: column;
-  height: 640px;
+  /* Same height as the workspace beside it (min 640px): stretched by the grid row, and `contain: size` keeps the
+     rail's own list from growing that row, so the list scrolls inside the box instead. */
+  align-self: stretch;
+  min-height: 640px;
+  contain: size;
   overflow: hidden;
 }
 .cc-rail-header {
@@ -1343,7 +1347,7 @@
 
   .cc-gateway-rail {
     position: fixed; top: 0; left: 0; bottom: 0; z-index: 60;
-    width: min(340px, 90vw); height: 100vh; border-radius: 0;
+    width: min(340px, 90vw); height: 100vh; min-height: 0; contain: none; border-radius: 0;
     transform: translateX(-104%); transition: transform 0.2s ease; box-shadow: 12px 0 32px rgba(0, 0, 0, 0.5);
   }
   .cc-gateway-rail--open { transform: none; }
