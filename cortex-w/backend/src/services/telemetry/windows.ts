@@ -1,3 +1,5 @@
+import { config } from '../../config/env.js';
+
 export interface TelemetryWindow {
   /** Stable cache key, e.g. h6 / d7 / c_2026-09-01_2026-09-05 (never contains "now"). */
   key: string;
@@ -22,11 +24,43 @@ export function windowRequestFromKey(win: TelemetryWindow): { hours?: number; da
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_DAYS = 90;
-const dayStr = (d: Date) => d.toISOString().slice(0, 10);
+const TZ = () => config.TELEMETRY_TIMEZONE;
+
+/**
+ * date_key on stored packets is the day in the telemetry timezone (see localDate.ts), so every date bound
+ * built for a query must be a local day too. Using the UTC date hides the first hours of each local day.
+ */
+export function dateKeyOf(ts: string | number | Date, tz: string = TZ()): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date(ts));
+}
+
+/** Local clock minus UTC clock at an instant, in ms (e.g. +19,800,000 for IST). */
+function tzOffsetMs(at: Date, tz: string): number {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    }).formatToParts(at).map((x) => [x.type, x.value])
+  );
+  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return asUtc - Math.floor(at.getTime() / 1000) * 1000;
+}
+
+/** The UTC instant at which a local calendar day (YYYY-MM-DD) begins. */
+export function localDayStartIso(day: string, tz: string = TZ()): string {
+  const guess = Date.parse(`${day}T00:00:00Z`);
+  const first = guess - tzOffsetMs(new Date(guess), tz);
+  return new Date(guess - tzOffsetMs(new Date(first), tz)).toISOString();
+}
+
+/** Shifts a calendar date string by whole days (calendar arithmetic, DST-safe). */
+export function shiftDay(day: string, delta: number): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) + delta * 86400000).toISOString().slice(0, 10);
+}
 
 /**
  * Resolves a requested window against the SERVER clock (so a browser tab left open across midnight
- * never queries a stale date). Accepts {hours}, {days} or a custom {from,to} (YYYY-MM-DD, UTC).
+ * never queries a stale date). Accepts {hours}, {days} or a custom {from,to} (YYYY-MM-DD, days in the telemetry timezone).
  */
 export function resolveWindow(
   q: { hours?: number; days?: number; from?: string; to?: string },
@@ -39,8 +73,8 @@ export function resolveWindow(
     if (span > MAX_DAYS) throw new Error(`Custom range cannot exceed ${MAX_DAYS} days`);
     return {
       key: `c_${q.from}_${q.to}`,
-      fromTs: `${q.from}T00:00:00.000Z`,
-      toTs: `${q.to}T23:59:59.999Z`,
+      fromTs: localDayStartIso(q.from),
+      toTs: new Date(Date.parse(localDayStartIso(shiftDay(q.to, 1))) - 1).toISOString(),
       fromDate: q.from,
       toDate: q.to,
       days: span,
@@ -50,8 +84,8 @@ export function resolveWindow(
   if (q.hours && q.hours > 0) {
     const hours = Math.min(Math.floor(q.hours), 168);
     const from = new Date(now.getTime() - hours * 3600000);
-    const fromDate = dayStr(from);
-    const toDate = dayStr(now);
+    const fromDate = dateKeyOf(from);
+    const toDate = dateKeyOf(now);
     return {
       key: `h${hours}`,
       fromTs: from.toISOString(),
@@ -63,13 +97,14 @@ export function resolveWindow(
     };
   }
   const days = Math.min(Math.max(Math.floor(q.days || 7), 1), MAX_DAYS);
-  const fromDate = dayStr(new Date(now.getTime() - (days - 1) * DAY));
+  const toDate = dateKeyOf(now);
+  const fromDate = shiftDay(toDate, -(days - 1));
   return {
     key: `d${days}`,
-    fromTs: `${fromDate}T00:00:00.000Z`,
+    fromTs: localDayStartIso(fromDate),
     toTs: now.toISOString(),
     fromDate,
-    toDate: dayStr(now),
+    toDate,
     days,
     subDay: false,
   };

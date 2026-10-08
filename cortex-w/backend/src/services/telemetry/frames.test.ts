@@ -21,7 +21,7 @@ test('mapFrameRow: BIGINT frequency becomes a number, ids are stable, alias come
   const f = mapFrameRow(row, 0, new Set());
   assert.equal(f.frequency, 865062500);
   assert.equal(f.id, 'pk-7');
-  assert.equal(f.gatewayAlias, 'GW-2A0');
+  assert.equal(f.gatewayAlias, 'GW-02A0');
   assert.equal(f.multiGateway, false);
   assert.equal(f.meterTimestamp, '2037-08-05 10:01:00'); // the meter's own (wrong) clock is passed through untouched
 });

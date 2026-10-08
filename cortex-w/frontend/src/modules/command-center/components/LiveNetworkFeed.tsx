@@ -36,12 +36,24 @@ export function LiveNetworkFeed({ frames, onSelectMeter, onInspectFrame, meterCo
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  // The summary just delivered a fresh first page, so anything paged in earlier no longer lines up: start over
+  // A new window or site starts over. A plain refresh keeps what was paged in, unless so many frames arrived
+  // that the fresh first page no longer overlaps the previous one (then the older pages would leave a gap).
+  const prevFrames = useRef<RawFrameItem[]>(frames);
+  useEffect(() => {
+    const prev = prevFrames.current;
+    prevFrames.current = frames;
+    const ids = new Set(prev.map((f) => f.id));
+    const overlaps = prev.length === 0 || frames.some((f) => ids.has(f.id));
+    if (overlaps) return;
+    setOlder([]);
+    setTotal(null);
+    setOlderError(null);
+  }, [frames]);
   useEffect(() => {
     setOlder([]);
     setTotal(null);
     setOlderError(null);
-  }, [frames, win, siteId]);
+  }, [windowKey(win), siteId]);
 
   const all = useMemo(() => {
     const seen = new Set(frames.map((f) => f.id));

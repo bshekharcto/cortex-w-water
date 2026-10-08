@@ -2,7 +2,7 @@ import { pool } from '../../db/pool.js';
 import { networkHealthThresholds as T } from '../../config/networkHealth.js';
 import { getGatewayAlias } from './labels.js';
 import { resolveSiteGateways } from './upstream.js';
-import { referenceMs, type TelemetryWindow } from './windows.js';
+import { dateKeyOf, referenceMs, type TelemetryWindow } from './windows.js';
 import type { MeterState, PacketRow } from './types.js';
 import { clientKey, ownedMeters } from './scope.js';
 
@@ -21,7 +21,7 @@ async function buildMeterItems(rows: PacketRow[], win: TelemetryWindow, scope: '
   const refMs = referenceMs(win);
   const hourAgo = new Date(refMs - 3600000).toISOString();
   const dayAgo = new Date(refMs - 86400000).toISOString();
-  const dayAgoDate = dayAgo.slice(0, 10);
+  const dayAgoDate = dateKeyOf(dayAgo);
 
   const [heardRes, countRes] = await Promise.all([
     // Every gateway that heard each meter in the window, with its latest frame there
@@ -131,6 +131,22 @@ export async function searchMeters(q: string, win: TelemetryWindow) {
   );
   const items = await buildMeterItems(res.rows, win, 'meter');
   return items.map((meter, i) => ({ gatewayId: res.rows[i].gateway_id, meter }));
+}
+
+/** One meter by exact Meter ID or DevEUI (its latest frame in the window), or null when it has none there. */
+export async function getMeter(idOrEui: string, win: TelemetryWindow) {
+  const res = await pool.query(
+    `SELECT DISTINCT ON (meter_id) ${LATEST_FRAME_COLUMNS}
+     FROM raw_telemetry_packets
+     WHERE date_key >= $2 AND date_key <= $3 AND decoded_at >= $4 AND decoded_at <= $5
+       AND (meter_id = $1 OR dev_eui = $1) AND ${ownedMeters(6)}
+     ORDER BY meter_id, decoded_at DESC
+     LIMIT 1`,
+    [idOrEui, win.fromDate, win.toDate, win.fromTs, win.toTs, await clientKey()]
+  );
+  if (res.rows.length === 0) return null;
+  const [meter] = await buildMeterItems(res.rows, win, 'meter');
+  return { gatewayId: res.rows[0].gateway_id as string, meter };
 }
 
 export type MeterStatusFilter = 'live' | 'stale' | 'silent';

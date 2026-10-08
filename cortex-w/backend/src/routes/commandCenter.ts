@@ -5,6 +5,7 @@ import {
   getPostgresAggregatedSummary,
   getGatewayMeters,
   searchMeters,
+  getMeter,
   listFleetMeters,
   getGatewayFrames,
   getMeterFrames,
@@ -20,12 +21,13 @@ import { validId, validSite, windowOr400, pageParams, badRequest } from './valid
 import { refreshInventory } from '../services/assetInventory.js';
 import { sessionReport } from '../services/sessionStore.js';
 import { syncClients, requireClient, runWithClient, scopeSiteIds } from '../services/clientContext.js';
+import { clientKey, ownedMeters } from '../services/telemetry/scope.js';
 
 const router = Router();
 
 // ---------- Telemetry Sync & Cron Job ----------
 
-router.all('/sync-cron', async (req, res) => {
+router.get('/sync-cron', async (req, res) => {
   try {
     // The scheduler must present CRON_SECRET; with none configured the
     // endpoint is disabled rather than open.
@@ -39,7 +41,10 @@ router.all('/sync-cron', async (req, res) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const customDate = req.query.date as string | undefined;
+    const customDate = typeof req.query.date === 'string' ? req.query.date : undefined;
+    if (customDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(customDate)) {
+      return res.status(400).json({ error: 'Invalid date', message: 'date must be YYYY-MM-DD' });
+    }
     const customDates = customDate ? [customDate] : undefined;
 
     console.log('[commandCenter] Cron/Manual sync triggered:', {
@@ -85,6 +90,38 @@ router.all('/sync-cron', async (req, res) => {
 
 
 // ---------- Live telemetry (PostgreSQL) ----------
+
+// How current this client's stored data is: last sync attempt/completion, its newest stored frame and
+// the health of its stored session (which scheduled sync depends on). Read-only; no tokens in the answer.
+router.get('/health', async (_req, res) => {
+  try {
+    const client = requireClient();
+    const [syncRes, frameRes, sessions] = await Promise.all([
+      pool.query('SELECT last_attempt_at, last_complete_at, last_status FROM client_sync_state WHERE client_key = $1', [client.key]),
+      pool.query(
+        `SELECT MAX(decoded_at) AS latest FROM raw_telemetry_packets
+         WHERE decoded_at > NOW() - INTERVAL '3 days' AND ${ownedMeters(1)}`,
+        [await clientKey()]
+      ),
+      sessionReport(),
+    ]);
+    const sync = syncRes.rows[0];
+    const session = sessions.find((s) => s.client === client.key);
+    const iso = (v: unknown) => (v ? new Date(v as string).toISOString() : null);
+    const lastCompleteAt = iso(sync?.last_complete_at);
+    res.json({
+      generatedAt: new Date().toISOString(),
+      sync: { lastAttemptAt: iso(sync?.last_attempt_at), lastCompleteAt, lastStatus: sync?.last_status ?? null },
+      latestStoredFrameAt: iso(frameRes.rows[0]?.latest),
+      session: session ? { status: session.status, expiresAt: session.expiresAt } : null,
+      // The scheduler runs every 15 minutes; an hour without a complete run means something is wrong.
+      syncBehind: lastCompleteAt ? Date.now() - Date.parse(lastCompleteAt) > 60 * 60 * 1000 : null,
+    });
+  } catch (err: any) {
+    console.error('[commandCenter] Error loading health:', err);
+    res.status(503).json({ error: 'Health unavailable' });
+  }
+});
 
 router.get('/summary', async (req, res) => {
   const win = windowOr400(req, res);
@@ -189,6 +226,22 @@ router.get('/meters/search', async (req, res) => {
   } catch (err: any) {
     console.error('[commandCenter] Error searching meters:', err);
     res.status(503).json({ error: 'Failed to search meters' });
+  }
+});
+
+// One meter by exact ID / DevEUI: what "open this meter" uses (search is substring-based and capped)
+router.get('/meters/:meterId', async (req, res) => {
+  const win = windowOr400(req, res);
+  if (!win) return;
+  const meterId = validId(req.params.meterId);
+  if (!meterId) return badRequest(res, 'meter id');
+  try {
+    const found = await retryTransient(() => getMeter(meterId, win));
+    if (!found) return res.status(404).json({ error: 'Meter not found in this window' });
+    res.json(found);
+  } catch (err: any) {
+    console.error('[commandCenter] Error loading meter:', err);
+    res.status(503).json({ error: 'Failed to load meter' });
   }
 });
 

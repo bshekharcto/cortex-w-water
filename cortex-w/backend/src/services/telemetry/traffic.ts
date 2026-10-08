@@ -1,7 +1,7 @@
 import { pool } from '../../db/pool.js';
 import { OPERATIONAL_TZ } from '../../config/networkHealth.js';
 import { resolveSiteGateways } from './upstream.js';
-import type { TelemetryWindow } from './windows.js';
+import { dateKeyOf, type TelemetryWindow } from './windows.js';
 import { clientKey, ownedMeters } from './scope.js';
 
 export type TrafficBucket = '5m' | '15m' | '1h' | '1d';
@@ -47,7 +47,7 @@ const STEP: Record<TrafficBucket, string> = {
   '1d': `interval '1 day'`,
 };
 
-const dayOf = (iso: string) => iso.slice(0, 10);
+const dayOf = (iso: string) => dateKeyOf(iso);
 
 /**
  * Frames and distinct meters per time bucket for [fromTs, toTs), zero-filled so a quiet bucket is a 0 and not

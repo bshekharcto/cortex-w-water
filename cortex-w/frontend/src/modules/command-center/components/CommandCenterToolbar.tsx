@@ -139,7 +139,7 @@ export function CommandCenterToolbar({
           </div>
 
           {timeRange === 'CUSTOM' && (
-            <div className="cc-time-group" title="Custom range (UTC dates, max 90 days)">
+            <div className="cc-time-group" title="Custom range (India dates, max 90 days)">
               <input
                 type="date"
                 className="cc-global-search cc-date-input"

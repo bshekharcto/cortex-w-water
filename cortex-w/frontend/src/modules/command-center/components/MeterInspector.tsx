@@ -229,7 +229,9 @@ export function MeterInspector({ meter, onClose, win, onViewAllFrames, outsideWi
           {meter.lastRssi == null ? (
             <span className="cc-diag-chip cc-diag-chip--mute">RSSI unavailable</span>
           ) : !isWeakRssi(th, meter.lastRssi) ? (
-            <span className="cc-diag-chip cc-diag-chip--good">Strong Signal Link</span>
+            <span className="cc-diag-chip cc-diag-chip--good">
+              {th && meter.lastRssi >= th.rssiBands.strong ? 'Strong Signal Link' : 'Signal within limits'}
+            </span>
           ) : (
             <span className="cc-diag-chip cc-diag-chip--warn">Weak RSSI Alert</span>
           )}
@@ -240,7 +242,6 @@ export function MeterInspector({ meter, onClose, win, onViewAllFrames, outsideWi
           ) : (
             <span className="cc-diag-chip cc-diag-chip--warn">Poor SNR</span>
           )}
-          <span className="cc-diag-chip cc-diag-chip--good">Normal FCnt Progression</span>
         </div>
       </div>
     </aside>

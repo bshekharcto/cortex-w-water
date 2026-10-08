@@ -5,9 +5,10 @@ import { getGatewayAlias } from './labels.js';
 import { fetchGatewayMeterSummary } from './upstream.js';
 import { ingestDateIntoPostgres } from './ingest.js';
 import { findMultiGatewayMeters, mapFrameRow } from './frames.js';
-import { referenceMs, resolveWindow, windowRequestFromKey, type TelemetryWindow } from './windows.js';
+import { dateKeyOf, referenceMs, resolveWindow, windowRequestFromKey, type TelemetryWindow } from './windows.js';
 import type { PacketRow, TelemetrySummary } from './types.js';
 import { requireClient } from '../clientContext.js';
+import { runInBackground } from '../background.js';
 import { clientKey, ownedMeters } from './scope.js';
 
 const inflightRebuilds = new Map<string, Promise<unknown>>();
@@ -76,21 +77,23 @@ export function isRefreshing(): boolean {
  * `isRefreshing()`. Only meaningful when the window includes today; one job runs at a time.
  */
 export function startManualRefresh(win: TelemetryWindow, siteId: string): boolean {
-  const todayUtc = new Date().toISOString().slice(0, 10);
-  if (win.toDate !== todayUtc) return false;
+  const today = dateKeyOf(Date.now());
+  if (win.toDate !== today) return false;
   const ck = requireClient().key;
   if (activeRefreshJobs.has(ck)) return true; // already running; the caller just keeps polling
   activeRefreshJobs.add(ck);
-  ingestDateIntoPostgres(todayUtc)
-    .catch((err: any) => console.warn('[telemetryDb] Refresh ingestion warning:', err.message))
-    .then(() => getPostgresAggregatedSummary(win, true, siteId))
-    .catch((err: any) => console.warn('[telemetryDb] Refresh rebuild warning:', err.message))
-    .finally(() => {
-      activeRefreshJobs.delete(ck);
+  // runInBackground keeps the work alive after the response on Vercel (waitUntil); a bare promise could be frozen
+  runInBackground(
+    ingestDateIntoPostgres(today)
+      .catch((err: any) => console.warn('[telemetryDb] Refresh ingestion warning:', err.message))
+      .then(() => getPostgresAggregatedSummary(win, true, siteId))
+      .catch((err: any) => console.warn('[telemetryDb] Refresh rebuild warning:', err.message))
+      .finally(() => activeRefreshJobs.delete(ck))
       // The page is ready now. Bring the other windows/sites up to date too, quietly in the background, so
       // switching view after a Refresh doesn't show older numbers than the one you just refreshed.
-      prewarmSummaries(true).catch((err: any) => console.warn('[telemetryDb] Post-refresh pre-warm note:', err.message));
-    });
+      .then(() => prewarmSummaries(true))
+      .catch((err: any) => console.warn('[telemetryDb] Post-refresh pre-warm note:', err.message))
+  );
   return true;
 }
 
@@ -126,6 +129,7 @@ export async function getPostgresAggregatedSummary(
               .catch((err) => console.warn('[telemetryDb] Background rebuild note:', err.message))
               .finally(() => inflightRebuilds.delete(cacheKey));
             inflightRebuilds.set(cacheKey, rebuild);
+            runInBackground(rebuild);
           }
           return row.summary_json as TelemetrySummary;
         }
@@ -151,8 +155,8 @@ export async function getPostgresAggregatedSummary(
   const spanMs = Date.parse(toTs) - Date.parse(fromTs);
   const prevFromTs = new Date(Date.parse(fromTs) - spanMs).toISOString();
   const prevRange: unknown[] = scoped
-    ? [prevFromTs.slice(0, 10), fromTs.slice(0, 10), prevFromTs, fromTs, ck, siteGatewayIds]
-    : [prevFromTs.slice(0, 10), fromTs.slice(0, 10), prevFromTs, fromTs, ck];
+    ? [dateKeyOf(prevFromTs), dateKeyOf(fromTs), prevFromTs, fromTs, ck, siteGatewayIds]
+    : [dateKeyOf(prevFromTs), dateKeyOf(fromTs), prevFromTs, fromTs, ck];
 
   const [kpiRes, multiGwRes, gwRes, framesRes, prevRes, earliestRes, gwMultiRes] = await Promise.all([
     pool.query(`
@@ -213,7 +217,7 @@ export async function getPostgresAggregatedSummary(
   // A trend is only reported when the previous period lies entirely inside the data we hold;
   // otherwise "down 100%" would just mean "we hadn't ingested that far back".
   const earliestDate: string | null = earliestRes.rows[0]?.d ?? null;
-  const prevComparable = earliestDate !== null && prevFromTs.slice(0, 10) >= earliestDate;
+  const prevComparable = earliestDate !== null && dateKeyOf(prevFromTs) >= earliestDate;
   const prevFrames = new Map<string, number>(prevRes.rows.map((r: any) => [r.gateway_id, r.frames]));
   const pctChange = (cur: number, prev: number | undefined): number | null =>
     T.trendsEnabled && prevComparable && prev && prev >= T.trendMinPrevFrames ? Math.round(((cur - prev) / prev) * 100) : null;

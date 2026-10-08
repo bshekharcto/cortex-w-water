@@ -30,11 +30,13 @@ import {
   fetchSites,
   fetchGatewayMeters,
   searchMeters,
+  fetchMeter,
   windowKey,
   WindowParams,
   getLocalCachedSummary,
   TelemetrySummaryResponse,
 } from '@/services/api/commandCenterApi';
+import { fetchCommandCenterHealth, type CommandCenterHealth } from '@/services/api/commandCenterApi';
 import {
   TimeWindow,
   MeterTelemetryItem,
@@ -48,7 +50,8 @@ const REFRESH_MAX_POLLS = 25; // ~100s; the background pull normally finishes in
 const SEARCH_DEBOUNCE_MS = 350;
 const OUT_OF_WINDOW_LOOKBACK: WindowParams = { days: 90 };
 
-const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+// Days are India days, like the stored data (the server's telemetry timezone)
+const isoDay = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
 const defaultCustomRange = () => ({
   from: isoDay(new Date(Date.now() - 6 * 86400000)),
   to: isoDay(new Date()),
@@ -149,6 +152,21 @@ export function CommandCenterPage() {
     };
   }, []);
 
+  // Is stored data keeping up? (scheduled sync, the client's stored session). Checked at load and every 5 minutes.
+  const [health, setHealth] = useState<CommandCenterHealth | null>(null);
+  useEffect(() => {
+    const load = () => fetchCommandCenterHealth().then(setHealth).catch(() => {});
+    load();
+    const id = setInterval(() => { if (!document.hidden) load(); }, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
+  const healthWarning =
+    health?.session && health.session.status !== 'ok'
+      ? `Scheduled sync for your account will stop when its session ${health.session.status === 'expired' ? 'has expired' : 'expires soon'}; signing in again renews it.`
+      : health?.syncBehind
+      ? 'Background sync has not completed for over an hour, so recent frames may be missing.'
+      : null;
+
   // Live Summary State with 0ms Stale-While-Revalidate from LocalStorage Cache
   const [summaryData, setSummaryData] = useState<TelemetrySummaryResponse | null>(() =>
     getLocalCachedSummary(windowKey(toWindowParams(init.window, { from: init.from, to: init.to })), init.site)
@@ -177,10 +195,12 @@ export function CommandCenterPage() {
       try {
         const live = await fetchCommandCenterSummary(win, forceRefresh, selectedSiteId, ctrl.signal);
         if (seq !== requestSeq.current) return;
-        setSummaryData(live);
+        // An unchanged answer keeps the same object, so nothing downstream re-renders or reloads for no reason
+        setSummaryData((prev) =>
+          prev && prev.generatedAt === live.generatedAt && !!prev.refreshing === !!live.refreshing ? prev : live
+        );
         setSyncError(null);
         // A manual Refresh just finished its background pull: per-gateway meter lists are now out of date
-        if (wasRefreshing.current && !live.refreshing) setMetersByGatewayMap({});
         wasRefreshing.current = !!live.refreshing;
       } catch (err) {
         if (isAbortError(err) || seq !== requestSeq.current) return;
@@ -280,27 +300,50 @@ export function CommandCenterPage() {
     return summaryData?.kpis ?? null;
   }, [summaryData]);
 
-  // Meters are loaded per gateway on selection (the summary no longer embeds ~10k meters)
+  // Meters are loaded per gateway on selection (the summary no longer embeds ~10k meters). When the summary
+  // refreshes, the open gateway's list is refetched and swapped in place, so it never goes stale or flashes.
+  const summaryToken = summaryData?.generatedAt ?? '';
+  const metersToken = useRef<Record<string, string>>({});
   useEffect(() => {
+    metersToken.current = {};
     setMetersByGatewayMap({});
   }, [winKey, selectedSiteId]);
 
   useEffect(() => {
-    if (!selectedGatewayId || metersByGatewayMap[selectedGatewayId]) return;
+    if (!selectedGatewayId) return;
+    const have = !!metersByGatewayMap[selectedGatewayId];
+    if (have && metersToken.current[selectedGatewayId] === summaryToken) return;
+    const gw = selectedGatewayId;
     const ctrl = new AbortController();
-    setMetersLoading(true);
+    if (!have) setMetersLoading(true);
     setMetersError(null);
-    fetchGatewayMeters(selectedGatewayId, win, ctrl.signal)
-      .then((list) => setMetersByGatewayMap((prev) => ({ ...prev, [selectedGatewayId]: list })))
+    fetchGatewayMeters(gw, win, ctrl.signal)
+      .then((list) => {
+        metersToken.current[gw] = summaryToken;
+        setMetersByGatewayMap((prev) => ({ ...prev, [gw]: list }));
+      })
       .catch((err) => {
         if (isAbortError(err)) return;
-        setMetersError(describeError(err, 'Failed to load meters'));
+        if (!have) setMetersError(describeError(err, 'Failed to load meters'));
       })
       .finally(() => {
         if (!ctrl.signal.aborted) setMetersLoading(false);
       });
     return () => ctrl.abort();
-  }, [selectedGatewayId, win, metersByGatewayMap]);
+  }, [selectedGatewayId, win, metersByGatewayMap, summaryToken]);
+
+  // The open meter's details follow the refresh too (unless it was found outside the window, where they can't change)
+  useEffect(() => {
+    if (!selectedMeter || meterOutsideWindow) return;
+    const ctrl = new AbortController();
+    fetchMeter(selectedMeter.meterId, win, ctrl.signal)
+      .then((hit) => {
+        if (hit) setSelectedMeter(hit.meter);
+      })
+      .catch(() => {});
+    return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summaryToken]);
 
   // Derived Raw Frames for live feed and tables
   const allFrames = useMemo<RawFrameItem[]>(() => {
@@ -325,6 +368,15 @@ export function CommandCenterPage() {
     setSelectedMeter(meter);
   };
 
+  // A short-lived message under the search box (also used when "open this meter" finds nothing)
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
+  const showNotice = (hint: SearchHint) => {
+    setSearchHint(hint);
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setSearchHint({ kind: 'idle' }), 7000);
+  };
+
   const handleSelectMeterById = (meterId: string) => {
     for (const gwId of Object.keys(metersByGatewayMap)) {
       const found = metersByGatewayMap[gwId].find((m) => m.meterId === meterId);
@@ -333,12 +385,19 @@ export function CommandCenterPage() {
         return;
       }
     }
-    searchMeters(meterId, win)
-      .then((hits) => {
-        const hit = hits.find((h) => h.meter.meterId === meterId);
-        if (hit) handleSelectMeter(hit.meter);
-      })
-      .catch(() => {});
+    // Exact lookup (never the capped substring search), then the 90-day look-back, then say so
+    (async () => {
+      const hit = await fetchMeter(meterId, win);
+      if (hit) return handleSelectMeter(hit.meter);
+      const old = await fetchMeter(meterId, OUT_OF_WINDOW_LOOKBACK);
+      if (old) {
+        setMeterOutsideWindow(true);
+        setSelectedMeter(old.meter);
+        showNotice({ kind: 'info', text: `Meter ${meterId} was not heard in the selected window (looked back 90 days).` });
+        return;
+      }
+      showNotice({ kind: 'none', text: `Meter ${meterId} has no stored frames in the last 90 days.` });
+    })().catch((err) => showNotice({ kind: 'error', text: describeError(err, `Could not open meter ${meterId}`) }));
   };
 
   // A meter id carried in the URL: open it once the page has loaded
@@ -383,37 +442,53 @@ export function CommandCenterPage() {
     const lower = q.toLowerCase();
     const timer = setTimeout(async () => {
       const { gateways, win: searchWin } = searchCtx.current;
-      const gw = gateways.find((g) => g.alias.toLowerCase().includes(lower) || g.gatewayId.toLowerCase().includes(lower));
-      if (gw) {
+      const openGateway = (id: string) => {
         setSearchHint({ kind: 'idle' });
         setActiveMode('Gateways');
-        setSelectedGatewayId(gw.gatewayId);
+        setSelectedGatewayId(id);
         setGatewayTab('METERS');
-        return;
-      }
+      };
+      // A full gateway ID or alias wins outright; a partial one only counts after meters have been tried,
+      // because a meter ID fragment often also appears inside some gateway's ID.
+      const exactGw = gateways.find((g) => g.gatewayId.toLowerCase() === lower || g.alias.toLowerCase() === lower);
+      const partialGw = () => gateways.find((g) => g.alias.toLowerCase().includes(lower) || g.gatewayId.toLowerCase().includes(lower));
+      if (exactGw) return openGateway(exactGw.gatewayId);
       if (q.length < 3) {
+        const gw = partialGw();
+        if (gw) return openGateway(gw.gatewayId);
         setSearchHint({ kind: 'info', text: 'No gateway matches. Type at least 3 characters to search meters.' });
         return;
       }
+      // Exact Meter ID / DevEUI first (never lost to the 20-row cap), then substring matches
+      const find = async (w: WindowParams) => {
+        const exact = /^[A-Za-z0-9_.-]{1,64}$/.test(q) ? await fetchMeter(q, w, ctrl.signal) : null;
+        return exact ? [exact] : searchMeters(q, w, ctrl.signal);
+      };
       setSearchHint({ kind: 'searching', text: 'Searching meters…' });
       try {
-        let hits = await searchMeters(q, searchWin, ctrl.signal);
+        const hits = await find(searchWin);
         if (seq !== searchSeq.current) return;
         if (hits.length > 0) {
-          setSearchHint({ kind: 'idle' });
-          setActiveMode('Gateways');
-          setSelectedGatewayId(hits[0].gatewayId);
+          const pick =
+            hits.find((h) => h.meter.meterId.toLowerCase() === lower || (h.meter.devEui ?? '').toLowerCase() === lower) ?? hits[0];
           setMeterOutsideWindow(false);
-          setSelectedMeter(hits[0].meter);
-          setGatewayTab('METERS');
+          setSelectedMeter(pick.meter);
+          if (searchCtx.current.gateways.some((g) => g.gatewayId === pick.gatewayId)) {
+            openGateway(pick.gatewayId);
+          } else {
+            // Its gateway belongs to another site: show the meter, but don't jump to a gateway that isn't in view
+            setSearchHint({ kind: 'info', text: 'Meter found. Its gateway is not part of the selected site.' });
+          }
           return;
         }
-        hits = await searchMeters(q, OUT_OF_WINDOW_LOOKBACK, ctrl.signal);
+        const gw = partialGw();
+        if (gw) return openGateway(gw.gatewayId);
+        const old = await find(OUT_OF_WINDOW_LOOKBACK);
         if (seq !== searchSeq.current) return;
-        if (hits.length > 0) {
+        if (old.length > 0) {
           setSearchHint({ kind: 'info', text: `Found outside the selected window (looked back 90 days).` });
           setMeterOutsideWindow(true);
-          setSelectedMeter(hits[0].meter);
+          setSelectedMeter(old[0].meter);
           return;
         }
         setSearchHint({ kind: 'none', text: `No gateway, meter or DevEUI matches “${q}”.` });
@@ -490,6 +565,13 @@ export function CommandCenterPage() {
         </div>
       )}
 
+      {healthWarning && (
+        <div className="cc-card cc-banner" role="status">
+          <AlertTriangle size={16} />
+          <span>{healthWarning}</span>
+        </div>
+      )}
+
       {/* Network Health 8-KPI Strip with Skeleton Loaders */}
       <NetworkKpiStrip
         kpis={currentKpis}
@@ -543,6 +625,7 @@ export function CommandCenterPage() {
               siteId={selectedSiteId}
               selectedMeterId={selectedMeter?.meterId || null}
               onSelectMeter={handleSelectMeter}
+              refreshToken={summaryToken}
               expectedTotal={currentKpis?.uniqueMetersSeen ?? null}
             />
           ) : currentGateway ? (

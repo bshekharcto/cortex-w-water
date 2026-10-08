@@ -17,6 +17,8 @@ interface Props {
   onSelectMeter: (meter: MeterTelemetryItem) => void;
   /** Unique meters seen in the window per the KPI; if the stored list is shorter, say so. */
   expectedTotal?: number | null;
+  /** Changes when the page refreshes; the first page is then reloaded in place. */
+  refreshToken?: string;
 }
 
 const PAGE_SIZE = 100;
@@ -25,7 +27,7 @@ const PAGE_SIZE = 100;
  * Fleet-wide meter list ("Meters" mode): every meter's latest frame for the selected site and window,
  * searched / filtered / paginated on the server so it scales to the whole fleet.
  */
-export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter, expectedTotal }: Props) {
+export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter, expectedTotal, refreshToken }: Props) {
   const nowMs = useNow();
   const th = useThresholds();
   const [q, setQ] = useState('');
@@ -47,12 +49,12 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter, 
   }, [q]);
 
   const load = useCallback(
-    async (offset: number) => {
+    async (offset: number, silent = false) => {
       const id = ++seq.current; // only the newest request may update the table
       abortRef.current?.abort(); // and the superseded one is cancelled, not left running
       const ctrl = new AbortController();
       abortRef.current = ctrl;
-      setLoading(true);
+      if (!silent) setLoading(true);
       setError(null);
       try {
         const page = await fetchFleetMeters({
@@ -70,10 +72,15 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter, 
         if (id !== seq.current) return;
         setTotal(page.total);
         if (offset === 0) setFacetOptions(page.facets);
-        setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
+        // Appended pages are de-duplicated: new frames can shift the ordering between two page loads
+        setItems((prev) => {
+          if (offset === 0) return page.items;
+          const have = new Set(prev.map((m) => m.meterId));
+          return [...prev, ...page.items.filter((m) => !have.has(m.meterId))];
+        });
       } catch (err) {
         if (isAbortError(err)) return;
-        if (id === seq.current) setError(describeError(err, 'Failed to load meters'));
+        if (id === seq.current && !silent) setError(describeError(err, 'Failed to load meters'));
       } finally {
         if (id === seq.current) setLoading(false);
       }
@@ -87,6 +94,16 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter, 
     setTotal(0);
     load(0);
   }, [load]);
+
+  // A page refresh brings fresh data: reload the first page in place (not when the user has paged deeper,
+  // so the list never jumps under them)
+  const lastToken = useRef(refreshToken);
+  useEffect(() => {
+    if (lastToken.current === refreshToken) return;
+    lastToken.current = refreshToken;
+    if (items.length <= PAGE_SIZE) load(0, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshToken]);
 
   const v = useVirtualRows(items.length, `${windowKey(win)}|${siteId}|${debouncedQ}|${status}|${facets.dr}|${facets.frequency}|${facets.confirmed}`);
 

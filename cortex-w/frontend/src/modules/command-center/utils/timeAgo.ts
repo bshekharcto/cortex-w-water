@@ -10,6 +10,7 @@ const listeners = new Set<() => void>();
 function subscribe(cb: () => void) {
   listeners.add(cb);
   if (!timer) {
+    now = Date.now(); // the shared clock was idle: don't show ages from when it last ticked
     timer = setInterval(() => {
       now = Date.now();
       listeners.forEach((l) => l());

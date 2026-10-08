@@ -100,7 +100,7 @@ async function ingestDateUnlocked(date: string, deadline: number): Promise<numbe
         }
 
         try {
-          await pool.query(
+          const ins = await pool.query(
             `INSERT INTO raw_telemetry_packets (
               meter_id, gateway_id, dev_eui, decoded_at, date_key,
               forward_flow_l, reverse_flow, battery_voltage, battery_status,
@@ -110,7 +110,7 @@ async function ingestDateUnlocked(date: string, deadline: number): Promise<numbe
             ON CONFLICT (meter_id, gateway_id, decoded_at, fcnt) DO NOTHING`,
             values
           );
-          insertedTotal += validItems.length;
+          insertedTotal += ins.rowCount ?? 0; // rows really added; duplicates are skipped by ON CONFLICT
         } catch (dbErr: any) {
           console.warn('[telemetryDb] Batch insert warning:', dbErr.message);
         }

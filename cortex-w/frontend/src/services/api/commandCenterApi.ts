@@ -44,6 +44,8 @@ function windowQuery(w: WindowParams): Record<string, string | number> {
 
 const LOCAL_STORAGE_CACHE_KEY_PREFIX = 'cortex_w_cc_summary_cache_v2';
 const LOCAL_CACHE_MAX_AGE_MS = 60 * 60 * 1000;
+const LOCAL_CACHE_MAX_ENTRIES = 8; // site x window combinations kept; custom ranges would otherwise pile up
+const LOCAL_CACHE_FRAMES = 20; // the cache only paints the first screen; the live fetch brings the rest
 
 /**
  * Retrieves a recent cached summary from localStorage for an instant first render
@@ -62,12 +64,31 @@ export function getLocalCachedSummary(key: string, siteId: string = 'ALL'): Tele
   }
 }
 
+/** Keeps only the newest few cached summaries so the browser's storage quota is never exhausted. */
+function pruneLocalCache(): void {
+  const entries: Array<{ k: string; at: number }> = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith(LOCAL_STORAGE_CACHE_KEY_PREFIX)) continue;
+    let at = 0;
+    try {
+      at = Date.parse(JSON.parse(localStorage.getItem(k) ?? '{}').generatedAt) || 0;
+    } catch {
+      // unreadable entry: treated as oldest and dropped
+    }
+    entries.push({ k, at });
+  }
+  entries.sort((a, b) => b.at - a.at).slice(LOCAL_CACHE_MAX_ENTRIES).forEach((e) => localStorage.removeItem(e.k));
+}
+
 /**
  * Persists summary to localStorage for subsequent instant loads
  */
 export function setLocalCachedSummary(summary: TelemetrySummaryResponse, key: string, siteId: string = 'ALL'): void {
   try {
-    localStorage.setItem(`${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${key}_${siteId}`, JSON.stringify(summary));
+    const slim = { ...summary, recentFrames: summary.recentFrames.slice(0, LOCAL_CACHE_FRAMES) };
+    localStorage.setItem(`${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${key}_${siteId}`, JSON.stringify(slim));
+    pruneLocalCache();
   } catch (err) {
     // In case localStorage is full or restricted, gracefully ignore
     console.warn('[commandCenterApi] LocalStorage cache write failed:', err);
@@ -230,4 +251,32 @@ export async function fetchRadioHealth(
   if (scope.siteId && scope.siteId !== 'ALL') query.siteId = scope.siteId;
   if (scope.gatewayId) query.gatewayId = scope.gatewayId;
   return apiRequest<RadioHealthData>('/command-center/radio', { method: 'GET', query, signal });
+}
+
+export interface CommandCenterHealth {
+  generatedAt: string;
+  sync: { lastAttemptAt: string | null; lastCompleteAt: string | null; lastStatus: string | null };
+  latestStoredFrameAt: string | null;
+  session: { status: 'ok' | 'expiring' | 'expired'; expiresAt: string } | null;
+  /** True when the scheduled sync hasn't completed for over an hour; null when it has never run. */
+  syncBehind: boolean | null;
+}
+
+/** How current the stored data is for the signed-in client (scheduled sync and session health). */
+export async function fetchCommandCenterHealth(signal?: AbortSignal): Promise<CommandCenterHealth> {
+  return apiRequest<CommandCenterHealth>('/command-center/health', { method: 'GET', signal });
+}
+
+/** One meter by exact Meter ID / DevEUI (its latest frame in the window); null when it has no frames there. */
+export async function fetchMeter(
+  meterId: string,
+  win: WindowParams,
+  signal?: AbortSignal
+): Promise<{ gatewayId: string; meter: MeterTelemetryItem } | null> {
+  try {
+    return await apiRequest(`/command-center/meters/${encodeURIComponent(meterId)}`, { method: 'GET', query: windowQuery(win), signal });
+  } catch (err) {
+    if ((err as { status?: number })?.status === 404) return null;
+    throw err;
+  }
 }
