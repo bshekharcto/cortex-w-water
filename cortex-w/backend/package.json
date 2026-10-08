@@ -9,12 +9,17 @@
     "start": "node dist/server.js",
     "seed": "tsx src/db/seed/runSeed.ts",
     "migrate:neon": "tsx src/scripts/migrateToNeon.ts",
-    "test": "node --import tsx --test \"src/**/*.test.ts\""
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "test:isolation": "node test/isolation.test.mjs",
+    "test:crypto": "tsx test/sessionStore.test.ts"
   },
   "dependencies": {
+    "@vercel/functions": "^3.9.11",
     "compression": "^1.8.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "node-fetch": "^3.3.2",
     "pg": "^8.12.0",

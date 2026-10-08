@@ -2,6 +2,7 @@ import { pool } from '../../db/pool.js';
 import { OPERATIONAL_TZ } from '../../config/networkHealth.js';
 import { resolveSiteGateways } from './upstream.js';
 import type { TelemetryWindow } from './windows.js';
+import { clientKey, ownedMeters } from './scope.js';
 
 export type TrafficBucket = '5m' | '15m' | '1h' | '1d';
 
@@ -52,13 +53,13 @@ const dayOf = (iso: string) => iso.slice(0, 10);
  * Frames and distinct meters per time bucket for [fromTs, toTs), zero-filled so a quiet bucket is a 0 and not
  * a gap. Optionally limited to a set of gateways. Buckets are cut in the operational timezone.
  */
-async function series(bucket: TrafficBucket, fromTs: string, toTs: string, gateways: string[] | null): Promise<TrafficPoint[]> {
+async function series(bucket: TrafficBucket, fromTs: string, toTs: string, gateways: string[] | null, ck: string): Promise<TrafficPoint[]> {
   const bin = BIN[bucket];
-  const params: unknown[] = [fromTs, OPERATIONAL_TZ, toTs, dayOf(fromTs), dayOf(toTs)];
-  let gwFilter = '';
+  const params: unknown[] = [fromTs, OPERATIONAL_TZ, toTs, dayOf(fromTs), dayOf(toTs), ck];
+  let gwFilter = `AND ${ownedMeters(6)}`;
   if (gateways) {
     params.push(gateways);
-    gwFilter = 'AND gateway_id = ANY($6::text[])';
+    gwFilter += ' AND gateway_id = ANY($7::text[])';
   }
   const res = await pool.query(
     `WITH s AS (
@@ -81,12 +82,12 @@ async function series(bucket: TrafficBucket, fromTs: string, toTs: string, gatew
   return res.rows.map((r: { t: string; frames: number; meters: number }) => ({ t: r.t, frames: r.frames, meters: r.meters }));
 }
 
-async function totals(fromTs: string, toTs: string, gateways: string[] | null): Promise<{ frames: number; meters: number }> {
-  const params: unknown[] = [dayOf(fromTs), dayOf(toTs), fromTs, toTs];
-  let gwFilter = '';
+async function totals(fromTs: string, toTs: string, gateways: string[] | null, ck: string): Promise<{ frames: number; meters: number }> {
+  const params: unknown[] = [dayOf(fromTs), dayOf(toTs), fromTs, toTs, ck];
+  let gwFilter = `AND ${ownedMeters(5)}`;
   if (gateways) {
     params.push(gateways);
-    gwFilter = 'AND gateway_id = ANY($5::text[])';
+    gwFilter += ' AND gateway_id = ANY($6::text[])';
   }
   const res = await pool.query(
     `SELECT COUNT(*)::int AS frames, COUNT(DISTINCT meter_id)::int AS meters FROM raw_telemetry_packets
@@ -101,6 +102,7 @@ export async function getTraffic(opts: { win: TelemetryWindow; gatewayId?: strin
   const { win } = opts;
   const gateways = opts.gatewayId ? [opts.gatewayId] : await resolveSiteGateways(opts.siteId, win);
   const bucket = pickBucket(win);
+  const ck = await clientKey();
 
   // "to" is exclusive in the queries; nudge the (inclusive) end of a custom range by 1 ms so it's covered
   const toTs = new Date(Date.parse(win.toTs) + 1).toISOString();
@@ -108,11 +110,11 @@ export async function getTraffic(opts: { win: TelemetryWindow; gatewayId?: strin
   const prevFromTs = new Date(Date.parse(win.fromTs) - spanMs).toISOString();
 
   const [current, previousRaw, cur, prev, earliest] = await Promise.all([
-    series(bucket, win.fromTs, toTs, gateways),
-    series(bucket, prevFromTs, win.fromTs, gateways),
-    totals(win.fromTs, toTs, gateways),
-    totals(prevFromTs, win.fromTs, gateways),
-    pool.query('SELECT MIN(date_key) AS d FROM raw_telemetry_packets'),
+    series(bucket, win.fromTs, toTs, gateways, ck),
+    series(bucket, prevFromTs, win.fromTs, gateways, ck),
+    totals(win.fromTs, toTs, gateways, ck),
+    totals(prevFromTs, win.fromTs, gateways, ck),
+    pool.query(`SELECT MIN(date_key) AS d FROM raw_telemetry_packets WHERE ${ownedMeters(1)}`, [ck]),
   ]);
 
   // Align the previous period to the current one bucket for bucket (flooring can leave them one apart)

@@ -1,13 +1,16 @@
 import express from "express";
 import cors from "cors";
 import compression from "compression";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
 import { existsSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import { config } from "./config/env.js";
 import { pool } from "./db/pool.js";
-import { authMiddleware } from "./middleware/auth.js";
+import { authMiddleware, requireAuth } from "./middleware/auth.js";
+import { errorHandler, notFound, wrapAsync } from "./middleware/errors.js";
 
 import authRoutes from "./routes/auth.js";
 import commandCenterRoutes from "./routes/commandCenter.js";
@@ -22,16 +25,35 @@ import { startTelemetrySyncScheduler } from "./services/telemetrySyncWorker.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+for (const r of [authRoutes, commandCenterRoutes, waterReportRoutes, householdsRoutes, billingRoutes, alarmsRoutes, sitesRoutes, gisRoutes, dashboardRoutes]) {
+  wrapAsync(r);
+}
+
 const app = express();
 
 // ============================================================
 // Middleware
 // ============================================================
 
+// Browser origins allowed to call this API cross-origin come from CORS_ORIGIN
+// (comma-separated; "*" = any, development only). Requests with no Origin
+// header (same-origin, curl, server-to-server) are always let through, and a
+// disallowed origin simply gets no CORS headers, so its browser blocks it.
+// Auth is a bearer token, not a cookie, so credentialed CORS isn't needed.
+const allowedOrigins = config.CORS_ORIGIN.split(',')
+  .map((o) => o.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+const allowAnyOrigin = allowedOrigins.includes('*');
+
+app.set("trust proxy", config.TRUST_PROXY);
+app.use(helmet());
+
 app.use(
   cors({
-    origin: true,
-    credentials: true,
+    origin: (origin, callback) => {
+      if (!origin || allowAnyOrigin) return callback(null, true);
+      return callback(null, allowedOrigins.includes(origin));
+    },
   }),
 );
 
@@ -40,9 +62,21 @@ app.use(
 // uncompressed; this shrinks them substantially over the wire for free.
 app.use(compression());
 
-app.use(express.json());
+app.use(express.json({ limit: "100kb" }));
+
+// Coarse per-address ceiling; /auth/login has its own, much stricter limit.
+app.use(
+  rateLimit({
+    windowMs: 60 * 1000,
+    limit: 1200,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
+);
 
 app.use(authMiddleware);
+// Deny by default: everything except the public list requires a valid token.
+app.use(requireAuth);
 
 // ============================================================
 // Root
@@ -54,7 +88,6 @@ app.get("/", (_req, res) => {
     status: "ok",
     service: "cortex-w-backend",
     message: "Cortex-W backend is running",
-    dataMode: config.APP_DATA_MODE,
   });
 });
 
@@ -70,7 +103,6 @@ app.get("/health", async (_req, res) => {
       status: "ok",
       service: "cortex-w-backend",
       database: "connected",
-      dataMode: config.APP_DATA_MODE,
     });
   } catch (err) {
     console.error("[health] Database connection failed:", err);
@@ -85,43 +117,38 @@ app.get("/health", async (_req, res) => {
 
 // ============================================================
 // API Routes
-// Support both /api/* and /*
+// Mounted under /api only
 // ============================================================
 
 // Authentication
 app.use("/api/auth", authRoutes);
-app.use("/auth", authRoutes);
 
 // Command Center
 app.use("/api/command-center", commandCenterRoutes);
-app.use("/command-center", commandCenterRoutes);
-// Water-platform report endpoints kept at their original /command-center/* URLs
+// Water-platform report endpoints keep their original /command-center/* URLs
 app.use("/api/command-center", waterReportRoutes);
-app.use("/command-center", waterReportRoutes);
 
 // Households
 app.use("/api/households", householdsRoutes);
-app.use("/households", householdsRoutes);
 
 // Billing
 app.use("/api/billing", billingRoutes);
-app.use("/billing", billingRoutes);
 
 // Alarms
 app.use("/api/alarms", alarmsRoutes);
-app.use("/alarms", alarmsRoutes);
 
 // Sites
 app.use("/api/sites", sitesRoutes);
-app.use("/sites", sitesRoutes);
 
 // GIS
 app.use("/api/gis", gisRoutes);
-app.use("/gis", gisRoutes);
 
 // Dashboard
 app.use("/api/dashboard", dashboardRoutes);
-app.use("/dashboard", dashboardRoutes);
+
+// Any unmatched API path is a JSON 404; any error becomes a generic 500 (detail stays in the log).
+app.use("/api", notFound);
+app.use(errorHandler);
 
 // ============================================================
 // Run Database Migrations
@@ -146,6 +173,10 @@ async function runMigrations() {
       : []),
     "005_raw_telemetry.sql",
     "007_water_rollup_tables.sql",
+    "008_asset_inventory.sql",
+    "009_client_scoping.sql",
+    "010_client_sessions.sql",
+    "011_sync_state_and_rate_limits.sql",
   ];
 
   for (const file of migrations) {

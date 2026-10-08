@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
+import { requireClient, scopeSiteIds } from '../services/clientContext.js';
 
 // Water-platform report endpoints (summary / health / performance / raw telemetry) used by other modules.
 // They historically lived under the /command-center URL prefix; the URLs are unchanged, but they are kept out
@@ -77,8 +78,10 @@ router.get('/gateway-summary', asyncRoute(async (req, res) => {
   }
   // Upstream: siteIds is comma-joined for this endpoint (spec 28.2)
   const { fromDate, toDate, siteIds } = req.query as Record<string, string>;
+  const scoped = scopeSiteIds(requireClient(), siteIds);
+  if (!scoped) return res.status(404).json({ error: 'Unknown site' });
   const upstream = await proxyUpstream('GET', '/api/water/gateway-meter-summary', {
-    query: { siteIds: siteIds ?? '', fromDate, toDate },
+    query: { siteIds: scoped.join(','), fromDate, toDate },
     headers: { Authorization: req.headers.authorization ?? '' },
   });
   res.status(upstream.status).json(upstream.data);
@@ -96,9 +99,10 @@ router.get('/meter-health', asyncRoute(async (req, res) => {
     })));
   }
   // Upstream: siteIds as repeated query params (spec 28.2)
-  const siteIds = (req.query.siteIds as string)?.split(',') ?? [];
+  const scoped = scopeSiteIds(requireClient(), req.query.siteIds as string | undefined);
+  if (!scoped) return res.status(404).json({ error: 'Unknown site' });
   const upstream = await proxyUpstream('GET', '/api/water/meter-health', {
-    query: { siteIds },
+    query: { siteIds: scoped.map(String) },
     headers: { Authorization: req.headers.authorization ?? '' },
   });
   res.status(upstream.status).json(upstream.data);
@@ -112,8 +116,10 @@ router.get('/gateway-performance', asyncRoute(async (req, res) => {
     })));
   }
   const { fromDate, toDate, siteIds } = req.query as Record<string, string>;
+  const scoped = scopeSiteIds(requireClient(), siteIds);
+  if (!scoped) return res.status(404).json({ error: 'Unknown site' });
   const upstream = await proxyUpstream('GET', '/api/water/gateway-performance', {
-    query: { siteIds: (siteIds ?? '').split(','), fromDate, toDate },
+    query: { siteIds: scoped.map(String), fromDate, toDate },
     headers: { Authorization: req.headers.authorization ?? '' },
   });
   res.status(upstream.status).json(upstream.data);
@@ -142,8 +148,14 @@ router.post('/latest-meter-status', asyncRoute(async (req, res) => {
       numberOfElements: result.rows.length,
     });
   }
+  const body = { ...(req.body ?? {}) };
+  if (body.siteIds !== undefined) {
+    const scoped = scopeSiteIds(requireClient(), Array.isArray(body.siteIds) ? body.siteIds.map(String) : String(body.siteIds));
+    if (!scoped) return res.status(404).json({ error: 'Unknown site' });
+    body.siteIds = scoped;
+  }
   const upstream = await proxyUpstream('POST', '/api/water/latest-meter-status/page', {
-    body: req.body,
+    body,
     headers: { Authorization: req.headers.authorization ?? '' },
   });
   res.status(upstream.status).json(upstream.data);

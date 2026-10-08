@@ -1,6 +1,8 @@
 import { pool } from '../../db/pool.js';
 import { proxyUpstream } from '../upstreamProxy.js';
 import { getAuthToken } from '../../routes/gis.js';
+import { requireClient } from '../clientContext.js';
+import { getInventory } from '../assetInventory.js';
 
 const inflightIngests = new Map<string, Promise<number>>();
 
@@ -8,23 +10,29 @@ const inflightIngests = new Map<string, Promise<number>>();
  * Ingests one date into PostgreSQL. Concurrent calls for the same date share a single run, so two
  * people pressing Refresh (or a refresh during a scheduled sync) never run duplicate long inserts.
  */
-export function ingestDateIntoPostgres(date: string): Promise<number> {
-  const running = inflightIngests.get(date);
+export function ingestDateIntoPostgres(date: string, deadline: number = Infinity): Promise<number> {
+  const key = `${requireClient().key}:${date}`; // each client ingests with its own token, so runs are per client
+  const running = inflightIngests.get(key);
   if (running) return running;
-  const run = ingestDateUnlocked(date).finally(() => inflightIngests.delete(date));
-  inflightIngests.set(date, run);
+  const run = ingestDateUnlocked(date, deadline).finally(() => inflightIngests.delete(key));
+  inflightIngests.set(key, run);
   return run;
 }
 
-async function ingestDateUnlocked(date: string): Promise<number> {
+/** `deadline` (ms since epoch) stops paging between pages once passed; the caller treats a passed deadline as 'maybe incomplete'. */
+async function ingestDateUnlocked(date: string, deadline: number): Promise<number> {
   const token = await getAuthToken();
+  // Only frames of meters this client owns are stored, whatever upstream sends.
+  await getInventory();
+  const ownedRows = await pool.query('SELECT meter_id FROM client_meter_owner WHERE client_key = $1', [requireClient().key]);
+  const owned = new Set<string>(ownedRows.rows.map((r: { meter_id: string }) => r.meter_id));
   let insertedTotal = 0;
   let cursor: string | undefined = undefined;
   let hasMore = true;
   let page = 0;
   const maxPages = 6; // up to 3000 records per day
 
-  while (hasMore && page < maxPages) {
+  while (hasMore && page < maxPages && Date.now() < deadline) {
     const payload: { page: number; size: number; cursor?: string } = { page, size: 500 };
     if (cursor) payload.cursor = cursor;
 
@@ -50,7 +58,7 @@ async function ingestDateUnlocked(date: string): Promise<number> {
       if (items.length === 0) break;
 
       // Multi-row batch insert for ultra-fast ingestion
-      const validItems = items.filter(item => item.meterId && item.gatewayId && item.decodedAt);
+      const validItems = items.filter(item => item.meterId && item.gatewayId && item.decodedAt && owned.has(item.meterId));
       if (validItems.length > 0) {
         const valuePlaceholders: string[] = [];
         const values: any[] = [];

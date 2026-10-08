@@ -2,6 +2,7 @@ import { pool } from '../../db/pool.js';
 import { networkHealthThresholds as T } from '../../config/networkHealth.js';
 import { resolveSiteGateways } from './upstream.js';
 import type { TelemetryWindow } from './windows.js';
+import { clientKey, ownedMeters } from './scope.js';
 
 export interface RadioMeterStat {
   meterId: string;
@@ -31,11 +32,11 @@ export interface RadioHealth {
 export async function getRadioHealth(opts: { win: TelemetryWindow; gatewayId?: string; siteId?: string }): Promise<RadioHealth> {
   const { win } = opts;
   const gateways = opts.gatewayId ? [opts.gatewayId] : await resolveSiteGateways(opts.siteId, win);
-  const params: unknown[] = [win.fromDate, win.toDate, win.fromTs, win.toTs];
-  let gw = '';
+  const params: unknown[] = [win.fromDate, win.toDate, win.fromTs, win.toTs, await clientKey()];
+  let gw = `AND ${ownedMeters(5)}`;
   if (gateways) {
     params.push(gateways);
-    gw = 'AND gateway_id = ANY($5::text[])';
+    gw += ' AND gateway_id = ANY($6::text[])';
   }
   const where = `date_key >= $1 AND date_key <= $2 AND decoded_at >= $3 AND decoded_at <= $4 ${gw}`;
   const r = T.rssiBands;

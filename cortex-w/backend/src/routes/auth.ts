@@ -1,7 +1,12 @@
 import { Router, type Request, type Response } from 'express';
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
+import { PgRateLimitStore } from '../middleware/pgRateLimitStore.js';
 import { config } from '../config/env.js';
 import { issueLocalToken } from '../middleware/auth.js';
-import { proxyUpstream } from '../services/upstreamProxy.js';
+import { forgetToken, resolveClient, runWithClient } from '../services/clientContext.js';
+import { warmClientCaches } from './dashboard.js';
+import { runInBackground } from '../services/background.js';
+import { syncClientNow } from '../services/telemetrySyncWorker.js';
 
 const router = Router();
 
@@ -16,7 +21,7 @@ const SEED_USERS: Record<string, { password: string; displayName: string; role: 
 
 async function loginCognecto(username: string, password: string) {
   try {
-    const targetUrl = `${config.COGNECTO_API_URL || 'https://api.cognecto.com'}/api/auth/login`;
+    const targetUrl = `${config.COGNECTO_API_URL ?? config.UPSTREAM_API_BASE_URL}/api/auth/login`;
     const res = await fetch(targetUrl, {
       method: 'POST',
       headers: {
@@ -56,42 +61,61 @@ async function loginCognecto(username: string, password: string) {
   return null;
 }
 
-router.post('/login', async (req: Request, res: Response) => {
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Throttle per account as well as per address, so one account can't be
+  // guessed at from many IPs.
+  keyGenerator: (req) => `${ipKeyGenerator(req.ip ?? '')}|${String(req.body?.username ?? '').toLowerCase()}`,
+  skipSuccessfulRequests: true,
+  // Shared across serverless instances; if Postgres is unreachable, fail open
+  // (login itself still needs upstream) rather than lock everyone out.
+  store: new PgRateLimitStore('login'),
+  passOnStoreError: true,
+  message: { error: 'Too many login attempts. Try again later.' },
+});
+
+router.post('/login', loginLimiter, async (req: Request, res: Response) => {
   const { username, password } = req.body ?? {};
 
-  if (!username || !password) {
+  if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
   }
 
-  // 1. If WATCO or API mode or non-seed user: authenticate with Cognecto
-  const isWatcoOrApi = config.APP_DATA_MODE === 'api' || username.toLowerCase().includes('watco');
-  if (isWatcoOrApi) {
-    const cognectoAuth = await loginCognecto(username, password);
-    if (cognectoAuth) {
-      return res.json(cognectoAuth);
+  // Seed mode: local demo users only. Every other mode: upstream is the only
+  // source of credentials.
+  if (config.APP_DATA_MODE === 'seed') {
+    const user = SEED_USERS[username.toLowerCase()];
+    if (user && user.password === password) {
+      const token = issueLocalToken(user.displayName, user.role);
+      return res.json({ token, displayName: user.displayName, role: user.role, isCognecto: false });
     }
-    if (config.APP_DATA_MODE === 'api') {
-      return res.status(401).json({ error: 'Invalid Cognecto credentials' });
-    }
+    return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  // 2. Check local seed users (for Admin, Consumer, Bill Desk)
-  const user = SEED_USERS[username?.toLowerCase()];
-  if (user && user.password === password) {
-    const token = issueLocalToken(user.displayName, user.role);
-    return res.json({ token, displayName: user.displayName, role: user.role, isCognecto: false });
+  const cognectoAuth = await loginCognecto(username, password);
+  if (cognectoAuth) {
+    // Start loading this client's data now, under their own token, so the
+    // first dashboard they open isn't the one that pays for it.
+    // Also catch up any telemetry days missed while their session had lapsed.
+    // runInBackground keeps this alive after the response on Vercel (waitUntil).
+    runInBackground(
+      resolveClient(cognectoAuth.token).then(async (client) => {
+        if (!client) return;
+        runWithClient(client, warmClientCaches);
+        await syncClientNow(client);
+      })
+    );
+    return res.json(cognectoAuth);
   }
-
-  // 3. Fallback: try Cognecto in case an arbitrary Cognecto user logs in
-  const fallbackAuth = await loginCognecto(username, password);
-  if (fallbackAuth) {
-    return res.json(fallbackAuth);
-  }
-
   return res.status(401).json({ error: 'Invalid credentials' });
 });
 
-router.post('/logout', (_req, res) => {
+router.post('/logout', (req, res) => {
+  const header = req.headers.authorization;
+  if (header?.startsWith('Bearer ')) forgetToken(header.slice(7).trim());
   res.status(204).send();
 });
 

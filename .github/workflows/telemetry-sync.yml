@@ -2,7 +2,8 @@ name: Telemetry Sync Cron
 
 on:
   schedule:
-    # Runs every 15 minutes, 24/7 (Free in GitHub Actions)
+    # Every 15 minutes. Each run syncs for up to ~45s (the Vercel function limit
+    # is 60s) and picks up where the previous one stopped, clients in rotation.
     - cron: '*/15 * * * *'
   workflow_dispatch: # Allows manual trigger from GitHub UI anytime
 
@@ -10,13 +11,30 @@ jobs:
   sync-telemetry:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Telemetry Ingestion on Vercel Backend
+      - name: Trigger telemetry sync on the Vercel backend
+        env:
+          # Repo secrets: CRON_SECRET must equal the backend's CRON_SECRET env var.
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
         run: |
-          echo "Triggering telemetry sync on cortex-w-backend..."
-          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" https://cortex-w-backend.vercel.app/api/command-center/sync-cron)
-          echo "HTTP Response Status: $HTTP_STATUS"
-          cat response.json
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::Repo secret CRON_SECRET is not set (it must match the backend's CRON_SECRET)."
+            exit 1
+          fi
+          URL="${BACKEND_URL:-https://cortex-w-backend.vercel.app}/api/command-center/sync-cron"
+          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" --max-time 90 \
+            -H "Authorization: Bearer ${CRON_SECRET}" "$URL")
+          echo "HTTP status: $HTTP_STATUS"
+          # Print a summary only: this log may be public, so no client ids or detail.
+          jq '{status, incomplete, packetsAdded, durationMs, clients: (.clients | length), sessionsNotOk: ([.sessions[]? | select(.status != "ok")] | length)}' response.json || true
           if [ "$HTTP_STATUS" -ne 200 ]; then
-            echo "Telemetry sync failed with status $HTTP_STATUS"
+            echo "::error::Telemetry sync failed with status $HTTP_STATUS"
+            exit 1
+          fi
+          if [ "$(jq '[.sessions[]? | select(.status != "ok")] | length' response.json)" -gt 0 ]; then
+            echo "::warning::A client's stored session is expiring or expired; its sync stops until someone from that client logs in."
+          fi
+          if [ "$(jq -r '.status' response.json)" = "error" ]; then
+            echo "::error::Sync reported errors"
             exit 1
           fi

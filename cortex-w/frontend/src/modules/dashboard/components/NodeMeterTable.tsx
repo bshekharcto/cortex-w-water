@@ -1,76 +1,51 @@
-import { useState, useMemo } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, ChevronLeft, ChevronRight, Eye } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
 import { StatusBadge } from '@/components/status/StatusBadge';
 import { formatNumber } from '@/utils/number';
 import type { MeterRow } from '../models/dashboardRows';
+import type { MeterSortField } from '../models/dashboardView';
+import { formatDateTimeCell } from '../services/formatTimestamp';
 
 interface NodeMeterTableProps {
+  /** ONE page of meters, already searched / filtered / sorted by the server. */
   meters: MeterRow[];
+  /** Meters matching the current search and status filter, across all pages. */
+  total: number;
+  page: number; // 0-based
+  pageSize: number;
+  sortField: MeterSortField;
+  sortAsc: boolean;
   isLoading?: boolean;
+  /** A new page / sort / search is loading; the current rows stay visible, dimmed. */
+  isFetching?: boolean;
+  onSort: (field: MeterSortField) => void;
+  onPageChange: (page: number) => void;
   onSelectMeter: (meter: MeterRow) => void;
 }
 
-type SortField =
-  | 'devEui'
-  | 'meterId'
-  | 'consumerId'
-  | 'consumerName'
-  | 'totalizerM3'
-  | 'latestReadingAt'
-  | 'connectivityStatus';
+// Renders one server-side page of the meter list for whichever real leaf node
+// the user has drilled into. The breadcrumb above already shows the full
+// ancestor chain, so this table doesn't repeat "Zone"/"DMA" columns — those
+// were tied to the old fixed 2-level model and don't generalize to arbitrary
+// depth anyway. Sorting and paging happen on the server because a leaf (or
+// "Others") can hold ~15,000 meters.
+export function NodeMeterTable({
+  meters,
+  total,
+  page,
+  pageSize,
+  sortField,
+  sortAsc,
+  isLoading,
+  isFetching,
+  onSort,
+  onPageChange,
+  onSelectMeter,
+}: NodeMeterTableProps) {
+  const totalPages = Math.ceil(total / pageSize) || 1;
+  const currentPage = Math.min(page, totalPages - 1);
 
-// Renders the meter list for whichever real leaf node the user has drilled
-// into. The breadcrumb above already shows the full ancestor chain, so this
-// table doesn't repeat "Zone"/"DMA" columns — those were tied to the old
-// fixed 2-level model and don't generalize to arbitrary depth anyway.
-export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTableProps) {
-  const [sortField, setSortField] = useState<SortField>('devEui');
-  const [sortAsc, setSortAsc] = useState<boolean>(true);
-  const [page, setPage] = useState<number>(0);
-  const pageSize = 15;
-
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortAsc(!sortAsc);
-    } else {
-      setSortField(field);
-      setSortAsc(true);
-    }
-  };
-
-  const sortedMeters = useMemo(() => {
-    const list = [...meters];
-    list.sort((a, b) => {
-      let vA: any = a[sortField];
-      let vB: any = b[sortField];
-      const aEmpty = vA === null || vA === undefined || vA === '';
-      const bEmpty = vB === null || vB === undefined || vB === '';
-      // Missing values (e.g. a meter with no synced dev_eui yet) always sort
-      // last, regardless of sort direction — so "has real data" naturally
-      // comes before "nothing to show yet" rather than empty strings
-      // collating before real ones alphabetically.
-      if (aEmpty && bEmpty) return 0;
-      if (aEmpty) return 1;
-      if (bEmpty) return -1;
-      if (typeof vA === 'string') {
-        vA = vA.toLowerCase();
-        vB = (vB as string).toLowerCase();
-      }
-      if (vA < vB) return sortAsc ? -1 : 1;
-      if (vA > vB) return sortAsc ? 1 : -1;
-      return 0;
-    });
-    return list;
-  }, [meters, sortField, sortAsc]);
-
-  const totalPages = Math.ceil(sortedMeters.length / pageSize) || 1;
-  const pagedMeters = useMemo(() => {
-    const start = page * pageSize;
-    return sortedMeters.slice(start, start + pageSize);
-  }, [sortedMeters, page, pageSize]);
-
-  const renderSortIcon = (field: SortField) => {
+  const renderSortIcon = (field: MeterSortField) => {
     if (sortField !== field) return <ArrowUpDown size={12} style={{ opacity: 0.4, marginLeft: 4 }} />;
     return sortAsc ? <ChevronUp size={12} style={{ marginLeft: 4 }} /> : <ChevronDown size={12} style={{ marginLeft: 4 }} />;
   };
@@ -106,41 +81,41 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <h2 className="cw-section-title" style={{ margin: 0 }}>Meter Records</h2>
         <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-          Showing {sortedMeters.length} {sortedMeters.length === 1 ? 'meter' : 'meters'}
+          Showing {total.toLocaleString()} {total === 1 ? 'meter' : 'meters'}
         </span>
       </div>
 
-      <div className="cw-surface cw-table-wrap">
+      <div className="cw-surface cw-table-wrap" style={{ opacity: isFetching ? 0.6 : 1, transition: 'opacity 120ms' }} aria-busy={isFetching}>
         <table className="cw-table">
           <thead>
             <tr>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('devEui')}>
+              <th style={{ cursor: 'pointer' }} onClick={() => onSort('devEui')}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>Dev EUI {renderSortIcon('devEui')}</div>
               </th>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('meterId')}>
+              <th style={{ cursor: 'pointer' }} onClick={() => onSort('meterId')}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>Meter ID {renderSortIcon('meterId')}</div>
               </th>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('consumerId')}>
+              <th style={{ cursor: 'pointer' }} onClick={() => onSort('consumerId')}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>Consumer ID {renderSortIcon('consumerId')}</div>
               </th>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('consumerName')}>
+              <th style={{ cursor: 'pointer' }} onClick={() => onSort('consumerName')}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>Consumer Name {renderSortIcon('consumerName')}</div>
               </th>
               <th>Address</th>
-              <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('totalizerM3')}>
+              <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => onSort('totalizerM3')}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Totalizer (m³) {renderSortIcon('totalizerM3')}</div>
               </th>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('latestReadingAt')}>
+              <th style={{ cursor: 'pointer' }} onClick={() => onSort('latestReadingAt')}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>Last Data {renderSortIcon('latestReadingAt')}</div>
               </th>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('connectivityStatus')}>
+              <th style={{ cursor: 'pointer' }} onClick={() => onSort('connectivityStatus')}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>Status {renderSortIcon('connectivityStatus')}</div>
               </th>
               <th style={{ width: 50, textAlign: 'center' }}>Action</th>
             </tr>
           </thead>
           <tbody>
-            {pagedMeters.map((m) => (
+            {meters.map((m) => (
               <tr
                 key={m.meterId}
                 className="cw-table-row--clickable"
@@ -157,10 +132,10 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
                   {m.address || '—'}
                 </td>
                 <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
-                  {m.totalizerM3 !== undefined ? formatNumber(m.totalizerM3) : '—'}
+                  {m.totalizerM3 != null ? formatNumber(m.totalizerM3) : '—'}
                 </td>
                 <td style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-                  {m.latestReadingAt ? new Date(m.latestReadingAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                  {formatDateTimeCell(m.latestReadingAt)}
                 </td>
                 <td>
                   <StatusBadge status={getBadgeStatus(m.connectivityStatus)} />
@@ -188,19 +163,19 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
           <button
             className="cw-icon-btn"
-            disabled={page === 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={currentPage === 0}
+            onClick={() => onPageChange(Math.max(0, currentPage - 1))}
             style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
           >
             <ChevronLeft size={16} /> Prev
           </button>
           <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-            Page {page + 1} of {totalPages}
+            Page {currentPage + 1} of {totalPages}
           </span>
           <button
             className="cw-icon-btn"
-            disabled={page >= totalPages - 1}
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+            disabled={currentPage >= totalPages - 1}
+            onClick={() => onPageChange(Math.min(totalPages - 1, currentPage + 1))}
             style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
           >
             Next <ChevronRight size={16} />

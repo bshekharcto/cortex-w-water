@@ -2,6 +2,9 @@ import { Router } from 'express';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { config } from '../config/env.js';
 import { pool } from '../db/pool.js';
+import { localDate } from '../services/localDate.js';
+import { requireClient, scopeSiteIds, rootSites } from '../services/clientContext.js';
+import { getInventory } from '../services/assetInventory.js';
 
 const router = Router();
 
@@ -20,50 +23,37 @@ interface CachedGisData {
   };
 }
 
-let gisCache: CachedGisData | null = null;
+// Keyed by client AND site: one client's payload must never be served to another.
+const gisCache = new Map<string, CachedGisData>();
 const CACHE_TTL_MS = 60 * 1000; // 60 seconds cache
 
-let serviceToken: string | null = null;
-let serviceTokenExpiresAt: number = 0;
+/**
+ * The token to call upstream with: always the signed-in client's own, so
+ * upstream applies that client's permissions. There is deliberately no
+ * service-account fallback — outside an authenticated request this throws.
+ */
+export async function getAuthToken(_providedHeader?: string): Promise<string> {
+  const ctx = requireClient();
+  return ctx.token; // '' in seed mode, where nothing calls upstream
+}
 
-export async function getAuthToken(providedHeader?: string): Promise<string> {
-  if (providedHeader && providedHeader.length > 10) {
-    return providedHeader;
-  }
-  const now = Date.now();
-  if (serviceToken && now < serviceTokenExpiresAt) {
-    return serviceToken;
-  }
-  try {
-    const loginRes = await proxyUpstream('POST', '/api/auth/login', {
-      body: {
-        username: process.env.UPSTREAM_SERVICE_USERNAME || 'WATCOAdmin',
-        password: process.env.UPSTREAM_SERVICE_PASSWORD || 'AdminWatco',
-      },
-    });
-    const token =
-      (loginRes.data as any)?.token ||
-      (loginRes.headers as any)?.['jwt-token'] ||
-      (loginRes.headers as any)?.authorization;
-    if (token) {
-      serviceToken = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
-      serviceTokenExpiresAt = now + 12 * 3600 * 1000;
-      return serviceToken!;
-    }
-  } catch (e) {
-    console.warn('[gis] Auto-login token fallback failed:', e);
-  }
-  return providedHeader || '';
+/** A site to use when the request names none: the client's first top-level site. */
+function defaultSiteId(): string {
+  const ctx = requireClient();
+  const first = rootSites(ctx)[0];
+  return first ? String(first.id) : 'ALL';
 }
 
 export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL') {
   const now = Date.now();
-  if (gisCache && gisCache.siteId === siteId && now - gisCache.timestamp < CACHE_TTL_MS) {
-    return gisCache;
+  const cacheKey = `${requireClient().key}|${siteId}`;
+  const cachedGis = gisCache.get(cacheKey);
+  if (cachedGis && now - cachedGis.timestamp < CACHE_TTL_MS) {
+    return cachedGis;
   }
 
-  const today = new Date().toISOString().split('T')[0];
-  const lastWeek = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+  const today = localDate(0);
+  const lastWeek = localDate(-7);
 
   const headers: Record<string, string> = {};
   const token = await getAuthToken(authHeader);
@@ -109,18 +99,18 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       yesterday AS (
         SELECT meter_id, total_consumption_kl AS yesterday_kl
         FROM water_daily_summary
-        WHERE summary_date = (CURRENT_DATE - INTERVAL '1 day')::date
+        WHERE summary_date = ($1::date - INTERVAL '1 day')::date
       ),
       last10d AS (
         SELECT meter_id, SUM(total_consumption_kl) AS last10d_kl
         FROM water_daily_summary
-        WHERE summary_date >= (CURRENT_DATE - INTERVAL '10 days')::date
+        WHERE summary_date >= ($1::date - INTERVAL '10 days')::date
         GROUP BY meter_id
       ),
       month_total AS (
         SELECT meter_id, total_consumption_kl AS month_kl
         FROM water_monthly_summary
-        WHERE summary_month = DATE_TRUNC('month', CURRENT_DATE)::date
+        WHERE summary_month = DATE_TRUNC('month', $1::date)::date
       )
       SELECT
         lr.meter_id, lr.decoded_at AS last_seen, lr.current_reading_kl,
@@ -132,7 +122,7 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       LEFT JOIN yesterday y ON y.meter_id = lr.meter_id
       LEFT JOIN last10d l10 ON l10.meter_id = lr.meter_id
       LEFT JOIN month_total m ON m.meter_id = lr.meter_id
-    `).catch((err) => {
+    `, [localDate(0)]).catch((err) => {
       console.warn('[gis] DB telemetry query notice:', err.message);
       return { rows: [] };
     }),
@@ -312,7 +302,7 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
     };
   }).filter((m: any) => m.lat !== null && m.lng !== null);
 
-  gisCache = {
+  const fresh: CachedGisData = {
     timestamp: now,
     siteId,
     gateways,
@@ -325,14 +315,15 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       gatewayCount: gateways.length,
     },
   };
-
-  return gisCache;
+  gisCache.set(cacheKey, fresh);
+  return fresh;
 }
 
 // GET /api/gis/gateways
 router.get('/gateways', async (req, res) => {
   try {
     const siteId = (req.query.siteId as string) || 'ALL';
+    if (scopeSiteIds(requireClient(), siteId) === null) return res.status(404).json({ error: 'Unknown site' });
     const authHeader = req.headers.authorization;
     const data = await getLiveGisData(authHeader, siteId);
     res.json(data.gateways);
@@ -346,6 +337,7 @@ router.get('/gateways', async (req, res) => {
 router.get('/meters', async (req, res) => {
   try {
     const siteId = (req.query.siteId as string) || 'ALL';
+    if (scopeSiteIds(requireClient(), siteId) === null) return res.status(404).json({ error: 'Unknown site' });
     const city = req.query.city as string | undefined;
     const gatewayId = req.query.gatewayId as string | undefined;
     const problemsOnly = req.query.problemsOnly === 'true';
@@ -395,9 +387,10 @@ router.get('/meters', async (req, res) => {
 // GET /api/gis/performance
 router.get('/performance', async (req, res) => {
   try {
-    const siteId = (req.query.siteId as string) || '6394';
-    const today = new Date().toISOString().split('T')[0];
-    const lastWeek = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+    const siteId = (req.query.siteId as string) || defaultSiteId();
+    if (scopeSiteIds(requireClient(), siteId) === null) return res.status(404).json({ error: 'Unknown site' });
+    const today = localDate(0);
+    const lastWeek = localDate(-7);
     const fromDate = (req.query.fromDate as string) || lastWeek;
     const toDate = (req.query.toDate as string) || today;
 
@@ -426,13 +419,28 @@ router.get('/meter-detail/:assetId', async (req, res) => {
   try {
     const assetId = req.params.assetId;
     const meterId = (req.query.meterId as string) || '';
+    // The asset must be one of this client's own meters, and so must any meterId
+    // passed with it: cog-core-api's household-meter-details lookup is not
+    // scoped to the caller, so an own assetId with someone else's meterId
+    // would otherwise return their consumer details. 404, not 403, so ids
+    // can't be probed.
+    if (!requireClient().unscoped) {
+      await getInventory();
+      const owns = Number.isInteger(Number(assetId))
+        ? await pool.query(
+            `SELECT 1 FROM client_meter_owner WHERE client_key = $1 AND asset_id = $2 AND ($3 = '' OR meter_id = $3)`,
+            [requireClient().key, Number(assetId), meterId]
+          )
+        : { rowCount: 0 };
+      if (owns.rowCount === 0) return res.status(404).json({ error: 'Meter not found' });
+    }
     const authHeader = req.headers.authorization;
     const headers: Record<string, string> = {};
     const token = await getAuthToken(authHeader);
     if (token) headers['Authorization'] = token;
 
-    const today = new Date().toISOString().split('T')[0];
-    const last30Days = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
+    const today = localDate(0);
+    const last30Days = localDate(-30);
 
     // Fetch live data from upstream Cognecto endpoints in parallel
     const [assetRes, latestRes, imeiRes, imagesRes, billRes, householdDetailRes] = await Promise.all([
@@ -556,7 +564,7 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     // and disagreed with the real daily readings in practice. If our own
     // telemetry store has a reading dated yesterday, that's authoritative;
     // otherwise fall back to the upstream field rather than fabricating one.
-    const yesterdayIso = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const yesterdayIso = localDate(-1);
     const yesterdayRow = dailyReadings.find((r) => r.date === yesterdayIso);
     const yesterdayConsumptionM3 = yesterdayRow ? yesterdayRow.consumptionM3 : (latest?.consumption ?? null);
 
@@ -572,7 +580,7 @@ router.get('/meter-detail/:assetId', async (req, res) => {
              SELECT DISTINCT ON (date_key) date_key, date_key::date AS day, forward_flow_l
              FROM raw_telemetry_packets
              WHERE meter_id = $1
-               AND date_key::date >= (date_trunc('month', CURRENT_DATE)::date - INTERVAL '1 day')
+               AND date_key::date >= (date_trunc('month', $2::date)::date - INTERVAL '1 day')
              -- same-day retry packets can decode to a garbled lower reading
              -- than an earlier packet that day; take the highest (correct)
              -- reading per day, not just whichever arrived last.
@@ -584,8 +592,8 @@ router.get('/meter-detail/:assetId', async (req, res) => {
            )
            SELECT COALESCE(SUM(GREATEST(delta_kl, 0)), 0)::numeric AS month_kl
            FROM deltas
-           WHERE day >= date_trunc('month', CURRENT_DATE)::date`,
-          [meterIdForReadings]
+           WHERE day >= date_trunc('month', $2::date)::date`,
+          [meterIdForReadings, localDate(0)]
         );
         monthToDateM3 = monthRes.rows[0] ? Number(Number(monthRes.rows[0].month_kl).toFixed(3)) : null;
       } catch (err: any) {
@@ -655,7 +663,8 @@ function computeHaversineDistanceM(lat1: number, lon1: number, lat2: number, lon
 // GET /api/gis/geofences & GET /api/gis/geofence
 async function handleGeofences(req: any, res: any) {
   try {
-    const siteIds = req.query.siteIds || '6394';
+    const siteIds = req.query.siteIds || defaultSiteId();
+    if (scopeSiteIds(requireClient(), String(siteIds)) === null) return res.status(404).json({ error: 'Unknown site' });
     const authHeader = req.headers.authorization;
     const token = await getAuthToken(authHeader);
     const upstream = await proxyUpstream('GET', '/api/map/geofence', {
@@ -674,7 +683,8 @@ router.get('/geofence', handleGeofences);
 // GET /api/gis/asset-locations
 router.get('/asset-locations', async (req, res) => {
   try {
-    const siteIds = req.query.siteIds || '6394';
+    const siteIds = req.query.siteIds || defaultSiteId();
+    if (scopeSiteIds(requireClient(), String(siteIds)) === null) return res.status(404).json({ error: 'Unknown site' });
     const authHeader = req.headers.authorization;
     const token = await getAuthToken(authHeader);
     const upstream = await proxyUpstream('GET', '/api/map/asset-locations', {
@@ -691,7 +701,8 @@ router.get('/asset-locations', async (req, res) => {
 // POST /api/gis/gateway-placement/compute
 router.post('/gateway-placement/compute', async (req, res) => {
   try {
-    const siteId = Number(req.body.siteId ?? 6394);
+    const siteId = Number(req.body.siteId ?? defaultSiteId());
+    if (scopeSiteIds(requireClient(), String(siteId)) === null) return res.status(404).json({ error: 'Unknown site' });
     const gatewayCount = Number(req.body.gatewayCount ?? req.body.numberOfGateways ?? 5);
     const coverageRadiusM = Number(req.body.coverageRadiusM ?? req.body.radius ?? 500);
 

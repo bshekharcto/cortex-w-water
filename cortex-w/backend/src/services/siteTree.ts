@@ -1,5 +1,7 @@
-import { proxyUpstream } from './upstreamProxy.js';
+import { fetchUpstreamOrThrow, UpstreamError } from './upstreamProxy.js';
+import { singleFlight } from './inflight.js';
 import { getAuthToken } from '../routes/gis.js';
+import { requireClient } from './clientContext.js';
 
 // Real site/zone/DMA hierarchy, sourced entirely from cog-core-api's
 // GET /api/site/ (note the trailing slash — /api/site without it is 405,
@@ -23,23 +25,45 @@ interface CachedTree {
   roots: SiteNode[];
 }
 
-let cache: CachedTree | null = null;
+// One tree per client: a client's hierarchy must never be served to another.
+const caches = new Map<string, CachedTree>();
 // Site hierarchy changes far less often than telemetry — a longer TTL than
 // the per-site dma-report cache is appropriate.
 const TREE_CACHE_TTL_MS = 5 * 60 * 1000;
 
-async function fetchSiteTree(authHeader?: string): Promise<CachedTree> {
-  const now = Date.now();
-  if (cache && now - cache.timestamp < TREE_CACHE_TTL_MS) {
-    return cache;
-  }
+const inflight = new Map<string, Promise<CachedTree>>();
 
-  const token = await getAuthToken(authHeader);
+function fetchSiteTree(_authHeader?: string): Promise<CachedTree> {
+  const client = requireClient();
+  const cache = caches.get(client.key);
+  if (cache && Date.now() - cache.timestamp < TREE_CACHE_TTL_MS) {
+    return Promise.resolve(cache);
+  }
+  // Concurrent callers (every getNode/hasStructuralChildren in a request)
+  // share one /api/site/ fetch — per client.
+  return singleFlight(inflight, client.key, () => loadSiteTree(client.key));
+}
+
+async function loadSiteTree(clientKey: string): Promise<CachedTree> {
+  const cache = caches.get(clientKey);
+  const token = await getAuthToken();
   const headers: Record<string, string> = token ? { Authorization: token } : {};
-  const upstream = await proxyUpstream('GET', '/api/site/', { headers }).catch(
-    () => ({ status: 500, data: null })
-  );
-  const rows = Array.isArray(upstream.data) ? (upstream.data as any[]) : [];
+  let rows: any[];
+  try {
+    const data = await fetchUpstreamOrThrow('GET', '/api/site/', { headers });
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new UpstreamError('/api/site/', 200, 'returned no sites');
+    }
+    rows = data;
+  } catch (err) {
+    // A failed refresh keeps serving the last good tree; with no tree at all
+    // the failure surfaces to the caller instead of an empty hierarchy.
+    if (cache) {
+      console.warn('[siteTree] Refresh failed, serving stale tree:', (err as Error).message);
+      return cache;
+    }
+    throw err;
+  }
 
   const byId = new Map<number, SiteNode>();
   for (const r of rows) {
@@ -53,6 +77,11 @@ async function fetchSiteTree(authHeader?: string): Promise<CachedTree> {
     });
   }
 
+  if (byId.size === 0) {
+    if (cache) return cache;
+    throw new UpstreamError('/api/site/', 200, 'contained no usable site nodes');
+  }
+
   const childrenOf = new Map<number, SiteNode[]>();
   for (const node of byId.values()) {
     const key = node.parentId ?? 0;
@@ -61,21 +90,25 @@ async function fetchSiteTree(authHeader?: string): Promise<CachedTree> {
   }
 
   const result: CachedTree = {
-    timestamp: now,
+    timestamp: Date.now(), // when the fetch finished, so a slow upstream doesn't shorten the TTL
     byId,
     childrenOf,
     roots: childrenOf.get(0) || [],
   };
 
-  // Never cache a failed/empty fetch — keep retrying rather than freezing
-  // in an empty tree.
-  if (byId.size > 0) cache = result;
+  caches.set(clientKey, result);
   return result;
 }
 
 export async function getRoots(authHeader?: string): Promise<SiteNode[]> {
   const tree = await fetchSiteTree(authHeader);
   return tree.roots;
+}
+
+/** Every node in the hierarchy, at any depth. */
+export async function getAllNodes(authHeader?: string): Promise<SiteNode[]> {
+  const tree = await fetchSiteTree(authHeader);
+  return [...tree.byId.values()];
 }
 
 export async function getNode(id: number, authHeader?: string): Promise<SiteNode | null> {
@@ -98,4 +131,17 @@ export async function getAncestorChain(id: number, authHeader?: string): Promise
     current = current.parentId != null ? tree.byId.get(current.parentId) : undefined;
   }
   return chain;
+}
+
+/** All descendant node ids (children, grandchildren, ...), excluding `id` itself. */
+export async function getDescendantIds(id: number, authHeader?: string): Promise<number[]> {
+  const tree = await fetchSiteTree(authHeader);
+  const out: number[] = [];
+  const stack = [...(tree.childrenOf.get(id) || [])];
+  while (stack.length) {
+    const n = stack.pop()!;
+    out.push(n.id);
+    stack.push(...(tree.childrenOf.get(n.id) || []));
+  }
+  return out;
 }

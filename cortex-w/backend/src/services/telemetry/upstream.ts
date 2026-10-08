@@ -1,6 +1,7 @@
 import { proxyUpstream } from '../upstreamProxy.js';
 import { getAuthToken } from '../../routes/gis.js';
 import { getRoots } from '../siteTree.js';
+import { requireClient } from '../clientContext.js';
 import type { TelemetryWindow } from './windows.js';
 
 export interface UpstreamGatewaySummary {
@@ -20,7 +21,7 @@ const gatewaySummaryCache = new Map<string, { at: number; data: UpstreamGatewayS
 const GATEWAY_SUMMARY_TTL_MS = 60_000;
 
 export async function fetchGatewayMeterSummary(siteId: string, fromDate: string, toDate: string): Promise<UpstreamGatewaySummary | null> {
-  const cacheKey = `${siteId || 'ALL'}|${fromDate}|${toDate}`;
+  const cacheKey = `${requireClient().key}|${siteId || 'ALL'}|${fromDate}|${toDate}`; // never shared between clients
   const hit = gatewaySummaryCache.get(cacheKey);
   if (hit && Date.now() - hit.at < GATEWAY_SUMMARY_TTL_MS) return hit.data;
   const fresh = await fetchGatewayMeterSummaryUncached(siteId, fromDate, toDate);

@@ -1,70 +1,58 @@
 import { runtimeConfig } from '@/config/runtimeConfig';
 import { apiRequest } from '@/services/api/httpClient';
-import type { NodeRow, MeterRow } from '../models/dashboardRows';
-import type { ScopeNode } from '../models/dashboardScope';
+import type { DashboardView, MeterQueryParams } from '../models/dashboardView';
+
+// Failures propagate (a rejected promise) instead of returning an empty
+// view: an outage must reach the UI as an error, not be rendered as "this
+// node has no children / no meters".
 
 // Seed mode note: the old hand-written fixtures (dashboardDrilldownSeed.ts)
 // describe a fixed 2-level Zone/DMA model and don't map onto the real,
-// variable-depth site tree this module now drives everything from. Rather
-// than force a fake tree shape onto them, seed mode here just reports
-// honestly empty until/unless someone rebuilds those fixtures to describe a
-// real tree (id/name/parentId/level, same shape as cog-core-api's own
-// GET /api/site/) — never a silently wrong-shaped substitute.
-function isSeedMode(): boolean {
-  return runtimeConfig.APP_DATA_MODE === 'seed';
+// variable-depth site tree this module now drives everything from, so seed
+// mode has no dashboard data. It says so explicitly rather than showing a
+// silently empty dashboard.
+class DashboardDataUnavailableError extends Error {
+  constructor() {
+    super('The Dashboard has no data in seed mode. Set APP_DATA_MODE to "api" to load live data.');
+    this.name = 'DashboardDataUnavailableError';
+  }
 }
 
 /**
- * Fetches the direct children of a node — or the real top-level sites if
- * `parentId` is null (root/global view). Depth-agnostic: works identically
- * at every level, so however deep the real hierarchy goes, this is the only
- * function that needs calling.
+ * Turns whatever a fetcher threw into text for the error banner. The HTTP
+ * client throws plain UiApiError objects (not Error instances), so reading
+ * `.message` alone would lose the real reason.
  */
-export async function fetchNodeChildren(parentId: string | null): Promise<NodeRow[]> {
-  if (isSeedMode()) return [];
-  try {
-    const res = await apiRequest<NodeRow[]>('/dashboard/nodes', {
-      query: parentId ? { parentId } : {},
-    });
-    // Real API call succeeded — even a genuinely empty result is the truth,
-    // not a reason to fall back to fake data.
-    if (Array.isArray(res)) return res;
-  } catch (err) {
-    console.warn('[dashboardDataService] Error fetching node children from API:', err);
+export function describeError(err: unknown, fallback = 'Failed to load'): string {
+  if (err && typeof err === 'object') {
+    const e = err as { operatorMessage?: string; message?: string };
+    if (e.operatorMessage) return e.operatorMessage;
+    if (e.message) return e.message;
   }
-  return [];
+  return fallback;
 }
 
 /**
- * Fetches the meters directly attached to a node (only meaningful for a
- * node with no further children — i.e. a real leaf).
+ * One round trip for one screen: the breadcrumb, the node's own row, its
+ * children, and — when it is a leaf — one page of its meters with the
+ * search / status filter / sort already applied. `nodeId` null is the root
+ * (the real top-level sites). Depth-agnostic: the same call serves every level.
  */
-export async function fetchNodeMeters(nodeId: string): Promise<MeterRow[]> {
-  if (isSeedMode()) return [];
-  try {
-    const res = await apiRequest<MeterRow[]>(`/dashboard/nodes/${encodeURIComponent(nodeId)}/meters`);
-    if (Array.isArray(res)) return res;
-  } catch (err) {
-    console.warn('[dashboardDataService] Error fetching node meters from API:', err);
+export async function fetchDashboardView(nodeId: string | null, meters: MeterQueryParams): Promise<DashboardView> {
+  if (runtimeConfig.APP_DATA_MODE === 'seed') throw new DashboardDataUnavailableError();
+  const view = await apiRequest<DashboardView>('/dashboard/view', {
+    query: {
+      nodeId: nodeId ?? undefined,
+      page: meters.page,
+      size: meters.size,
+      search: meters.search || undefined,
+      status: meters.status === 'ALL' ? undefined : meters.status,
+      sort: meters.sort,
+      dir: meters.dir,
+    },
+  });
+  if (!view || !Array.isArray(view.children) || !Array.isArray(view.ancestors)) {
+    throw new Error('Unexpected response while loading the dashboard.');
   }
-  return [];
-}
-
-/**
- * Resolves the real root-to-node name chain for a node id — needed to
- * render the breadcrumb correctly on a fresh page load or a pasted deep
- * link, where the frontend hasn't navigated there via clicks and so doesn't
- * have the intermediate names cached.
- */
-export async function fetchNodeAncestors(nodeId: string): Promise<ScopeNode[]> {
-  if (isSeedMode()) return [];
-  try {
-    const res = await apiRequest<Array<{ id: string; name: string }>>(
-      `/dashboard/nodes/${encodeURIComponent(nodeId)}/ancestors`
-    );
-    if (Array.isArray(res)) return res.map((n) => ({ id: n.id, name: n.name }));
-  } catch (err) {
-    console.warn('[dashboardDataService] Error resolving node ancestors from API:', err);
-  }
-  return [];
+  return view;
 }

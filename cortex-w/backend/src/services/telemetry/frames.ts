@@ -4,6 +4,7 @@ import { getGatewayAlias } from './labels.js';
 import { resolveSiteGateways } from './upstream.js';
 import type { TelemetryWindow } from './windows.js';
 import type { FrameDto, PacketRow } from './types.js';
+import { clientKey, ownedMeters } from './scope.js';
 
 /** Frame-level link quality from the shared thresholds (not water flow). */
 export function frameStatusEvent(r: { rssi: number | null; snr: number | null }): FrameDto['statusEvent'] {
@@ -66,9 +67,10 @@ export async function getGatewayFrames(gatewayId: string, win: TelemetryWindow, 
   const res = await pool.query(
     `SELECT *, COUNT(*) OVER()::int AS total FROM raw_telemetry_packets
      WHERE gateway_id = $1 AND date_key >= $2 AND date_key <= $3 AND decoded_at >= $4 AND decoded_at <= $5
+       AND ${ownedMeters(8)}
      ORDER BY decoded_at DESC
      LIMIT $6 OFFSET $7`,
-    [gatewayId, win.fromDate, win.toDate, win.fromTs, win.toTs, limit, offset]
+    [gatewayId, win.fromDate, win.toDate, win.fromTs, win.toTs, limit, offset, await clientKey()]
   );
   return page(res.rows, win, limit, offset);
 }
@@ -78,9 +80,10 @@ export async function getMeterFrames(meterId: string, win: TelemetryWindow, limi
   const res = await pool.query(
     `SELECT *, COUNT(*) OVER()::int AS total FROM raw_telemetry_packets
      WHERE meter_id = $1 AND date_key >= $2 AND date_key <= $3 AND decoded_at >= $4 AND decoded_at <= $5
+       AND ${ownedMeters(8)}
      ORDER BY decoded_at DESC
      LIMIT $6 OFFSET $7`,
-    [meterId, win.fromDate, win.toDate, win.fromTs, win.toTs, limit, offset]
+    [meterId, win.fromDate, win.toDate, win.fromTs, win.toTs, limit, offset, await clientKey()]
   );
   const gateways = new Set<string>(res.rows.map((r: PacketRow) => r.gateway_id));
   const multi = gateways.size > 1 ? new Set([meterId]) : new Set<string>();
@@ -95,11 +98,11 @@ export async function getMeterFrames(meterId: string, win: TelemetryWindow, limi
 /** Newest frames across the fleet (or one site), paginated: backs "Load more" in the live feed. */
 export async function getFleetFrames(win: TelemetryWindow, siteId: string, limit: number, offset: number): Promise<FramesPage> {
   const gateways = await resolveSiteGateways(siteId, win);
-  const params: unknown[] = [win.fromDate, win.toDate, win.fromTs, win.toTs];
-  let siteFilter = '';
+  const params: unknown[] = [win.fromDate, win.toDate, win.fromTs, win.toTs, await clientKey()];
+  let siteFilter = `AND ${ownedMeters(5)}`;
   if (gateways) {
     params.push(gateways);
-    siteFilter = 'AND gateway_id = ANY($5::text[])';
+    siteFilter += ' AND gateway_id = ANY($6::text[])';
   }
   params.push(limit, offset);
   const res = await pool.query(

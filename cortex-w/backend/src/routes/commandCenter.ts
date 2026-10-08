@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto';
 import { Router } from 'express';
 import { pool, retryTransient } from '../db/pool.js';
 import {
@@ -16,6 +17,9 @@ import {
 import { getRoots } from '../services/siteTree.js';
 import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
 import { validId, validSite, windowOr400, pageParams, badRequest } from './validation.js';
+import { refreshInventory } from '../services/assetInventory.js';
+import { sessionReport } from '../services/sessionStore.js';
+import { syncClients, requireClient, runWithClient, scopeSiteIds } from '../services/clientContext.js';
 
 const router = Router();
 
@@ -23,13 +27,16 @@ const router = Router();
 
 router.all('/sync-cron', async (req, res) => {
   try {
-    // Optional Vercel CRON_SECRET authorization check
+    // The scheduler must present CRON_SECRET; with none configured the
+    // endpoint is disabled rather than open.
     const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret) {
-      const authHeader = req.headers.authorization;
-      if (authHeader !== `Bearer ${cronSecret}`) {
-        return res.status(401).json({ error: 'Unauthorized: invalid CRON_SECRET' });
-      }
+    if (!cronSecret) {
+      return res.status(503).json({ error: 'sync-cron disabled: CRON_SECRET not configured' });
+    }
+    const presented = Buffer.from(req.headers.authorization ?? '');
+    const expected = Buffer.from(`Bearer ${cronSecret}`);
+    if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const customDate = req.query.date as string | undefined;
@@ -41,14 +48,38 @@ router.all('/sync-cron', async (req, res) => {
       customDate,
     });
 
-    const result = await syncLatestTelemetry(customDates);
+    // The same cron tick also advances the dashboard's inventory snapshot.
+    // A serverless invocation can't finish a whole refresh, so it does a
+    // time-boxed chunk; the next tick resumes where this one stopped.
+    // Every client with a valid (stored or live) session is refreshed, each
+    // with its own token — there is no service account to run as.
+    const [result, inventory] = await Promise.all([
+      syncLatestTelemetry(customDates),
+      syncClients().then((clients) => Promise.all(
+        clients.map((client) =>
+          runWithClient(client, () =>
+            refreshInventory({ budgetMs: 40_000 }).catch((err) => {
+              console.warn(`[commandCenter] Inventory refresh failed (client ${client.key}):`, err?.message || err);
+              return 'error' as const;
+            })
+          )
+        )
+      )),
+    ]);
+    // Which clients' sessions are healthy, so a lapsed one is noticed (no tokens in here).
+    const sessions = await sessionReport();
+    for (const s of sessions) {
+      if (s.status !== 'ok') console.warn(`[commandCenter] Session for client ${s.client} is ${s.status} (expires ${s.expiresAt}); sync stops until someone from that client logs in.`);
+    }
     return res.json({
-      status: result.success ? 'success' : 'error',
+      status: result.success ? (result.incomplete ? 'partial' : 'success') : 'error',
+      inventory,
+      sessions,
       ...result,
     });
   } catch (err: any) {
     console.error('[commandCenter] Cron sync failed:', err);
-    return res.status(500).json({ error: 'Sync failed', message: err.message });
+    return res.status(500).json({ error: 'Sync failed' });
   }
 });
 
@@ -60,6 +91,7 @@ router.get('/summary', async (req, res) => {
   if (!win) return;
   const siteId = validSite(req.query.siteId ?? req.query.siteIds);
   if (!siteId) return badRequest(res, 'site');
+  if (scopeSiteIds(requireClient(), siteId) === null) return res.status(404).json({ error: 'Unknown site' });
   try {
     // Manual Refresh answers instantly from stored data and pulls fresh packets in the background;
     // the page keeps polling while `refreshing` is true.
@@ -69,7 +101,7 @@ router.get('/summary', async (req, res) => {
   } catch (err: any) {
     // No silent fallback to a different data source: an honest error beats plausible-looking wrong data.
     console.error('[commandCenter] Error generating telemetry summary:', err);
-    res.status(503).json({ error: 'Telemetry summary unavailable', message: err.message });
+    res.status(503).json({ error: 'Telemetry summary unavailable' });
   }
 });
 
@@ -79,7 +111,7 @@ router.get('/sites', async (req, res) => {
   try {
     const roots = await getRoots(req.headers.authorization);
     let sites = roots.map((r) => ({ id: String(r.id), name: r.name }));
-    if (sites.length === 0) {
+    if (sites.length === 0 && requireClient().unscoped) {
       const local = await pool.query('SELECT id, name FROM sites ORDER BY name');
       sites = local.rows.map((r: { id: number; name: string }) => ({ id: String(r.id), name: r.name }));
     }
@@ -87,7 +119,7 @@ router.get('/sites', async (req, res) => {
     res.json([{ id: 'ALL', name: 'All Sites' }, ...sites]);
   } catch (err: any) {
     console.error('[commandCenter] Error loading sites:', err);
-    res.status(500).json({ error: 'Failed to load sites', message: err.message });
+    res.status(500).json({ error: 'Failed to load sites' });
   }
 });
 
@@ -100,7 +132,7 @@ router.get('/gateways/:gatewayId/meters', async (req, res) => {
     res.json(await retryTransient(() => getGatewayMeters(gatewayId, win)));
   } catch (err: any) {
     console.error('[commandCenter] Error loading gateway meters:', err);
-    res.status(503).json({ error: 'Failed to load gateway meters', message: err.message });
+    res.status(503).json({ error: 'Failed to load gateway meters' });
   }
 });
 
@@ -114,7 +146,7 @@ router.get('/gateways/:gatewayId/frames', async (req, res) => {
     res.json(await retryTransient(() => getGatewayFrames(gatewayId, win, limit, offset)));
   } catch (err: any) {
     console.error('[commandCenter] Error loading gateway frames:', err);
-    res.status(503).json({ error: 'Failed to load gateway frames', message: err.message });
+    res.status(503).json({ error: 'Failed to load gateway frames' });
   }
 });
 
@@ -123,6 +155,7 @@ router.get('/meters', async (req, res) => {
   if (!win) return;
   const siteId = validSite(req.query.siteId);
   if (!siteId) return badRequest(res, 'site');
+  if (scopeSiteIds(requireClient(), siteId) === null) return res.status(404).json({ error: 'Unknown site' });
   try {
     const status = ['live', 'stale', 'silent'].includes(req.query.status as string)
       ? (req.query.status as 'live' | 'stale' | 'silent')
@@ -142,7 +175,7 @@ router.get('/meters', async (req, res) => {
     );
   } catch (err: any) {
     console.error('[commandCenter] Error listing meters:', err);
-    res.status(503).json({ error: 'Failed to list meters', message: err.message });
+    res.status(503).json({ error: 'Failed to list meters' });
   }
 });
 
@@ -155,7 +188,7 @@ router.get('/meters/search', async (req, res) => {
     res.json(await retryTransient(() => searchMeters(q, win)));
   } catch (err: any) {
     console.error('[commandCenter] Error searching meters:', err);
-    res.status(503).json({ error: 'Failed to search meters', message: err.message });
+    res.status(503).json({ error: 'Failed to search meters' });
   }
 });
 
@@ -169,7 +202,7 @@ router.get('/meters/:meterId/frames', async (req, res) => {
     res.json(await retryTransient(() => getMeterFrames(meterId, win, limit, offset)));
   } catch (err: any) {
     console.error('[commandCenter] Error loading meter frames:', err);
-    res.status(503).json({ error: 'Failed to load meter frames', message: err.message });
+    res.status(503).json({ error: 'Failed to load meter frames' });
   }
 });
 
@@ -179,12 +212,13 @@ router.get('/frames', async (req, res) => {
   if (!win) return;
   const siteId = validSite(req.query.siteId);
   if (!siteId) return badRequest(res, 'site');
+  if (scopeSiteIds(requireClient(), siteId) === null) return res.status(404).json({ error: 'Unknown site' });
   try {
     const { limit, offset } = pageParams(req.query, 100);
     res.json(await retryTransient(() => getFleetFrames(win, siteId, limit, offset)));
   } catch (err: any) {
     console.error('[commandCenter] Error loading frames:', err);
-    res.status(503).json({ error: 'Failed to load frames', message: err.message });
+    res.status(503).json({ error: 'Failed to load frames' });
   }
 });
 
@@ -194,13 +228,14 @@ router.get('/traffic', async (req, res) => {
   if (!win) return;
   const siteId = validSite(req.query.siteId);
   if (!siteId) return badRequest(res, 'site');
+  if (scopeSiteIds(requireClient(), siteId) === null) return res.status(404).json({ error: 'Unknown site' });
   const gatewayId = req.query.gatewayId === undefined ? undefined : validId(req.query.gatewayId);
   if (gatewayId === null) return badRequest(res, 'gateway id');
   try {
     res.json(await retryTransient(() => getTraffic({ win, siteId, gatewayId })));
   } catch (err: any) {
     console.error('[commandCenter] Error loading traffic:', err);
-    res.status(503).json({ error: 'Failed to load traffic', message: err.message });
+    res.status(503).json({ error: 'Failed to load traffic' });
   }
 });
 
@@ -210,13 +245,14 @@ router.get('/radio', async (req, res) => {
   if (!win) return;
   const siteId = validSite(req.query.siteId);
   if (!siteId) return badRequest(res, 'site');
+  if (scopeSiteIds(requireClient(), siteId) === null) return res.status(404).json({ error: 'Unknown site' });
   const gatewayId = req.query.gatewayId === undefined ? undefined : validId(req.query.gatewayId);
   if (gatewayId === null) return badRequest(res, 'gateway id');
   try {
     res.json(await retryTransient(() => getRadioHealth({ win, siteId, gatewayId })));
   } catch (err: any) {
     console.error('[commandCenter] Error loading radio health:', err);
-    res.status(503).json({ error: 'Failed to load radio health', message: err.message });
+    res.status(503).json({ error: 'Failed to load radio health' });
   }
 });
 

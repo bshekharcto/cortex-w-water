@@ -105,7 +105,8 @@ export function aggregateNodeKpis(nodes: NodeRow[]): DashboardKpis {
   );
 
   return {
-    childAreaCount: nodes.length,
+    // Real areas only: the synthetic "Others" group isn't a configured sub-area.
+    childAreaCount: nodes.filter((n) => !n.synthetic).length,
     totalDevices,
     connected,
     disconnected,
@@ -116,20 +117,52 @@ export function aggregateNodeKpis(nodes: NodeRow[]): DashboardKpis {
     yesterdayFlowM3: Number(yesterdayFlowM3.toFixed(2)),
     todayFlowM3: Number(todayFlowM3.toFixed(2)),
     monthToDateFlowM3: Number(monthToDateFlowM3.toFixed(2)),
-    dataTimestamp: latestTimestamp || new Date().toISOString(),
+    dataTimestamp: latestTimestamp,
   };
 }
 
 /**
- * Aggregates KPIs from a list of meters — used at a real leaf node (one
- * with no further children), where the "child rows" are individual meters
- * instead of sub-nodes.
+ * KPIs for a real leaf node (one with no further children), from the status
+ * counts of ALL its meters — the server returns these alongside each page of
+ * the list, so the cards don't depend on how many rows the client holds — and
+ * the node's own flow totals.
+ */
+export function aggregateCountKpis(
+  counts: { total: number; connected: number; disconnected: number; neverSeen: number },
+  flowTotals?: { yesterdayFlowM3?: number; todayFlowM3?: number; monthToDateFlowM3?: number },
+  dataTimestamp?: string
+): DashboardKpis {
+  const { connectedPct, disconnectedPct, neverSeenPct } = computePercentages(
+    counts.connected,
+    counts.disconnected,
+    counts.neverSeen,
+    counts.total
+  );
+
+  return {
+    // childAreaCount is omitted at leaf/meter level — there's nothing "under" a meter
+    totalDevices: counts.total,
+    connected: counts.connected,
+    disconnected: counts.disconnected,
+    neverSeen: counts.neverSeen,
+    connectedPct,
+    disconnectedPct,
+    neverSeenPct,
+    yesterdayFlowM3: flowTotals?.yesterdayFlowM3 ?? 0,
+    todayFlowM3: flowTotals?.todayFlowM3 ?? 0,
+    monthToDateFlowM3: flowTotals?.monthToDateFlowM3 ?? 0,
+    dataTimestamp,
+  };
+}
+
+/**
+ * Aggregates KPIs from a list of meters (counts them, then delegates to
+ * aggregateCountKpis).
  */
 export function aggregateMeterKpis(
   meters: MeterRow[],
   flowTotals?: { yesterdayFlowM3?: number; todayFlowM3?: number; monthToDateFlowM3?: number }
 ): DashboardKpis {
-  const totalDevices = meters.length;
   let connected = 0;
   let disconnected = 0;
   let neverSeen = 0;
@@ -145,25 +178,5 @@ export function aggregateMeterKpis(
     }
   }
 
-  const { connectedPct, disconnectedPct, neverSeenPct } = computePercentages(
-    connected,
-    disconnected,
-    neverSeen,
-    totalDevices
-  );
-
-  return {
-    // childAreaCount is omitted at leaf/meter level — there's nothing "under" a meter
-    totalDevices,
-    connected,
-    disconnected,
-    neverSeen,
-    connectedPct,
-    disconnectedPct,
-    neverSeenPct,
-    yesterdayFlowM3: flowTotals?.yesterdayFlowM3 ?? 0,
-    todayFlowM3: flowTotals?.todayFlowM3 ?? 0,
-    monthToDateFlowM3: flowTotals?.monthToDateFlowM3 ?? 0,
-    dataTimestamp: latestTimestamp || new Date().toISOString(),
-  };
+  return aggregateCountKpis({ total: meters.length, connected, disconnected, neverSeen }, flowTotals, latestTimestamp);
 }

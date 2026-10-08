@@ -4,6 +4,7 @@ import { getGatewayAlias } from './labels.js';
 import { resolveSiteGateways } from './upstream.js';
 import { referenceMs, type TelemetryWindow } from './windows.js';
 import type { MeterState, PacketRow } from './types.js';
+import { clientKey, ownedMeters } from './scope.js';
 
 export const LATEST_FRAME_COLUMNS = `meter_id, gateway_id, dev_eui, decoded_at, date_key, checksum_status, status_byte,
        rssi, snr, fcnt, fport, frequency, dr, adr, confirmed, meter_timestamp`;
@@ -108,8 +109,9 @@ export async function getGatewayMeters(gatewayId: string, win: TelemetryWindow) 
     `SELECT DISTINCT ON (meter_id) ${LATEST_FRAME_COLUMNS}
      FROM raw_telemetry_packets
      WHERE gateway_id = $1 AND date_key >= $2 AND date_key <= $3 AND decoded_at >= $4 AND decoded_at <= $5
+       AND ${ownedMeters(6)}
      ORDER BY meter_id, decoded_at DESC`,
-    [gatewayId, win.fromDate, win.toDate, win.fromTs, win.toTs]
+    [gatewayId, win.fromDate, win.toDate, win.fromTs, win.toTs, await clientKey()]
   );
   return buildMeterItems(res.rows, win);
 }
@@ -122,10 +124,10 @@ export async function searchMeters(q: string, win: TelemetryWindow) {
     `SELECT DISTINCT ON (meter_id) ${LATEST_FRAME_COLUMNS}
      FROM raw_telemetry_packets
      WHERE date_key >= $2 AND date_key <= $3 AND decoded_at >= $4 AND decoded_at <= $5
-       AND (meter_id ILIKE $1 OR dev_eui ILIKE $1)
+       AND (meter_id ILIKE $1 OR dev_eui ILIKE $1) AND ${ownedMeters(6)}
      ORDER BY meter_id, decoded_at DESC
      LIMIT 20`,
-    [`%${q}%`, win.fromDate, win.toDate, win.fromTs, win.toTs]
+    [`%${q}%`, win.fromDate, win.toDate, win.fromTs, win.toTs, await clientKey()]
   );
   const items = await buildMeterItems(res.rows, win, 'meter');
   return items.map((meter, i) => ({ gatewayId: res.rows[i].gateway_id, meter }));
@@ -156,8 +158,9 @@ export async function listFleetMeters(opts: {
   const { win, siteId } = opts;
   const siteGateways = await resolveSiteGateways(siteId, win);
 
-  const params: unknown[] = [win.fromDate, win.toDate, win.fromTs, win.toTs];
-  const inner: string[] = ['date_key >= $1', 'date_key <= $2', 'decoded_at >= $3', 'decoded_at <= $4'];
+  const ck = await clientKey();
+  const params: unknown[] = [win.fromDate, win.toDate, win.fromTs, win.toTs, ck];
+  const inner: string[] = ['date_key >= $1', 'date_key <= $2', 'decoded_at >= $3', 'decoded_at <= $4', ownedMeters(5)];
   if (siteGateways) {
     params.push(siteGateways);
     inner.push(`gateway_id = ANY($${params.length}::text[])`);
@@ -184,11 +187,11 @@ export async function listFleetMeters(opts: {
   const mainParams = [...params, opts.limit, opts.offset];
 
   // Values present in the window/site, for the DR and frequency dropdowns (independent of the other filters)
-  const facetParams: unknown[] = [win.fromDate, win.toDate, win.fromTs, win.toTs];
-  let facetSite = '';
+  const facetParams: unknown[] = [win.fromDate, win.toDate, win.fromTs, win.toTs, ck];
+  let facetSite = `AND ${ownedMeters(5)}`;
   if (siteGateways) {
     facetParams.push(siteGateways);
-    facetSite = 'AND gateway_id = ANY($5::text[])';
+    facetSite += ' AND gateway_id = ANY($6::text[])';
   }
 
   const [res, facetRes] = await Promise.all([

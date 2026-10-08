@@ -7,8 +7,13 @@ import { ingestDateIntoPostgres } from './ingest.js';
 import { findMultiGatewayMeters, mapFrameRow } from './frames.js';
 import { referenceMs, resolveWindow, windowRequestFromKey, type TelemetryWindow } from './windows.js';
 import type { PacketRow, TelemetrySummary } from './types.js';
+import { requireClient } from '../clientContext.js';
+import { clientKey, ownedMeters } from './scope.js';
 
 const inflightRebuilds = new Map<string, Promise<unknown>>();
+
+/** Cached summaries are per client, like everything else here. */
+const summaryCacheKey = (ck: string, winKey: string, siteId: string) => `c${ck}_${winKey}_summary_site_${siteId || 'ALL'}`;
 
 /**
  * Keeps the summary cache warm for every site x standard window, so no one waits for a cold build
@@ -16,12 +21,13 @@ const inflightRebuilds = new Map<string, Promise<unknown>>();
  * arrived, when it has no cache yet, or when its cache is old enough that the serve-stale window
  * (1 hour) is about to lapse. Builds run one at a time to keep the database load gentle.
  */
-export async function prewarmSummaries(newPackets: boolean): Promise<{ rebuilt: number; skipped: number }> {
+export async function prewarmSummaries(newPackets: boolean, deadline: number = Infinity): Promise<{ rebuilt: number; skipped: number }> {
+  const ck = requireClient().key;
   const roots = await getRoots().catch(() => []);
   const sites = ['ALL', ...roots.map((r) => String(r.id))];
   const requests = [{ hours: 1 }, { hours: 6 }, { hours: 24 }, { days: 7 }, { days: 30 }];
   const combos = sites.flatMap((siteId) => requests.map((req) => ({ siteId, win: resolveWindow(req) })));
-  const keyOf = (c: { siteId: string; win: TelemetryWindow }) => `${c.win.key}_summary_site_${c.siteId}`;
+  const keyOf = (c: { siteId: string; win: TelemetryWindow }) => summaryCacheKey(ck, c.win.key, c.siteId);
 
   const ages = new Map<string, number>();
   try {
@@ -37,6 +43,7 @@ export async function prewarmSummaries(newPackets: boolean): Promise<{ rebuilt: 
   let rebuilt = 0;
   let skipped = 0;
   for (const c of combos) {
+    if (Date.now() >= deadline) break; // the caller's time budget; the next run carries on
     const age = ages.get(keyOf(c));
     const needs = newPackets || age === undefined || age > 50 * 60;
     if (!needs) {
@@ -55,11 +62,12 @@ export async function prewarmSummaries(newPackets: boolean): Promise<{ rebuilt: 
   return { rebuilt, skipped };
 }
 
-let activeRefreshJobs = 0;
+// Per client: one client's Refresh must not show as 'refreshing' to another.
+const activeRefreshJobs = new Set<string>();
 
 /** True while a manual Refresh (pull today's packets, then rebuild the summary) is still running. */
 export function isRefreshing(): boolean {
-  return activeRefreshJobs > 0;
+  return activeRefreshJobs.has(requireClient().key);
 }
 
 /**
@@ -70,14 +78,15 @@ export function isRefreshing(): boolean {
 export function startManualRefresh(win: TelemetryWindow, siteId: string): boolean {
   const todayUtc = new Date().toISOString().slice(0, 10);
   if (win.toDate !== todayUtc) return false;
-  if (activeRefreshJobs > 0) return true; // already running; the caller just keeps polling
-  activeRefreshJobs++;
+  const ck = requireClient().key;
+  if (activeRefreshJobs.has(ck)) return true; // already running; the caller just keeps polling
+  activeRefreshJobs.add(ck);
   ingestDateIntoPostgres(todayUtc)
     .catch((err: any) => console.warn('[telemetryDb] Refresh ingestion warning:', err.message))
     .then(() => getPostgresAggregatedSummary(win, true, siteId))
     .catch((err: any) => console.warn('[telemetryDb] Refresh rebuild warning:', err.message))
     .finally(() => {
-      activeRefreshJobs--;
+      activeRefreshJobs.delete(ck);
       // The page is ready now. Bring the other windows/sites up to date too, quietly in the background, so
       // switching view after a Refresh doesn't show older numbers than the one you just refreshed.
       prewarmSummaries(true).catch((err: any) => console.warn('[telemetryDb] Post-refresh pre-warm note:', err.message));
@@ -94,7 +103,8 @@ export async function getPostgresAggregatedSummary(
   siteId: string = 'ALL'
 ): Promise<TelemetrySummary> {
   const { fromDate, toDate, fromTs, toTs, days } = win;
-  const cacheKey = `${win.key}_summary_site_${siteId || 'ALL'}`;
+  const ck = await clientKey(); // also makes sure this client's meter-ownership rows exist before any read below
+  const cacheKey = summaryCacheKey(ck, win.key, siteId);
 
   // 1. Check cache table if not forcing refresh
   if (!forceRefresh) {
@@ -134,14 +144,15 @@ export async function getPostgresAggregatedSummary(
     throw new Error('Site gateway summary is unavailable from the upstream API');
   }
   const siteGatewayIds = upstreamSummary?.perGateway.map((g) => g.gatewayId) ?? [];
-  const siteFilter = scoped ? 'AND gateway_id = ANY($5::text[])' : '';
-  const range: unknown[] = scoped ? [fromDate, toDate, fromTs, toTs, siteGatewayIds] : [fromDate, toDate, fromTs, toTs];
+  const own = ownedMeters(5);
+  const siteFilter = `AND ${own}${scoped ? ' AND gateway_id = ANY($6::text[])' : ''}`;
+  const range: unknown[] = scoped ? [fromDate, toDate, fromTs, toTs, ck, siteGatewayIds] : [fromDate, toDate, fromTs, toTs, ck];
 
   const spanMs = Date.parse(toTs) - Date.parse(fromTs);
   const prevFromTs = new Date(Date.parse(fromTs) - spanMs).toISOString();
   const prevRange: unknown[] = scoped
-    ? [prevFromTs.slice(0, 10), fromTs.slice(0, 10), prevFromTs, fromTs, siteGatewayIds]
-    : [prevFromTs.slice(0, 10), fromTs.slice(0, 10), prevFromTs, fromTs];
+    ? [prevFromTs.slice(0, 10), fromTs.slice(0, 10), prevFromTs, fromTs, ck, siteGatewayIds]
+    : [prevFromTs.slice(0, 10), fromTs.slice(0, 10), prevFromTs, fromTs, ck];
 
   const [kpiRes, multiGwRes, gwRes, framesRes, prevRes, earliestRes, gwMultiRes] = await Promise.all([
     pool.query(`
@@ -183,12 +194,12 @@ export async function getPostgresAggregatedSummary(
       WHERE date_key >= $1 AND date_key <= $2 AND decoded_at >= $3 AND decoded_at < $4 ${siteFilter}
       GROUP BY gateway_id
     `, prevRange),
-    pool.query(`SELECT MIN(date_key) AS d FROM raw_telemetry_packets`),
+    pool.query(`SELECT MIN(date_key) AS d FROM raw_telemetry_packets WHERE ${ownedMeters(1)}`, [ck]),
     // Per gateway: meters it heard that at least one other gateway also heard (the "other" gateway can be any)
     pool.query(`
       WITH multi AS (
         SELECT meter_id FROM raw_telemetry_packets
-        WHERE date_key >= $1 AND date_key <= $2 AND decoded_at >= $3 AND decoded_at <= $4
+        WHERE date_key >= $1 AND date_key <= $2 AND decoded_at >= $3 AND decoded_at <= $4 AND ${own}
         GROUP BY meter_id HAVING COUNT(DISTINCT gateway_id) > 1
       )
       SELECT p.gateway_id, COUNT(DISTINCT p.meter_id)::int AS n
