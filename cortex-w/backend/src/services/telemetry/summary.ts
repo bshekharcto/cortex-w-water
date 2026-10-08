@@ -204,7 +204,8 @@ export async function getPostgresAggregatedSummary(
       )
       SELECT p.gateway_id, COUNT(DISTINCT p.meter_id)::int AS n
       FROM raw_telemetry_packets p JOIN multi m ON m.meter_id = p.meter_id
-      WHERE p.date_key >= $1 AND p.date_key <= $2 AND p.decoded_at >= $3 AND p.decoded_at <= $4 ${siteFilter}
+      WHERE p.date_key >= $1 AND p.date_key <= $2 AND p.decoded_at >= $3 AND p.decoded_at <= $4
+        AND ${ownedMeters(5, 'p.meter_id')}${scoped ? ' AND p.gateway_id = ANY($6::text[])' : ''}
       GROUP BY p.gateway_id
     `, range),
   ]);
