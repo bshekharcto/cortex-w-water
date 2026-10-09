@@ -177,6 +177,7 @@ async function runMigrations() {
     "011_sync_state_and_rate_limits.sql",
     "012_water_meter_readings_v2.sql",
     "014_metadata_mirror.sql",
+    "015_water_meter_daily.sql",
   ];
 
   for (const file of migrations) {
