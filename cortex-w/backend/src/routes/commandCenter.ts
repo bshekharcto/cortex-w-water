@@ -15,6 +15,7 @@ import {
   MeterFilter,
 } from '../services/telemetryDbService.js';
 import { resolveSiteScope, resolveViewTimeZone, SessionExpiredError } from '../services/dashboardService.js';
+import { badRequest, validId } from './validation.js';
 
 const router = Router();
 
@@ -76,6 +77,7 @@ function intParam(value: unknown, fallback: number, min: number, max: number): n
 // One page of the meters a gateway heard (the Meters table of the selected gateway).
 router.get('/gateways/:gatewayId/meters', async (req, res) => {
   try {
+    if (!validId(req.params.gatewayId)) return badRequest(res, 'gateway id');
     const siteIds = await resolveSiteScope(req.query.siteId as string | undefined, req.headers.authorization);
     if (siteIds && siteIds.length === 0) return res.status(403).json({ error: 'No access to this site' });
     const zone = await resolveViewTimeZone(siteIds);
@@ -103,6 +105,10 @@ router.get('/gateways/:gatewayId/meters', async (req, res) => {
 
 // The window and site filter shared by the per-gateway endpoints; answers the request itself when they are not usable.
 async function gatewayScope(req: any, res: any) {
+  if (!validId(req.params.gatewayId)) {
+    badRequest(res, 'gateway id');
+    return null;
+  }
   const siteIds = await resolveSiteScope(req.query.siteId as string | undefined, req.headers.authorization);
   if (siteIds && siteIds.length === 0) {
     res.status(403).json({ error: 'No access to this site' });

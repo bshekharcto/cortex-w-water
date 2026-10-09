@@ -22,7 +22,19 @@ export function getAuthToken(): string | null {
   return inMemoryToken;
 }
 
+/** localStorage keys holding per-user data (e.g. cached KPI summaries). */
+const USER_DATA_PREFIX = 'cortex_w_';
+
 export function clearAuthState(): void {
   inMemoryToken = null;
   sessionStorage.removeItem(STORAGE_KEY);
+  // Cached data belongs to the account that fetched it; never let the next
+  // login on this browser see it.
+  try {
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith(USER_DATA_PREFIX))
+      .forEach((k) => localStorage.removeItem(k));
+  } catch {
+    // storage unavailable
+  }
 }

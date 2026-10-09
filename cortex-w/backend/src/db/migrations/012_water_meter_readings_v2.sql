@@ -1,4 +1,4 @@
--- Migration 008: water_meter_readings_v2 - the Postgres copy of iot.water_meter_readings_v2 (Timestream).
+-- Migration 012: water_meter_readings_v2 - the Postgres copy of iot.water_meter_readings_v2 (Timestream).
 --
 -- The cortex scheduler WaterMeterHistoryToRdsScheduler fills it; the UI reads it. Column names are the SAME as in
 -- Timestream so the two are easy to compare. Not copied: tenant_id, tenant_name, application_id, device_name,
@@ -11,7 +11,7 @@
 -- Readings are in KL (forward_flow_kl) and m3 (reverse_flow_m3), exactly as in Timestream.
 --
 -- This only ADDS a new table: it is safe while the old backend and the old raw_telemetry_packets table are live.
--- The old table and the battery / valve columns are removed later by 009.
+-- The old table and the battery / valve columns are removed later by 013.
 
 CREATE TABLE IF NOT EXISTS water_meter_readings_v2 (
   meter_id            VARCHAR(20)  NOT NULL,

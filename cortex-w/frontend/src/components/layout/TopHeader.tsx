@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Bell, RefreshCw } from 'lucide-react';
 import { runtimeConfig } from '@/config/runtimeConfig';
@@ -19,6 +20,26 @@ const ROUTE_TITLES: Record<string, string> = {
 
 export function TopHeader() {
   const { pathname } = useLocation();
+  const [notifOpen, setNotifOpen] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  // Close the notifications dialog on outside click or Escape
+  useEffect(() => {
+    if (!notifOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) setNotifOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setNotifOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [notifOpen]);
+
   const isCommandCenter = pathname.startsWith('/app/command-center');
   // Match longest prefix for deep links (e.g. /app/consumer/households/123)
   const matchedPath = Object.keys(ROUTE_TITLES)
@@ -38,8 +59,27 @@ export function TopHeader() {
         <span className={`cw-data-badge cw-data-badge--${dataMode}`}>
           {dataMode === 'seed' ? 'SEED DATA' : dataMode === 'api' ? 'LIVE' : 'HYBRID'}
         </span>
-        <button className="cw-icon-btn" aria-label="Refresh"><RefreshCw size={16} /></button>
-        <button className="cw-icon-btn" aria-label="Notifications"><Bell size={16} /></button>
+        {/* The Command Center has its own working refresh in its toolbar, so this one is omitted there */}
+        {!isCommandCenter && (
+          <button className="cw-icon-btn" aria-label="Refresh"><RefreshCw size={16} /></button>
+        )}
+        <div className="cw-notif-wrap" ref={notifRef}>
+          <button
+            className="cw-icon-btn"
+            aria-label="Notifications"
+            aria-haspopup="dialog"
+            aria-expanded={notifOpen}
+            onClick={() => setNotifOpen((o) => !o)}
+          >
+            <Bell size={16} />
+          </button>
+          {notifOpen && (
+            <div className="cw-notif-dialog" role="dialog" aria-label="Notifications">
+              <div className="cw-notif-dialog-title">Notifications</div>
+              <p className="cw-notif-dialog-body">No notifications have been enabled.</p>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );

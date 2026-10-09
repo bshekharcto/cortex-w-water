@@ -28,7 +28,10 @@ services:
       UPSTREAM_API_BASE_URL: https://api.cognecto.com
       UPSTREAM_DATA_REST_URL: https://api.cognecto.com
       COGNECTO_API_URL: https://api.cognecto.com
-      JWT_LOCAL_SIGNING_SECRET: cortex-w-dev-secret-change-me
+      JWT_LOCAL_SIGNING_SECRET: ${JWT_LOCAL_SIGNING_SECRET:?set JWT_LOCAL_SIGNING_SECRET in .env}
+      CRON_SECRET: ${CRON_SECRET:-}
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:-}
+      TRUST_PROXY: 1
       CORS_ORIGIN: http://localhost:8088
     depends_on:
       postgres:
@@ -41,8 +44,8 @@ services:
     environment:
       APP_DATA_MODE: api
       API_BASE_URL: /api
-      GOOGLE_MAPS_API_KEY: 'AIzaSyDPTspFcq0ZZ_Nbjg7HkSQ1toulXqW2XdQ'
-      SHOW_DEMO_AUTH: 'true'
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      SHOW_DEMO_AUTH: ${SHOW_DEMO_AUTH:-false}
       ENABLE_HYDRAULIC_SEED: 'true'
     depends_on:
       - backend

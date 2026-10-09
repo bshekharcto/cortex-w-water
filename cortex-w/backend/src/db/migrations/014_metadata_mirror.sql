@@ -1,4 +1,4 @@
--- Migration 010: read-only mirror of the MySQL metadata the new UI needs (sites and water meters).
+-- Migration 014: read-only mirror of the MySQL metadata the new UI needs (sites and water meters).
 --
 -- MySQL (cog-core-api) stays the master; nobody edits these tables. The cortex scheduler WaterMetaDataSyncScheduler
 -- overwrites them every 15 minutes: new rows are inserted, changed rows updated, rows that vanished from MySQL are

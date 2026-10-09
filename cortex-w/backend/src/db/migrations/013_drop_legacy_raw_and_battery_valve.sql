@@ -1,4 +1,4 @@
--- Migration 009: clean-up after the switch to water_meter_readings_v2.
+-- Migration 013: clean-up after the switch to water_meter_readings_v2.
 --   * drops the old raw_telemetry_packets table (its readings now live in water_meter_readings_v2)
 --   * removes the fabricated battery / valve columns from the demo tables meters and gateways
 --

@@ -1,16 +1,20 @@
 import express from "express";
 import cors from "cors";
 import compression from "compression";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
 import { existsSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import { config } from "./config/env.js";
 import { pool } from "./db/pool.js";
-import { authMiddleware } from "./middleware/auth.js";
+import { authMiddleware, requireAuth } from "./middleware/auth.js";
+import { errorHandler, notFound, wrapAsync } from "./middleware/errors.js";
 
 import authRoutes from "./routes/auth.js";
 import commandCenterRoutes from "./routes/commandCenter.js";
+import waterReportRoutes from "./routes/waterReports.js";
 import householdsRoutes from "./routes/households.js";
 import billingRoutes from "./routes/billing.js";
 import alarmsRoutes from "./routes/alarms.js";
@@ -20,16 +24,35 @@ import dashboardRoutes from "./routes/dashboard.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+for (const r of [authRoutes, commandCenterRoutes, waterReportRoutes, householdsRoutes, billingRoutes, alarmsRoutes, sitesRoutes, gisRoutes, dashboardRoutes]) {
+  wrapAsync(r);
+}
+
 const app = express();
 
 // ============================================================
 // Middleware
 // ============================================================
 
+// Browser origins allowed to call this API cross-origin come from CORS_ORIGIN
+// (comma-separated; "*" = any, development only). Requests with no Origin
+// header (same-origin, curl, server-to-server) are always let through, and a
+// disallowed origin simply gets no CORS headers, so its browser blocks it.
+// Auth is a bearer token, not a cookie, so credentialed CORS isn't needed.
+const allowedOrigins = config.CORS_ORIGIN.split(',')
+  .map((o) => o.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+const allowAnyOrigin = allowedOrigins.includes('*');
+
+app.set("trust proxy", config.TRUST_PROXY);
+app.use(helmet());
+
 app.use(
   cors({
-    origin: true,
-    credentials: true,
+    origin: (origin, callback) => {
+      if (!origin || allowAnyOrigin) return callback(null, true);
+      return callback(null, allowedOrigins.includes(origin));
+    },
   }),
 );
 
@@ -38,9 +61,21 @@ app.use(
 // uncompressed; this shrinks them substantially over the wire for free.
 app.use(compression());
 
-app.use(express.json());
+app.use(express.json({ limit: "100kb" }));
+
+// Coarse per-address ceiling; /auth/login has its own, much stricter limit.
+app.use(
+  rateLimit({
+    windowMs: 60 * 1000,
+    limit: 1200,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
+);
 
 app.use(authMiddleware);
+// Deny by default: everything except the public list requires a valid token.
+app.use(requireAuth);
 
 // ============================================================
 // Root
@@ -52,7 +87,6 @@ app.get("/", (_req, res) => {
     status: "ok",
     service: "cortex-w-backend",
     message: "Cortex-W backend is running",
-    dataMode: config.APP_DATA_MODE,
   });
 });
 
@@ -68,7 +102,6 @@ app.get("/health", async (_req, res) => {
       status: "ok",
       service: "cortex-w-backend",
       database: "connected",
-      dataMode: config.APP_DATA_MODE,
     });
   } catch (err) {
     console.error("[health] Database connection failed:", err);
@@ -83,40 +116,38 @@ app.get("/health", async (_req, res) => {
 
 // ============================================================
 // API Routes
-// Support both /api/* and /*
+// Mounted under /api only
 // ============================================================
 
 // Authentication
 app.use("/api/auth", authRoutes);
-app.use("/auth", authRoutes);
 
 // Command Center
 app.use("/api/command-center", commandCenterRoutes);
-app.use("/command-center", commandCenterRoutes);
+// Water-platform report endpoints keep their original /command-center/* URLs
+app.use("/api/command-center", waterReportRoutes);
 
 // Households
 app.use("/api/households", householdsRoutes);
-app.use("/households", householdsRoutes);
 
 // Billing
 app.use("/api/billing", billingRoutes);
-app.use("/billing", billingRoutes);
 
 // Alarms
 app.use("/api/alarms", alarmsRoutes);
-app.use("/alarms", alarmsRoutes);
 
 // Sites
 app.use("/api/sites", sitesRoutes);
-app.use("/sites", sitesRoutes);
 
 // GIS
 app.use("/api/gis", gisRoutes);
-app.use("/gis", gisRoutes);
 
 // Dashboard
 app.use("/api/dashboard", dashboardRoutes);
-app.use("/dashboard", dashboardRoutes);
+
+// Any unmatched API path is a JSON 404; any error becomes a generic 500 (detail stays in the log).
+app.use("/api", notFound);
+app.use(errorHandler);
 
 // ============================================================
 // Run Database Migrations
@@ -140,8 +171,12 @@ async function runMigrations() {
       ? ["001_initial_schema.sql", "002_seed_data.sql", "006_geographical_dma.sql"]
       : []),
     "007_water_rollup_tables.sql",
-    "008_water_meter_readings_v2.sql",
-    "010_metadata_mirror.sql",
+    "008_asset_inventory.sql",
+    "009_client_scoping.sql",
+    "010_client_sessions.sql",
+    "011_sync_state_and_rate_limits.sql",
+    "012_water_meter_readings_v2.sql",
+    "014_metadata_mirror.sql",
   ];
 
   for (const file of migrations) {
@@ -152,10 +187,26 @@ async function runMigrations() {
 
       const sql = readFileSync(migrationPath, "utf-8");
 
-      await pool.query(sql);
+      // Use a dedicated connection with a lock timeout: if another session (e.g. a long-running
+      // ingestion insert) holds a conflicting lock on a table, give up quickly instead of hanging
+      // server startup forever. The schema statements are idempotent, so skipping is safe.
+      const client = await pool.connect();
+      try {
+        await client.query("SET lock_timeout = '5s'");
+        await client.query(sql);
+      } finally {
+        client.release();
+      }
 
       console.log(`[db] Ran migration: ${file}`);
     } catch (err: any) {
+      if (err.code === "55P03" || err.message?.includes("lock timeout")) {
+        console.warn(
+          `[db] Skipped ${file}: table is locked by another session (will re-check on next start)`
+        );
+        continue;
+      }
+
       // ON CONFLICT DO NOTHING makes reruns safe.
       // Some schema statements can still report already-existing
       // database objects, so handle those safely.

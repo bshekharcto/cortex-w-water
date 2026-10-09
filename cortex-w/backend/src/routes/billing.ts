@@ -1,5 +1,7 @@
+import { localDate } from '../services/localDate.js';
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
+import { clientTenantIds, ownedMeterSql } from '../services/tenantScope.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { getAuthToken, getLiveGisData } from './gis.js';
@@ -22,8 +24,8 @@ async function handleBillingList(req: any, res: any) {
     // is supplied — a fixed calendar date here would look "frozen in time"
     // once that window is in the past (same class of bug as the Command
     // Center TARGET_DATE issue).
-    const defaultEndDate = new Date().toISOString().slice(0, 10);
-    const defaultStartDate = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const defaultEndDate = localDate(0);
+    const defaultStartDate = localDate(-90);
     const startDate = (req.body?.startDate ?? req.query?.startDate ?? defaultStartDate) as string;
     const endDate = (req.body?.endDate ?? req.query?.endDate ?? defaultEndDate) as string;
     const search = ((req.body?.search ?? req.query?.search ?? '') as string).trim().toLowerCase();
@@ -224,9 +226,10 @@ router.get('/:id/detail', async (req, res) => {
           `SELECT DISTINCT ON (date_key) date_key, time, forward_flow_kl
            FROM water_meter_readings_v2
            WHERE meter_id = $1
+             ${ownedMeterSql(2)}
            ORDER BY date_key DESC, forward_flow_kl DESC, time DESC
            LIMIT 10`,
-          [meterIdForReadings]
+          [meterIdForReadings, clientTenantIds()]
         );
         const realRows = readingsRes.rows.reverse(); // oldest -> newest for charting
         dailyReadings = realRows.map((r: any, idx: number) => {

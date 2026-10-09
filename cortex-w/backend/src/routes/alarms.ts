@@ -3,6 +3,13 @@ import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { getAuthToken, getLiveGisData } from './gis.js';
+import { requireClient } from '../services/clientContext.js';
+
+/** An alert is this client's only if it sits under one of its sites (fail closed if it names none). */
+function ownsAlert(alert: any): boolean {
+  const ctx = requireClient();
+  return ctx.unscoped || (typeof alert?.siteId === 'number' && ctx.siteIds.has(alert.siteId));
+}
 
 const router = Router();
 
@@ -32,7 +39,7 @@ async function handleAlertList(req: any, res: any) {
 
     if (upstream.status === 200 && upstream.data) {
       const pageData = upstream.data as any;
-      const rawContent: any[] = Array.isArray(pageData.content) ? pageData.content : [];
+      const rawContent: any[] = (Array.isArray(pageData.content) ? pageData.content : []).filter(ownsAlert);
 
       // Enrich alert records
       const enriched = rawContent.map((a: any) => {
@@ -159,7 +166,7 @@ router.get('/:id/detail', async (req, res) => {
       alertData = content.find((a: any) => String(a.alertId) === String(alertId) || a.alertCode === alertId);
     }
 
-    if (!alertData) {
+    if (!alertData || !ownsAlert(alertData)) {
       return res.status(404).json({ error: 'Alert record not found' });
     }
 
@@ -234,6 +241,10 @@ router.get('/:id', async (req, res) => {
     if (token) headers['Authorization'] = token;
 
     const upstream = await proxyUpstream('GET', `/api/alert/${alertId}`, { headers });
+    const single = (upstream.data as any)?.data ?? upstream.data;
+    if (upstream.status === 200 && single && typeof single === 'object' && !ownsAlert(single)) {
+      return res.status(404).json({ error: 'Alert record not found' });
+    }
     if (upstream.status === 200 && (upstream.data as any)?.data) {
       return res.json((upstream.data as any).data);
     }
