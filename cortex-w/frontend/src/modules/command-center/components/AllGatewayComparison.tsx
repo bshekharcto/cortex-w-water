@@ -1,6 +1,4 @@
 import { GatewayItem } from '../types/commandCenter.types';
-import { useNow, formatAgo } from '../utils/timeAgo';
-import { useWindowLabel } from '../utils/thresholds';
 
 interface Props {
   gateways: GatewayItem[];
@@ -8,8 +6,6 @@ interface Props {
 }
 
 export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
-  const windowLabel = useWindowLabel();
-  const nowMs = useNow();
   const activeGateways = gateways.filter((g) => g.uniqueMeters > 0);
   const maxMeters = activeGateways[0]?.uniqueMeters || 1;
 
@@ -18,7 +14,7 @@ export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
       <div className="cc-card cc-chart-card">
         <div className="cc-card-header">
           <span className="cc-card-title">GATEWAY LOAD DISTRIBUTION</span>
-          <span className="cc-card-meta">Unique Meters Heard by Gateway ({windowLabel})</span>
+          <span className="cc-card-meta">Unique Meters Heard by Gateway (24H)</span>
         </div>
         <div className="cc-bars-container">
           {activeGateways.map((gw) => {
@@ -56,11 +52,11 @@ export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
                 <th>Gateway ID</th>
                 <th>Status</th>
                 <th>Unique Meters</th>
-                <th title="Frames kept in Cortex for this window; not the network's true total yet">Frames stored ({windowLabel})</th>
+                <th>Frames (24H)</th>
                 <th>Last Frame</th>
                 <th>Avg RSSI</th>
                 <th>Avg SNR</th>
-                <th title="Meters on this gateway that at least one other gateway also heard">Multi-GW Meters</th>
+                <th>Trend</th>
               </tr>
             </thead>
             <tbody>
@@ -69,13 +65,6 @@ export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
                   key={gw.gatewayId}
                   className="cc-table-row"
                   onClick={() => onSelectGateway(gw.gatewayId)}
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      onSelectGateway(gw.gatewayId);
-                    }
-                  }}
                 >
                   <td className="cc-cell-bold">{gw.alias}</td>
                   <td className="cc-mono cc-cell-mute">{gw.gatewayId}</td>
@@ -86,14 +75,26 @@ export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
                   </td>
                   <td className="cc-mono cc-cell-bold">{gw.uniqueMeters}</td>
                   <td className="cc-mono">{gw.frameCount}</td>
-                  <td>{formatAgo(gw.lastFrameDecodedAt, nowMs)}</td>
+                  <td>{gw.lastFrameText}</td>
                   <td className="cc-mono">
                     {gw.avgRssi ? `${gw.avgRssi} dBm` : '—'}
                   </td>
                   <td className="cc-mono">
                     {gw.avgSnr ? `${gw.avgSnr} dB` : '—'}
                   </td>
-                  <td className="cc-mono">{gw.multiGatewayMeters ?? 0}</td>
+                  <td>
+                    <span
+                      className={
+                        gw.status === 'degraded'
+                          ? 'cc-text-warn'
+                          : gw.status === 'reporting'
+                          ? 'cc-text-success'
+                          : 'cc-cell-mute'
+                      }
+                    >
+                      {gw.trendText}
+                    </span>
+                  </td>
                 </tr>
               ))}
             </tbody>

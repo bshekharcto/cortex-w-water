@@ -7,8 +7,13 @@ const isCloudDb =
   config.DATABASE_URL.includes('amazonaws.com') ||
   Boolean(process.env.VERCEL);
 
+// Newer pg drivers read ?sslmode=require in the URL as "verify the certificate", which overrides the ssl option below
+// and fails against the AWS RDS certificate ("self-signed certificate in certificate chain"). The ssl option is the
+// single place that decides, so the URL's sslmode is dropped.
+const connectionString = config.DATABASE_URL.replace(/([?&])sslmode=[^&]*&?/, '$1').replace(/[?&]$/, '');
+
 export const pool = new pg.Pool({
-  connectionString: config.DATABASE_URL,
+  connectionString,
   ssl: isCloudDb ? { rejectUnauthorized: false } : undefined,
   // Hosted Postgres (Neon) drops idle connections and can be slow to accept new ones, so:
   // How many queries can run at once. Left at the driver's default of 10: a test with 20 was no faster under the same

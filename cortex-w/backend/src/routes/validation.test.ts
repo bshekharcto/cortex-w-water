@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validId, validSite, pageParams, windowFromQuery } from './validation.js';
+import { validId, validSite, pageParams } from './validation.js';
 
 test('ids: plausible gateway/meter ids pass, junk and oversized values do not', () => {
   assert.equal(validId('506f9800000002a5'), '506f9800000002a5');
@@ -29,11 +29,4 @@ test('paging: bounded and defaulted', () => {
   assert.deepEqual(pageParams({ limit: '9999', offset: '-5' }, 100), { limit: 200, offset: 0 });
   assert.deepEqual(pageParams({ limit: '0', offset: '40' }, 20), { limit: 20, offset: 40 });
   assert.deepEqual(pageParams({ limit: 'abc', offset: 'x' }, 20), { limit: 20, offset: 0 });
-});
-
-test('window query: hours, days and custom ranges are parsed; bad ones throw', () => {
-  assert.equal(windowFromQuery({ hours: '6' }).key, 'h6');
-  assert.equal(windowFromQuery({ days: '30' }).key, 'd30');
-  assert.equal(windowFromQuery({ from: '2026-09-29', to: '2026-10-01' }).key, 'c_2026-09-29_2026-10-01');
-  assert.throws(() => windowFromQuery({ from: '2026-10-05', to: '2026-09-01' }));
 });

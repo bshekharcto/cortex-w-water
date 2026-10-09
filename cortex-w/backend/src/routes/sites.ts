@@ -1,21 +1,17 @@
 import { Router } from 'express';
-import { pool } from '../db/pool.js';
-import { requireClient } from '../services/clientContext.js';
+import { getSiteOptions, SessionExpiredError } from '../services/dashboardService.js';
 
 const router = Router();
 
-router.get('/', async (_req, res) => {
+// The sites the caller may filter by: the real site tree from the metadata mirror, limited to what the beta says the
+// caller can open. "All Sites" always comes first.
+router.get('/', async (req, res) => {
   try {
-    const ctx = requireClient();
-    // Seed mode reads the demo sites table; otherwise only the signed-in
-    // client's own sites, as reported by upstream for their token.
-    const rows = ctx.unscoped
-      ? (await pool.query('SELECT id, name FROM sites ORDER BY name')).rows
-      : [...ctx.sites].sort((a, b) => a.name.localeCompare(b.name));
-    res.json([{ id: 'ALL', name: 'All Sites' }, ...rows.map((r: any) => ({ id: String(r.id), name: r.name }))]);
+    const sites = await getSiteOptions(req.headers.authorization);
+    res.json([{ id: 'ALL', name: 'All Sites', parentId: null, label: 'All Sites' }, ...sites]);
   } catch (err: any) {
-    console.error('[sites] Failed to fetch sites:', err.message);
-    res.status(500).json({ error: 'Failed to fetch sites' });
+    if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
+    res.status(500).json({ error: 'Failed to fetch sites', message: err.message });
   }
 });
 

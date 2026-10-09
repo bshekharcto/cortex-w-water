@@ -19,7 +19,6 @@ export const dashboardSeed = {
     avgConsumptionPerMeterKL: 0.9,
     noSupply: 15_778,
     reverseFlowEvents: 0,
-    valveAbnormal: 1_010,
   },
   network: {
     configuredGateways: 18,       // from existing gateway summary visual
@@ -29,8 +28,6 @@ export const dashboardSeed = {
   },
   attention: [
     { severity: 'critical', issue: 'Gateway stopped reporting', entity: 'GW-Lima', site: 'BHUBANESWAR', ageHours: 72, link: '/app/command-center' },
-    { severity: 'high', issue: 'Battery abnormal', entity: '901 meters', site: 'BHUBANESWAR', ageHours: 24, link: '/app/ai/alarms' },
-    { severity: 'high', issue: 'Valve abnormal', entity: '1,010 meters', site: 'BHUBANESWAR', ageHours: 24, link: '/app/ai/alarms' },
     { severity: 'medium', issue: 'Meter clock anomaly', entity: '5 meters', site: 'BHUBANESWAR', ageHours: 24, link: '/app/ai/alarms' },
     { severity: 'medium', issue: 'Consumer/meter mapping missing', entity: '328 meters', site: 'BHUBANESWAR', ageHours: 48, link: '/app/consumer/households' },
     { severity: 'low', issue: 'Poor SNR', entity: '~60% of fleet', site: 'BHUBANESWAR', ageHours: 24, link: '/app/command-center' },

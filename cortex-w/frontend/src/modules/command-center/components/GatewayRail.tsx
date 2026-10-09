@@ -1,18 +1,12 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
-import { GATEWAY_SORT_OPTIONS, sortGateways, type GatewaySortKey } from '../utils/gatewaySort';
+import { useState, useMemo } from 'react';
 import { Search } from 'lucide-react';
 import { GatewayItem } from '../types/commandCenter.types';
-import { useNow, formatAgo } from '../utils/timeAgo';
-import { formatTrend } from '../utils/format';
 
 interface Props {
   gateways: GatewayItem[];
   selectedGatewayId: string | null;
   onSelectGateway: (id: string | null) => void;
   loading?: boolean;
-  /** On narrow screens the rail is a slide-over drawer; this says whether it is open. */
-  drawerOpen?: boolean;
-  onCloseDrawer?: () => void;
 }
 
 export function GatewayRail({
@@ -20,17 +14,12 @@ export function GatewayRail({
   selectedGatewayId,
   onSelectGateway,
   loading,
-  drawerOpen,
-  onCloseDrawer,
 }: Props) {
-  const nowMs = useNow();
   const [filter, setFilter] = useState<'ALL' | 'REPORTING' | 'DEGRADED' | 'STALE' | 'NO_TRAFFIC'>('ALL');
   const [railSearch, setRailSearch] = useState('');
-  const [sortKey, setSortKey] = useState<GatewaySortKey>('severity');
-  const listRef = useRef<HTMLDivElement>(null);
 
   const filteredList = useMemo(() => {
-    return sortGateways(gateways, sortKey).filter((gw) => {
+    return gateways.filter((gw) => {
       // Search
       if (railSearch) {
         const q = railSearch.toLowerCase();
@@ -44,27 +33,14 @@ export function GatewayRail({
       if (filter === 'NO_TRAFFIC') return gw.status === 'no-traffic';
       return true;
     });
-  }, [gateways, filter, railSearch, sortKey]);
-
-  // Keep the selected gateway visible when the selection, sort, or filter changes (the list is long and
-  // problem gateways sort to the top, so the selected one can otherwise sit out of sight). Deliberately not
-  // tied to the data refresh, so the list never jumps while someone is scrolling it.
-  useEffect(() => {
-    if (!selectedGatewayId || !listRef.current) return;
-    const el = listRef.current.querySelector<HTMLElement>(`[data-gw-id="${selectedGatewayId}"]`);
-    el?.scrollIntoView({ block: 'nearest' });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGatewayId, sortKey, filter, railSearch]);
+  }, [gateways, filter, railSearch]);
 
   return (
-    <div className={`cc-gateway-rail ${drawerOpen ? 'cc-gateway-rail--open' : ''}`} aria-label="Gateways">
+    <div className="cc-gateway-rail">
       <div className="cc-rail-header">
         <div className="cc-rail-title-row">
           <span className="cc-rail-title">GATEWAYS</span>
           <span className="cc-rail-count">{loading && gateways.length === 0 ? 'Syncing...' : `${gateways.length} known`}</span>
-          <button className="cc-icon-btn cc-rail-close" aria-label="Close gateway list" onClick={onCloseDrawer}>
-            ×
-          </button>
         </div>
 
         <div className="cc-rail-search-box">
@@ -77,19 +53,6 @@ export function GatewayRail({
             onChange={(e) => setRailSearch(e.target.value)}
           />
         </div>
-
-        <select
-          className="cc-rail-search-input cc-rail-sort"
-          aria-label="Sort gateways"
-          value={sortKey}
-          onChange={(e) => setSortKey(e.target.value as GatewaySortKey)}
-        >
-          {GATEWAY_SORT_OPTIONS.map((o) => (
-            <option key={o.key} value={o.key}>
-              Sort: {o.label}
-            </option>
-          ))}
-        </select>
 
         <div className="cc-rail-filters">
           {(['ALL', 'REPORTING', 'DEGRADED', 'STALE', 'NO_TRAFFIC'] as const).map((f) => (
@@ -104,7 +67,7 @@ export function GatewayRail({
         </div>
       </div>
 
-      <div className="cc-rail-list" ref={listRef}>
+      <div className="cc-rail-list">
         {loading && gateways.length === 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 8 }}>
             {[1, 2, 3, 4, 5, 6].map((i) => (
@@ -136,18 +99,7 @@ export function GatewayRail({
             <div
               key={gw.gatewayId}
               className={`cc-rail-item ${isSelected ? 'cc-rail-item--active' : ''}`}
-              data-gw-id={gw.gatewayId}
-              role="button"
-              tabIndex={0}
-              aria-pressed={isSelected}
-              aria-label={`Gateway ${gw.alias}, ${gw.status}`}
               onClick={() => onSelectGateway(isSelected ? null : gw.gatewayId)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  onSelectGateway(isSelected ? null : gw.gatewayId);
-                }
-              }}
             >
               <div className="cc-rail-item-top">
                 <div className="cc-rail-item-name-group">
@@ -155,13 +107,13 @@ export function GatewayRail({
                   <span className="cc-rail-item-alias">{gw.alias}</span>
                 </div>
                 {gw.status === 'reporting' && (
-                  <span className="cc-badge cc-badge--fresh">{formatAgo(gw.lastFrameDecodedAt, nowMs)}</span>
+                  <span className="cc-badge cc-badge--fresh">{gw.lastFrameText}</span>
                 )}
                 {gw.status === 'degraded' && (
-                  <span className="cc-badge cc-badge--warn">{formatTrend(gw.trendPct) || 'degraded'}</span>
+                  <span className="cc-badge cc-badge--warn">{gw.trendText}</span>
                 )}
                 {gw.status === 'stale' && (
-                  <span className="cc-badge cc-badge--stale">{formatAgo(gw.lastFrameDecodedAt, nowMs)}</span>
+                  <span className="cc-badge cc-badge--stale">{gw.lastFrameText}</span>
                 )}
                 {gw.status === 'no-traffic' && (
                   <span className="cc-badge cc-badge--mute">no traffic</span>
@@ -176,7 +128,7 @@ export function GatewayRail({
                 <span className="cc-metric-meters">
                   {gw.uniqueMeters} {gw.uniqueMeters === 1 ? 'meter' : 'meters'}
                 </span>
-                {gw.avgRssi != null && gw.avgSnr != null && (
+                {gw.avgRssi !== 0 && (
                   <span className="cc-metric-radio">
                     RSSI {gw.avgRssi} · SNR {gw.avgSnr}
                   </span>

@@ -21,8 +21,6 @@ export interface SeedAlarm {
 
 /** Spec 13.5 — seed alarm counts derived from 04 Sep telemetry */
 export const alarmSeed: SeedAlarm[] = [
-  { id: 'ALM-001', category: 'Device Health', rule: 'Battery Abnormal', severity: 'high', status: 'Open', entityType: 'meter', entityId: 'fleet', site: 'BHUBANESWAR', createdAt: '2026-09-04T10:00:00Z', description: 'Battery health reported as Abnormal', affectedCount: 901 },
-  { id: 'ALM-002', category: 'Device Health', rule: 'Valve Abnormal', severity: 'high', status: 'Open', entityType: 'meter', entityId: 'fleet', site: 'BHUBANESWAR', createdAt: '2026-09-04T10:00:00Z', description: 'Valve health reported as Abnormal', affectedCount: 1010 },
   { id: 'ALM-003', category: 'Communication', rule: 'Weak SNR', severity: 'medium', status: 'Open', entityType: 'meter', entityId: 'fleet', site: 'BHUBANESWAR', createdAt: '2026-09-04T10:00:00Z', description: 'SNR below -10 dB marginal threshold', affectedCount: 1580 },
   { id: 'ALM-004', category: 'Communication', rule: 'Weak RSSI', severity: 'medium', status: 'Open', entityType: 'meter', entityId: 'fleet', site: 'BHUBANESWAR', createdAt: '2026-09-04T10:00:00Z', description: 'RSSI below -90 dBm weak threshold', affectedCount: 800 },
   { id: 'ALM-005', category: 'Data Quality', rule: 'Meter Clock Anomaly', severity: 'medium', status: 'Open', entityType: 'meter', entityId: '0024004083', site: 'BHUBANESWAR', createdAt: '2026-09-04T10:00:00Z', description: 'MeterTimestamp is implausible (year 20142)' },

@@ -35,25 +35,12 @@ cog-core-api returns for the caller's own token, never from anything the browser
 **Adding a client needs no configuration here.** Create the client, its sites, meters and user
 in cog-core-api; the first login builds their inventory (a few minutes for a large client).
 
-## Scheduled sync (Vercel)
+## Data loading
 
-No password is stored anywhere. When a client's user signs in, the newest session token is
-saved in `client_sessions`, encrypted (AES-256-GCM, key `SESSION_ENCRYPTION_KEY`). The
-15-minute GitHub Actions job (`.github/workflows/telemetry-sync.yml`) calls
-`/api/command-center/sync-cron`, which re-validates each stored token with cog-core-api and
-syncs that client with it.
-
-- Each run is time-boxed (45s on Vercel, `SYNC_TIME_BUDGET_MS`), takes clients in rotation
-  (least recently attempted first), and leases each client in `client_sync_state` so
-  overlapping runs never sync the same client twice. A cut-off run continues on the next tick.
-- A token lasts about 7 days (set by cog-core-api; it has no renewal endpoint). If nobody from a
-  client signs in for longer, its scheduled sync stops. **Signing in heals it:** right after a
-  successful login the backend syncs that client in the background (kept alive with Vercel's
-  `waitUntil`), and every sync run checks the last `SYNC_BACKFILL_DAYS` (default 10) days and
-  fetches any day with no data, newest first. A lapse of up to 7 + 10 days therefore leaves no
-  gap once someone logs in; the Command Center, map, household and billing charts all recover
-  without anyone opening a particular page. The cron response and the job log flag sessions that
-  are expiring or expired. Logout deletes the stored token.
+This app does not pull telemetry from cog-core-api any more. The readings (`water_meter_readings_v2`) and the
+metadata mirror (`site_metadata`, `meter_metadata`, `geofence_metadata`) are filled by two cortex schedulers
+(`WaterMeterHistoryToRdsScheduler`, `WaterMetaDataSyncScheduler`), so there is no scheduled sync endpoint here.
+Client isolation for readings goes through `meter_metadata.tenant_id` (see `services/tenantScope.ts`).
 
 ## Deploying
 

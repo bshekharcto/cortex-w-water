@@ -4,7 +4,6 @@ import {
   convertLToM3,
   convertKlToM3,
   aggregateNodeKpis,
-  aggregateMeterKpis,
   validateDeviceInvariant,
 } from '../services/dashboardAggregation';
 import { dashboardDrilldownSeed } from '@/data/seed/dashboard/dashboardDrilldownSeed';
@@ -82,30 +81,6 @@ describe('Dashboard Drill-down Aggregations & Invariants', () => {
   });
 
   describe('Hierarchical Aggregations (generic over any node depth)', () => {
-    it('does not count the synthetic "Others" group as a configured area', () => {
-      const row = (id: string, synthetic?: boolean): NodeRow => ({
-        id, name: id, level: 2, parentId: 'p', parentName: 'P', hasChildren: false, meterCount: 10,
-        synthetic, totalDevices: 10, connected: 5, disconnected: 3, neverSeen: 2,
-        yesterdayFlowM3: 0, todayFlowM3: 0, monthToDateFlowM3: 0,
-      });
-      const kpis = aggregateNodeKpis([row('a'), row('b'), row('others:p', true)]);
-      expect(kpis.childAreaCount).toBe(2); // Others is excluded from the area count...
-      expect(kpis.totalDevices).toBe(30); // ...but its meters still count toward the totals
-    });
-
-    it('computes meter KPIs from the list it is given and leaves flow totals to the caller', () => {
-      const meters = [
-        { meterId: 'm1', connectivityStatus: 'CONNECTED' as const },
-        { meterId: 'm2', connectivityStatus: 'DISCONNECTED' as const },
-        { meterId: 'm3', connectivityStatus: 'NEVER_SEEN' as const },
-      ];
-      const kpis = aggregateMeterKpis(meters, { yesterdayFlowM3: 7 });
-      expect(kpis.totalDevices).toBe(3);
-      expect(kpis.connected + kpis.disconnected + kpis.neverSeen).toBe(3);
-      expect(kpis.yesterdayFlowM3).toBe(7);
-      expect(kpis.dataTimestamp).toBeUndefined(); // no timestamp is invented when no meter has one
-    });
-
     it('rolls up child nodes (e.g. DMAs under a zone) into parent KPIs correctly', () => {
       const mockChildren: NodeRow[] = [
         {

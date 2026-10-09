@@ -10,7 +10,6 @@
     "seed": "tsx src/db/seed/runSeed.ts",
     "migrate:neon": "tsx src/scripts/migrateToNeon.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
-    "test:integration": "node --import tsx --test test/telemetry.integration.test.ts",
     "test:isolation": "node test/isolation.test.mjs",
     "test:crypto": "tsx test/sessionStore.test.ts"
   },

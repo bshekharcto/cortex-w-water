@@ -1,7 +1,7 @@
 import { localDate } from '../services/localDate.js';
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
-import { requireClient } from '../services/clientContext.js';
+import { clientTenantIds, ownedMeterSql } from '../services/tenantScope.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { getAuthToken, getLiveGisData } from './gis.js';
@@ -223,22 +223,22 @@ router.get('/:id/detail', async (req, res) => {
         // reference); take the highest reading per day, not just whichever
         // packet arrived last.
         const readingsRes = await pool.query(
-          `SELECT DISTINCT ON (date_key) date_key, decoded_at, forward_flow_l
-           FROM raw_telemetry_packets
+          `SELECT DISTINCT ON (date_key) date_key, time, forward_flow_kl
+           FROM water_meter_readings_v2
            WHERE meter_id = $1
-             AND meter_id IN (SELECT meter_id FROM client_meter_owner WHERE client_key = $2)
-           ORDER BY date_key DESC, forward_flow_l DESC, decoded_at DESC
+             ${ownedMeterSql(2)}
+           ORDER BY date_key DESC, forward_flow_kl DESC, time DESC
            LIMIT 10`,
-          [meterIdForReadings, requireClient().key]
+          [meterIdForReadings, clientTenantIds()]
         );
         const realRows = readingsRes.rows.reverse(); // oldest -> newest for charting
         dailyReadings = realRows.map((r: any, idx: number) => {
-          // forward_flow_l column stores KL (kilolitres) natively — 1 KL === 1 m3
-          const readingKl = Number(r.forward_flow_l) || 0;
-          const prevReadingKl = idx > 0 ? Number(realRows[idx - 1].forward_flow_l) || 0 : readingKl;
+          // forward_flow_kl is in KL (kilolitres) — 1 KL === 1 m3
+          const readingKl = Number(r.forward_flow_kl) || 0;
+          const prevReadingKl = idx > 0 ? Number(realRows[idx - 1].forward_flow_kl) || 0 : readingKl;
           const consKl = Math.max(0, readingKl - prevReadingKl);
           const consL = Math.round(consKl * 1000);
-          const dateStr = new Date(r.decoded_at).toISOString();
+          const dateStr = new Date(r.time).toISOString();
           return {
             date: dateStr.split('T')[0],
             shortDate: dateStr.slice(5, 10),

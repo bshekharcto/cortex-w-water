@@ -4,7 +4,7 @@ import { config } from '../config/env.js';
 import { pool } from '../db/pool.js';
 import { localDate } from '../services/localDate.js';
 import { requireClient, scopeSiteIds, rootSites } from '../services/clientContext.js';
-import { getInventory } from '../services/assetInventory.js';
+import { clientTenantIds } from '../services/tenantScope.js';
 
 const router = Router();
 
@@ -91,10 +91,9 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
         -- packet happened to arrive last — a lower-valued same-day retry
         -- would otherwise silently show as a too-low "current reading".
         SELECT DISTINCT ON (meter_id)
-          meter_id, decoded_at, forward_flow_l AS current_reading_kl,
-          battery_voltage, valve_closed, valve_health, dev_eui
-        FROM raw_telemetry_packets
-        ORDER BY meter_id, date_key DESC, forward_flow_l DESC, decoded_at DESC
+          meter_id, decoded_at, forward_flow_kl AS current_reading_kl, dev_eui
+        FROM water_meter_readings_v2
+        ORDER BY meter_id, date_key DESC, forward_flow_kl DESC, time DESC
       ),
       yesterday AS (
         SELECT meter_id, total_consumption_kl AS yesterday_kl
@@ -113,8 +112,7 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
         WHERE summary_month = DATE_TRUNC('month', $1::date)::date
       )
       SELECT
-        lr.meter_id, lr.decoded_at AS last_seen, lr.current_reading_kl,
-        lr.battery_voltage, lr.valve_closed, lr.valve_health, lr.dev_eui,
+        lr.meter_id, lr.decoded_at AS last_seen, lr.current_reading_kl, lr.dev_eui,
         COALESCE(y.yesterday_kl, 0) AS yesterday_kl,
         COALESCE(l10.last10d_kl, 0) AS last10d_kl,
         COALESCE(m.month_kl, 0) AS month_kl
@@ -133,7 +131,7 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
   const locations = typeof locRes.data === 'object' && locRes.data !== null ? (locRes.data as Record<string, any>) : {};
   const healthList = Array.isArray(healthRes.data) ? healthRes.data : [];
 
-  // Build lookup map for real meter telemetry (readings, consumption, battery, valve) from PostgreSQL
+  // Build lookup map for real meter telemetry (readings, consumption) from PostgreSQL
   const dbMeterDataMap = new Map<string, any>();
   if (dbTelemetryRes && Array.isArray(dbTelemetryRes.rows)) {
     dbTelemetryRes.rows.forEach((r: any) => {
@@ -142,9 +140,6 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       const entry = {
         lastSeen: iso,
         currentReadingKl: r.current_reading_kl !== null ? Number(r.current_reading_kl) : null,
-        batteryVoltage: r.battery_voltage !== null ? Number(r.battery_voltage) : null,
-        valveClosed: r.valve_closed,
-        valveHealth: r.valve_health || null,
         devEui: r.dev_eui || null,
         yesterdayKl: Number(r.yesterday_kl) || 0,
         last10dKl: Number(r.last10d_kl) || 0,
@@ -253,12 +248,6 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       }
     }
 
-    // batteryVoltage: prefer the real value from raw_telemetry_packets; only
-    // fall back to null (not a guessed number) if no reading exists yet.
-    const batteryVoltage = dbData?.batteryVoltage ?? null;
-    const valveClosed = dbData?.valveClosed ?? null;
-    const valveHealth = dbData?.valveHealth ?? null;
-
     return {
       id: h.meterId || String(h.assetId),
       assetId: h.assetId,
@@ -279,13 +268,6 @@ export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL'
       status,
       rssi,
       snr: Math.round((rssi + 120) / 4),
-      batteryStatus: h.batteryStatus === 'OK' ? 'Normal' : 'Abnormal',
-      batteryVoltage,
-      // No real battery-percentage curve exists for this hardware; report
-      // voltage only rather than inventing a percentage from a boolean.
-      batteryPercentage: null,
-      valveStatus: valveHealth,
-      valveState: valveClosed === null ? null : valveClosed ? 'Closed' : 'Open',
       lastSeen: finalLastSeen,
       recencyBucket,
       // No real pipe-diameter/connection-type/install-date source exists in
@@ -425,11 +407,10 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     // would otherwise return their consumer details. 404, not 403, so ids
     // can't be probed.
     if (!requireClient().unscoped) {
-      await getInventory();
       const owns = Number.isInteger(Number(assetId))
         ? await pool.query(
-            `SELECT 1 FROM client_meter_owner WHERE client_key = $1 AND asset_id = $2 AND ($3 = '' OR meter_id = $3)`,
-            [requireClient().key, Number(assetId), meterId]
+            `SELECT 1 FROM meter_metadata WHERE tenant_id = ANY($1::bigint[]) AND asset_id = $2 AND ($3 = '' OR meter_id = $3)`,
+            [clientTenantIds(), Number(assetId), meterId]
           )
         : { rowCount: 0 };
       if (owns.rowCount === 0) return res.status(404).json({ error: 'Meter not found' });
@@ -507,25 +488,25 @@ router.get('/meter-detail/:assetId', async (req, res) => {
         // date_key with an incrementing fcnt, and some of those retries
         // decode to a garbled, lower reading than earlier packets the same
         // day (confirmed: a cumulative totalizer can't legitimately drop
-        // mid-day). Ordering by forward_flow_l DESC before decoded_at DESC
+        // mid-day). Ordering by forward_flow_kl DESC before time DESC
         // picks the highest (correct) reading per day instead of whichever
         // packet happened to arrive last — verified against a known-correct
         // reference for meter 0024005170 across 10 days.
         const readingsRes = await pool.query(
-          `SELECT DISTINCT ON (date_key) date_key, decoded_at, forward_flow_l
-           FROM raw_telemetry_packets
+          `SELECT DISTINCT ON (date_key) date_key, time, forward_flow_kl
+           FROM water_meter_readings_v2
            WHERE meter_id = $1
-           ORDER BY date_key DESC, forward_flow_l DESC, decoded_at DESC
+           ORDER BY date_key DESC, forward_flow_kl DESC, time DESC
            LIMIT 10`,
           [meterIdForReadings]
         );
         const realRows = readingsRes.rows.reverse();
         dailyReadings = realRows.map((r: any, idx: number) => {
-          const readingKl = Number(r.forward_flow_l) || 0;
-          const prevReadingKl = idx > 0 ? Number(realRows[idx - 1].forward_flow_l) || 0 : readingKl;
+          const readingKl = Number(r.forward_flow_kl) || 0;
+          const prevReadingKl = idx > 0 ? Number(realRows[idx - 1].forward_flow_kl) || 0 : readingKl;
           const consKl = Math.max(0, readingKl - prevReadingKl);
           const consL = Math.round(consKl * 1000);
-          const dateStr = new Date(r.decoded_at).toISOString();
+          const dateStr = new Date(r.time).toISOString();
           return {
             date: dateStr.split('T')[0],
             shortDate: dateStr.slice(5, 10),
@@ -568,7 +549,7 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     const yesterdayRow = dailyReadings.find((r) => r.date === yesterdayIso);
     const yesterdayConsumptionM3 = yesterdayRow ? yesterdayRow.consumptionM3 : (latest?.consumption ?? null);
 
-    // Real month-to-date consumption, computed directly from raw_telemetry_packets
+    // Real month-to-date consumption, computed directly from water_meter_readings_v2
     // (the daily/monthly rollup tables exist but nothing populates them yet —
     // see [[production-telemetry-schema-and-ingestion]] — so this sums actual
     // day-to-day deltas instead of reading from an always-empty summary table).
@@ -577,17 +558,17 @@ router.get('/meter-detail/:assetId', async (req, res) => {
       try {
         const monthRes = await pool.query(
           `WITH readings AS (
-             SELECT DISTINCT ON (date_key) date_key, date_key::date AS day, forward_flow_l
-             FROM raw_telemetry_packets
+             SELECT DISTINCT ON (date_key) date_key, date_key AS day, forward_flow_kl
+             FROM water_meter_readings_v2
              WHERE meter_id = $1
                AND date_key::date >= (date_trunc('month', $2::date)::date - INTERVAL '1 day')
              -- same-day retry packets can decode to a garbled lower reading
              -- than an earlier packet that day; take the highest (correct)
              -- reading per day, not just whichever arrived last.
-             ORDER BY date_key, forward_flow_l DESC, decoded_at DESC
+             ORDER BY date_key, forward_flow_kl DESC, time DESC
            ),
            deltas AS (
-             SELECT day, forward_flow_l - LAG(forward_flow_l) OVER (ORDER BY day) AS delta_kl
+             SELECT day, forward_flow_kl - LAG(forward_flow_kl) OVER (ORDER BY day) AS delta_kl
              FROM readings
            )
            SELECT COALESCE(SUM(GREATEST(delta_kl, 0)), 0)::numeric AS month_kl
@@ -610,12 +591,8 @@ router.get('/meter-detail/:assetId', async (req, res) => {
       readingDate: latest?.date || null,
       consumption: yesterdayConsumptionM3 ?? 0,
       monthToDateM3,
-      batteryVoltage: latest?.batteryVoltage ?? null,
-      batteryStatus: latest?.batteryStatus ?? null,
       signalRssi: latest?.rssi ?? null,
       signalSnr: latest?.snr ?? null,
-      valveStatus: latest?.valveStatus ?? null,
-      valveClosed: latest?.valveClosed ?? null,
       lastSeen: latest?.lastSeen || asset?.createdDate || null,
       consumer: {
         id: asset?.household?.id || null,

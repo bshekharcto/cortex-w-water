@@ -4,93 +4,59 @@ import {
   MeterTelemetryItem,
   RawFrameItem,
   NetworkKpiData,
-  NetworkHealthThresholds,
-  TrafficSeries,
-  RadioHealthData,
 } from '@/modules/command-center/types/commandCenter.types';
 
+/** A custom window: days at the site as YYYY-MM-DD, both inclusive. */
+export interface CustomRange {
+  from: string;
+  to: string;
+}
+
 export interface TelemetrySummaryResponse {
-  dateRange?: { fromDate: string; toDate: string; days: number; fromTs: string; toTs: string; window: string };
+  date: string;
+  dateRange?: { fromDate: string; toDate: string; days: number }; // the days the numbers cover, days at the site
   generatedAt: string;
   isCached: boolean;
-  kpis: NetworkKpiData;
-  thresholds: NetworkHealthThresholds;
-  /** True while a manual Refresh is still pulling fresh packets in the background. */
-  refreshing?: boolean;
+  kpis: NetworkKpiData & {
+    reverseFlowCount?: number;
+  };
   gateways: GatewayItem[];
+  allMetersCount: number;
   recentFrames: RawFrameItem[];
-  /** The upstream call behind the unique-meter numbers (sites and dates), for checking against the report. */
-  upstream?: { siteIds: string; fromDate: string; toDate: string; totalUniqueMeters: number } | null;
+  hourlyActivity: Array<{ hour: string; count: number }>;
+  radioHealth: {
+    avgRssi: number;
+    avgSnr: number;
+    rssiBuckets: { excellent: number; good: number; fair: number; poor: number };
+    snrBuckets: { excellent: number; good: number; fair: number; poor: number };
+  };
 }
 
-/** Time window sent to the backend; the server resolves it against its own clock. */
-export interface WindowParams {
-  hours?: number;
-  days?: number;
-  from?: string; // YYYY-MM-DD (custom)
-  to?: string;
-}
-
-/** Stable cache key for a window (mirrors the backend's window key). */
-export function windowKey(w: WindowParams): string {
-  if (w.from && w.to) return `c_${w.from}_${w.to}`;
-  if (w.hours) return `h${w.hours}`;
-  return `d${w.days ?? 7}`;
-}
-
-function windowQuery(w: WindowParams): Record<string, string | number> {
-  if (w.from && w.to) return { from: w.from, to: w.to };
-  if (w.hours) return { hours: w.hours };
-  return { days: w.days ?? 7 };
-}
-
-const LOCAL_STORAGE_CACHE_KEY_PREFIX = 'cortex_w_cc_summary_cache_v2';
-const LOCAL_CACHE_MAX_AGE_MS = 60 * 60 * 1000;
-const LOCAL_CACHE_MAX_ENTRIES = 8; // site x window combinations kept; custom ranges would otherwise pile up
-const LOCAL_CACHE_FRAMES = 20; // the cache only paints the first screen; the live fetch brings the rest
+const LOCAL_STORAGE_CACHE_KEY_PREFIX = 'cortex_w_cc_summary_cache';
 
 /**
- * Retrieves a recent cached summary from localStorage for an instant first render
- * (never older than an hour, so a stale day can't be shown as current).
+ * Retrieves cached summary from localStorage for 0ms initial render
  */
-export function getLocalCachedSummary(key: string, siteId: string = 'ALL'): TelemetrySummaryResponse | null {
+export function getLocalCachedSummary(days: number = 7, date?: string, siteId: string = 'ALL'): TelemetrySummaryResponse | null {
   try {
-    const raw = localStorage.getItem(`${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${key}_${siteId}`);
+    const key = `${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${days}_${siteId}`;
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
     const parsed: TelemetrySummaryResponse = JSON.parse(raw);
-    const age = Date.now() - new Date(parsed.generatedAt).getTime();
-    if (!Number.isFinite(age) || age > LOCAL_CACHE_MAX_AGE_MS) return null;
+    if (date && parsed.date && parsed.date !== date) return null;
     return parsed;
   } catch {
     return null;
   }
 }
 
-/** Keeps only the newest few cached summaries so the browser's storage quota is never exhausted. */
-function pruneLocalCache(): void {
-  const entries: Array<{ k: string; at: number }> = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (!k || !k.startsWith(LOCAL_STORAGE_CACHE_KEY_PREFIX)) continue;
-    let at = 0;
-    try {
-      at = Date.parse(JSON.parse(localStorage.getItem(k) ?? '{}').generatedAt) || 0;
-    } catch {
-      // unreadable entry: treated as oldest and dropped
-    }
-    entries.push({ k, at });
-  }
-  entries.sort((a, b) => b.at - a.at).slice(LOCAL_CACHE_MAX_ENTRIES).forEach((e) => localStorage.removeItem(e.k));
-}
-
 /**
  * Persists summary to localStorage for subsequent instant loads
  */
-export function setLocalCachedSummary(summary: TelemetrySummaryResponse, key: string, siteId: string = 'ALL'): void {
+export function setLocalCachedSummary(summary: TelemetrySummaryResponse, days: number = 7, siteId: string = 'ALL'): void {
   try {
-    const slim = { ...summary, recentFrames: summary.recentFrames.slice(0, LOCAL_CACHE_FRAMES) };
-    localStorage.setItem(`${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${key}_${siteId}`, JSON.stringify(slim));
-    pruneLocalCache();
+    const key = `${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${days}_${siteId}`;
+    localStorage.setItem(key, JSON.stringify(summary));
   } catch (err) {
     // In case localStorage is full or restricted, gracefully ignore
     console.warn('[commandCenterApi] LocalStorage cache write failed:', err);
@@ -98,187 +64,144 @@ export function setLocalCachedSummary(summary: TelemetrySummaryResponse, key: st
 }
 
 /**
- * Fetches the available sites
+ * Fetches the sites the user may filter by (the real site tree, "All Sites" first).
  */
-export async function fetchSites(): Promise<Array<{ id: string; name: string }>> {
-  return apiRequest<Array<{ id: string; name: string }>>('/command-center/sites', { method: 'GET' });
+export async function fetchSites(): Promise<Array<{ id: string; name: string; parentId?: string | null }>> {
+  try {
+    const res = await apiRequest<Array<{ id: string; name: string; parentId?: string | null }>>('/sites', { method: 'GET' });
+    if (Array.isArray(res) && res.length > 0) return res;
+  } catch (err) {
+    console.warn('[commandCenterApi] Failed to fetch sites:', err);
+  }
+  return [{ id: 'ALL', name: 'All Sites' }];
 }
 
 /**
  * Fetches the aggregated live telemetry summary from the BFF backend
  */
 export async function fetchCommandCenterSummary(
-  win: WindowParams,
+  days: number = 7,
+  date?: string,
   refresh: boolean = false,
   siteId: string = 'ALL',
-  signal?: AbortSignal
+  custom?: CustomRange
 ): Promise<TelemetrySummaryResponse> {
-  const query: Record<string, string | number | boolean> = { ...windowQuery(win) };
+  const query: Record<string, string | number | boolean> = { days };
+  if (date) query.date = date; // only to look back from an earlier day; by default it is today at the site
+  if (custom) {
+    query.from = custom.from;
+    query.to = custom.to;
+  }
   if (refresh) query.refresh = true;
   if (siteId && siteId !== 'ALL') query.siteId = siteId;
 
   const data = await apiRequest<TelemetrySummaryResponse>('/command-center/summary', {
     method: 'GET',
     query,
-    signal,
   });
 
-  setLocalCachedSummary({ ...data, refreshing: false }, windowKey(win), siteId);
+  // Save to client cache keyed by days and siteId
+  setLocalCachedSummary(data, days, siteId);
   return data;
 }
 
-
 /**
- * Latest frame per meter for one gateway (loaded on selection; not part of the summary payload)
+ * Fetches the latest live frame feed
  */
-export async function fetchGatewayMeters(gatewayId: string, win: WindowParams, signal?: AbortSignal): Promise<MeterTelemetryItem[]> {
-  return apiRequest<MeterTelemetryItem[]>(`/command-center/gateways/${encodeURIComponent(gatewayId)}/meters`, {
+export async function fetchLiveTelemetryFeed(
+  date?: string,
+  limit: number = 100
+): Promise<RawFrameItem[]> {
+  return apiRequest<RawFrameItem[]>('/command-center/feed', {
     method: 'GET',
-    query: windowQuery(win),
-    signal,
+    query: { ...(date ? { date } : {}), limit },
   });
 }
 
+/** The window and site a per-gateway request covers. */
+export interface GatewayScope {
+  days: number;
+  custom?: CustomRange;
+  siteId?: string;
+}
+
+function scopeQuery(scope: GatewayScope): Record<string, string | number> {
+  return {
+    days: scope.days,
+    ...(scope.siteId && scope.siteId !== 'ALL' ? { siteId: scope.siteId } : {}),
+    ...(scope.custom ? { from: scope.custom.from, to: scope.custom.to } : {}),
+  };
+}
+
+export interface GatewayRadioHealthData {
+  frames: number;
+  rssi: { strong: number; good: number; weak: number; critical: number };
+  snr: { excellent: number; good: number; marginal: number; poor: number };
+}
+
+export type GatewayHourlyData = Array<{ hour: string; normal: number; degraded: number }>;
+
+/** How the frames one gateway received split into RSSI and SNR bands. */
+export async function fetchGatewayRadioHealth(gatewayId: string, scope: GatewayScope): Promise<GatewayRadioHealthData> {
+  return apiRequest<GatewayRadioHealthData>(`/command-center/gateways/${encodeURIComponent(gatewayId)}/radio-health`, {
+    method: 'GET',
+    query: scopeQuery(scope),
+  });
+}
+
+/** Frames one gateway received by hour of the day; degraded = weak RSSI or poor SNR. */
+export async function fetchGatewayHourly(gatewayId: string, scope: GatewayScope): Promise<GatewayHourlyData> {
+  return apiRequest<GatewayHourlyData>(`/command-center/gateways/${encodeURIComponent(gatewayId)}/hourly`, {
+    method: 'GET',
+    query: scopeQuery(scope),
+  });
+}
+
+export type MeterFilterKey = 'ALL' | 'LIVE' | 'STALE' | 'WEAK_RSSI' | 'POOR_SNR' | 'MULTI_GW';
+
+export interface GatewayMetersPage {
+  content: MeterTelemetryItem[];
+  page: number;
+  size: number;
+  total: number;
+  totalPages: number;
+}
+
+/**
+ * One page of the meters a gateway heard. Filtering and paging happen on the server, so the table only ever
+ * receives `size` rows.
+ */
+export async function fetchGatewayMeters(
+  gatewayId: string,
+  opts: { days: number; page: number; size: number; filter: MeterFilterKey; custom?: CustomRange; siteId?: string }
+): Promise<GatewayMetersPage> {
+  return apiRequest<GatewayMetersPage>(`/command-center/gateways/${encodeURIComponent(gatewayId)}/meters`, {
+    method: 'GET',
+    query: {
+      days: opts.days,
+      page: opts.page,
+      size: opts.size,
+      filter: opts.filter,
+      ...(opts.siteId && opts.siteId !== 'ALL' ? { siteId: opts.siteId } : {}),
+      ...(opts.custom ? { from: opts.custom.from, to: opts.custom.to } : {}),
+    },
+  });
+}
+
+/** Meters whose id or DevEUI contains `q` (at least 3 characters), each with the gateway that heard it last. */
 export async function searchMeters(
   q: string,
-  win: WindowParams,
-  signal?: AbortSignal
-): Promise<Array<{ gatewayId: string; meter: MeterTelemetryItem }>> {
-  return apiRequest(`/command-center/meters/search`, {
+  days: number = 7,
+  custom?: CustomRange,
+  siteId?: string
+): Promise<Array<MeterTelemetryItem & { gatewayId: string }>> {
+  return apiRequest<Array<MeterTelemetryItem & { gatewayId: string }>>('/command-center/meters/search', {
     method: 'GET',
-    query: { q, ...windowQuery(win) },
-    signal,
+    query: {
+      q,
+      days,
+      ...(siteId && siteId !== 'ALL' ? { siteId } : {}),
+      ...(custom ? { from: custom.from, to: custom.to } : {}),
+    },
   });
-}
-
-export type MeterStatusFilter = 'live' | 'stale' | 'silent';
-
-export interface FleetMetersPage {
-  total: number;
-  limit: number;
-  offset: number;
-  items: MeterTelemetryItem[];
-  /** Values present in the window/site, for the DR and frequency dropdowns. */
-  facets: { dr: number[]; frequency: number[] };
-}
-
-/**
- * Fleet-wide meter list (each meter's latest frame), server-side searched, filtered and paginated.
- */
-export async function fetchFleetMeters(opts: {
-  win: WindowParams;
-  siteId: string;
-  q?: string;
-  status?: MeterStatusFilter;
-  dr?: number;
-  frequency?: number;
-  confirmed?: boolean;
-  limit?: number;
-  offset?: number;
-  signal?: AbortSignal;
-}): Promise<FleetMetersPage> {
-  const query: Record<string, string | number> = { ...windowQuery(opts.win), limit: opts.limit ?? 100, offset: opts.offset ?? 0 };
-  if (opts.siteId && opts.siteId !== 'ALL') query.siteId = opts.siteId;
-  if (opts.q) query.q = opts.q;
-  if (opts.status) query.status = opts.status;
-  if (opts.dr !== undefined) query.dr = opts.dr;
-  if (opts.frequency !== undefined) query.frequency = opts.frequency;
-  if (opts.confirmed !== undefined) query.confirmed = String(opts.confirmed);
-  return apiRequest<FleetMetersPage>('/command-center/meters', { method: 'GET', query, signal: opts.signal });
-}
-
-export interface FramesPage {
-  total: number;
-  limit: number;
-  offset: number;
-  items: RawFrameItem[];
-}
-
-/** Newest frames received through one gateway in the window (paginated, newest first). */
-export async function fetchGatewayFrames(
-  gatewayId: string,
-  win: WindowParams,
-  opts: { limit?: number; offset?: number; signal?: AbortSignal } = {}
-): Promise<FramesPage> {
-  return apiRequest<FramesPage>(`/command-center/gateways/${encodeURIComponent(gatewayId)}/frames`, {
-    method: 'GET',
-    query: { ...windowQuery(win), limit: opts.limit ?? 100, offset: opts.offset ?? 0 },
-    signal: opts.signal,
-  });
-}
-
-/** Frames from one meter in the window, across every gateway that heard it (paginated, newest first). */
-export async function fetchMeterFrames(
-  meterId: string,
-  win: WindowParams,
-  opts: { limit?: number; offset?: number; signal?: AbortSignal } = {}
-): Promise<FramesPage> {
-  return apiRequest<FramesPage>(`/command-center/meters/${encodeURIComponent(meterId)}/frames`, {
-    method: 'GET',
-    query: { ...windowQuery(win), limit: opts.limit ?? 20, offset: opts.offset ?? 0 },
-    signal: opts.signal,
-  });
-}
-
-/** Newest frames across the fleet or one site (paginated): "Load more" in the live feed. */
-export async function fetchFleetFrames(
-  win: WindowParams,
-  siteId: string,
-  opts: { limit?: number; offset?: number; signal?: AbortSignal } = {}
-): Promise<FramesPage> {
-  const query: Record<string, string | number> = { ...windowQuery(win), limit: opts.limit ?? 100, offset: opts.offset ?? 0 };
-  if (siteId && siteId !== 'ALL') query.siteId = siteId;
-  return apiRequest<FramesPage>('/command-center/frames', { method: 'GET', query, signal: opts.signal });
-}
-
-/** Frames and distinct meters per time bucket, with the previous equal period, for a gateway, site or the fleet. */
-export async function fetchTraffic(
-  win: WindowParams,
-  scope: { siteId: string; gatewayId?: string },
-  signal?: AbortSignal
-): Promise<TrafficSeries> {
-  const query: Record<string, string | number> = { ...windowQuery(win) };
-  if (scope.siteId && scope.siteId !== 'ALL') query.siteId = scope.siteId;
-  if (scope.gatewayId) query.gatewayId = scope.gatewayId;
-  return apiRequest<TrafficSeries>('/command-center/traffic', { method: 'GET', query, signal });
-}
-
-/** RSSI/SNR distributions, DR, frequency and the weakest/strongest meters. */
-export async function fetchRadioHealth(
-  win: WindowParams,
-  scope: { siteId: string; gatewayId?: string },
-  signal?: AbortSignal
-): Promise<RadioHealthData> {
-  const query: Record<string, string | number> = { ...windowQuery(win) };
-  if (scope.siteId && scope.siteId !== 'ALL') query.siteId = scope.siteId;
-  if (scope.gatewayId) query.gatewayId = scope.gatewayId;
-  return apiRequest<RadioHealthData>('/command-center/radio', { method: 'GET', query, signal });
-}
-
-export interface CommandCenterHealth {
-  generatedAt: string;
-  sync: { lastAttemptAt: string | null; lastCompleteAt: string | null; lastStatus: string | null };
-  latestStoredFrameAt: string | null;
-  session: { status: 'ok' | 'expiring' | 'expired'; expiresAt: string } | null;
-  /** True when the scheduled sync hasn't completed for over an hour; null when it has never run. */
-  syncBehind: boolean | null;
-}
-
-/** How current the stored data is for the signed-in client (scheduled sync and session health). */
-export async function fetchCommandCenterHealth(signal?: AbortSignal): Promise<CommandCenterHealth> {
-  return apiRequest<CommandCenterHealth>('/command-center/health', { method: 'GET', signal });
-}
-
-/** One meter by exact Meter ID / DevEUI (its latest frame in the window); null when it has no frames there. */
-export async function fetchMeter(
-  meterId: string,
-  win: WindowParams,
-  signal?: AbortSignal
-): Promise<{ gatewayId: string; meter: MeterTelemetryItem } | null> {
-  try {
-    return await apiRequest(`/command-center/meters/${encodeURIComponent(meterId)}`, { method: 'GET', query: windowQuery(win), signal });
-  } catch (err) {
-    if ((err as { status?: number })?.status === 404) return null;
-    throw err;
-  }
 }

@@ -1,5 +1,4 @@
-import type { Request, Response } from 'express';
-import { resolveWindow, type TelemetryWindow } from '../services/telemetryDbService.js';
+import type { Response } from 'express';
 
 const ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 
@@ -12,22 +11,6 @@ export function validId(v: unknown): string | null {
 export function validSite(v: unknown): string | null {
   if (v === undefined || v === '') return 'ALL';
   return typeof v === 'string' && (v === 'ALL' || /^\d{1,12}$/.test(v)) ? v : null;
-}
-
-/** Parses ?hours= | ?days= | ?from=&to= into a window resolved against the server clock. */
-export function windowFromQuery(q: Record<string, unknown>): TelemetryWindow {
-  const num = (v: unknown) => (v === undefined || v === '' ? undefined : Number(v));
-  return resolveWindow({ hours: num(q.hours), days: num(q.days), from: q.from as string, to: q.to as string });
-}
-
-/** The requested window, or answers 400 itself and returns null (a bad window is the client's fault). */
-export function windowOr400(req: Request, res: Response): TelemetryWindow | null {
-  try {
-    return windowFromQuery(req.query);
-  } catch (err) {
-    res.status(400).json({ error: 'Invalid time window', message: (err as Error).message });
-    return null;
-  }
 }
 
 /** Page size/offset with sane bounds. */

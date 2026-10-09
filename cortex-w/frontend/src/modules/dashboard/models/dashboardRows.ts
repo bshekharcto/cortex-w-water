@@ -9,8 +9,6 @@ export interface NodeRow {
   parentId: string | null;
   parentName: string | null;
   hasChildren: boolean;
-  /** A backend-made grouping ("Others"), not a real site-tree area — don't count it as a configured area. */
-  synthetic?: boolean;
   totalDevices: number;
   connected: number;
   disconnected: number;
@@ -20,17 +18,21 @@ export interface NodeRow {
   monthToDateFlowM3: number;
   meterCount: number;
   dataTimestamp?: string;
+  dataLocalTime?: string;        // when the numbers were built, as clock time at the area's site
 }
 
 export interface MeterRow {
   assetId?: number | null;       // real upstream asset id — required to look up live meter detail
   devEui?: string | null;        // real LoRaWAN DevEUI, looked up from synced Postgres telemetry — null if not yet synced
   meterId: string;               // physical meter number
+  meterType?: string;
   consumerId?: string;
   consumerName?: string;
   address?: string;
-  totalizerM3?: number | null;   // latest cumulative reading — null when no source has one (never 0)
+  meterSize?: string;
+  totalizerM3?: number;          // latest cumulative reading
   latestReadingAt?: string;      // ISO timestamp
+  latestReadingLocal?: string;   // the same moment as clock time at the meter's site
   connectivityStatus: 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN';
   subDmaName?: string;
   distanceMeters?: number;

@@ -1,11 +1,22 @@
 import { z } from 'zod';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 
 if (existsSync('.env')) {
   try {
     process.loadEnvFile('.env');
   } catch {
-    // ignore
+    // process.loadEnvFile needs Node 20.12+; on older Node read the file by hand (KEY=value lines, # comments,
+    // optional quotes). Variables already set in the environment win, as with loadEnvFile.
+    try {
+      for (const line of readFileSync('.env', 'utf8').split(/\r?\n/)) {
+        const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+        if (!m || line.trim().startsWith('#')) continue;
+        const value = m[2].replace(/^(['"])(.*)\1$/, '$2');
+        if (process.env[m[1]] === undefined) process.env[m[1]] = value;
+      }
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -99,7 +110,6 @@ if (parsed.NODE_ENV === 'production') {
   if (parsed.CORS_ORIGIN.split(',').some((o) => o.trim() === '*')) {
     problems.push('CORS_ORIGIN must list explicit origins, not "*"');
   }
-  if (!parsed.CRON_SECRET) problems.push('CRON_SECRET is required');
   if (!parsed.SESSION_ENCRYPTION_KEY) problems.push('SESSION_ENCRYPTION_KEY is required (stored sessions drive scheduled sync)');
   if (problems.length > 0) {
     throw new Error(`Insecure production configuration:\n - ${problems.join('\n - ')}`);

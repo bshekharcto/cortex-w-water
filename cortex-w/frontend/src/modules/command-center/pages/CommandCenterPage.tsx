@@ -1,11 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle } from 'lucide-react';
-import { EmptyState } from '@/components/empty-state/EmptyState';
-import { ThresholdsProvider, WindowLabelProvider } from '../utils/thresholds';
-import { describeError, isAbortError } from '../utils/errors';
-import { validateCustomRange } from '../utils/customRange';
-import { parseUrlState, buildUrlSearch } from '../utils/urlState';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import '../styles/commandCenter.css';
 
 // Components
@@ -14,11 +7,8 @@ import { NetworkKpiStrip } from '../components/NetworkKpiStrip';
 import { GatewayRail } from '../components/GatewayRail';
 import { SelectedGatewayHeader } from '../components/SelectedGatewayHeader';
 import { GatewayMetersTable } from '../components/GatewayMetersTable';
-import { FleetMetersTable } from '../components/FleetMetersTable';
-import { GatewayFramesPanel } from '../components/GatewayFramesPanel';
-import { MeterFramesView } from '../components/MeterFramesView';
-import { FrameDetailDrawer } from '../components/FrameDetailDrawer';
-import { GatewayTrafficView } from '../components/GatewayTrafficView';
+import { GatewayFramesTable } from '../components/GatewayFramesTable';
+import { GatewayTrafficChart } from '../components/GatewayTrafficChart';
 import { GatewayRadioHealth } from '../components/GatewayRadioHealth';
 import { AllGatewayComparison } from '../components/AllGatewayComparison';
 import { MeterInspector } from '../components/MeterInspector';
@@ -27,328 +17,167 @@ import { LiveNetworkFeed } from '../components/LiveNetworkFeed';
 // Live API & Types
 import {
   fetchCommandCenterSummary,
-  fetchSites,
   fetchGatewayMeters,
-  searchMeters,
-  fetchMeter,
-  windowKey,
-  WindowParams,
+  fetchSites,
   getLocalCachedSummary,
+  searchMeters,
+  CustomRange,
+  GatewayMetersPage,
+  MeterFilterKey,
   TelemetrySummaryResponse,
 } from '@/services/api/commandCenterApi';
-import { fetchCommandCenterHealth, type CommandCenterHealth } from '@/services/api/commandCenterApi';
 import {
+  GatewayItem,
+  GatewayTabType,
+  NetworkKpiData,
   TimeWindow,
   MeterTelemetryItem,
   RawFrameItem,
-  GatewayTabType,
 } from '../types/commandCenter.types';
 
-const AUTO_REFRESH_SECONDS = 45;
-const REFRESH_POLL_MS = 4000;
-const REFRESH_MAX_POLLS = 25; // ~100s; the background pull normally finishes in under a minute
-const SEARCH_DEBOUNCE_MS = 350;
-const OUT_OF_WINDOW_LOOKBACK: WindowParams = { days: 90 };
+// What the page shows before the first answer, or when none could be loaded: nothing, never sample data.
+const NO_GATEWAYS: GatewayItem[] = [];
+const NO_FRAMES: RawFrameItem[] = [];
+const EMPTY_KPIS: NetworkKpiData = {
+  gatewaysWithTraffic: 0,
+  totalConfiguredGateways: 0,
+  uniqueMetersSeen: 0,
+  configuredMeters: 0,
+  framesReceived: 0,
+  framesTrend: '',
+  lastFrameAge: '—',
+  multiGatewayMeters: 0,
+  avgRssi: 0,
+  avgSnr: 0,
+};
 
-// Days are India days, like the stored data (the server's telemetry timezone)
-const isoDay = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
-const defaultCustomRange = () => ({
-  from: isoDay(new Date(Date.now() - 6 * 86400000)),
-  to: isoDay(new Date()),
-});
+const METERS_PAGE_SIZE = 100;
+const EMPTY_METERS_PAGE: GatewayMetersPage = { content: [], page: 0, size: METERS_PAGE_SIZE, total: 0, totalPages: 0 };
 
-function toWindowParams(range: TimeWindow, custom: { from: string; to: string }): WindowParams {
-  switch (range) {
-    case '1H': return { hours: 1 };
-    case '6H': return { hours: 6 };
-    case 'TODAY': return { days: 1 }; // today so far, from midnight India time
-    case '30D': return { days: 30 };
-    case 'CUSTOM': return { from: custom.from, to: custom.to };
-    default: return { days: 7 };
-  }
+function daysFor(range: TimeWindow): number {
+  return range === '30D' ? 30 : range === '7D' ? 7 : 1;
 }
 
-type SearchHint = { kind: 'idle' | 'searching' | 'info' | 'none' | 'error'; text?: string };
+// a day as YYYY-MM-DD on the clock of this browser; only the first guess of the custom range, the server cuts the real days
+function isoDaysAgo(days: number): string {
+  return new Date(Date.now() - days * 86400000).toLocaleDateString('en-CA');
+}
 
 export function CommandCenterPage() {
-  const location = useLocation();
-  const routeParams = useParams();
-  const navigate = useNavigate();
-
-  // Restore what the operator was looking at from the URL (query string and /gateways/:id, /meters/:id)
-  const initialRef = useRef<ReturnType<typeof parseUrlState> | null>(null);
-  if (initialRef.current === null) {
-    initialRef.current = parseUrlState(
-      location.search,
-      { gatewayId: routeParams.gatewayId, meterId: routeParams.meterId },
-      defaultCustomRange()
-    );
-  }
-  const init = initialRef.current;
-  const pendingUrlMeter = useRef<string | null>(init.meter);
-
-  const [activeMode, setActiveMode] = useState<'Gateways' | 'Meters'>(init.mode);
-  const [timeRange, setTimeRange] = useState<TimeWindow>(init.window);
-  const [customRange, setCustomRange] = useState({ from: init.from, to: init.to });
-
-  // A custom range that can't be used is explained in the toolbar and never sent to the server:
-  // the page keeps showing the last valid window until the dates are fixed.
-  const rangeError = timeRange === 'CUSTOM' ? validateCustomRange(customRange) : null;
-  const rawWin = useMemo(() => toWindowParams(timeRange, customRange), [timeRange, customRange]);
-  const lastValidWin = useRef<WindowParams>(rawWin);
-  if (!rangeError) lastValidWin.current = rawWin;
-  const win = lastValidWin.current;
-  const winKey = windowKey(win);
-
+  const [activeMode, setActiveMode] = useState<'Gateways' | 'Meters'>('Gateways');
+  const [timeRange, setTimeRange] = useState<TimeWindow>('7D');
+  const [customRange, setCustomRange] = useState<CustomRange>({ from: isoDaysAgo(6), to: isoDaysAgo(0) });
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchHint, setSearchHint] = useState<SearchHint>({ kind: 'idle' });
-  const [selectedGatewayId, setSelectedGatewayId] = useState<string | null>(init.gateway);
-  const [gatewayTab, setGatewayTab] = useState<GatewayTabType>(init.tab);
+  const [selectedGatewayId, setSelectedGatewayId] = useState<string | null>(null);
+  const [gatewayTab, setGatewayTab] = useState<GatewayTabType>('METERS');
   const [selectedMeter, setSelectedMeter] = useState<MeterTelemetryItem | null>(null);
-  // True when the open meter was found by a 90-day look-back because it wasn't heard in the selected window
-  const [meterOutsideWindow, setMeterOutsideWindow] = useState(false);
-  // Meter whose full frame history is open in the centre workspace ("View all frames")
-  const [framesViewMeter, setFramesViewMeter] = useState<MeterTelemetryItem | null>(null);
-  // Frame whose full details are open in the side drawer
-  const [inspectedFrame, setInspectedFrame] = useState<RawFrameItem | null>(null);
-  // On narrow screens the gateway rail is a slide-over drawer
-  const [railDrawerOpen, setRailDrawerOpen] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('cortex_w_cc_auto_refresh') !== 'off';
-    } catch {
-      return true;
-    }
-  });
-  const handleAutoRefreshChange = (on: boolean) => {
-    setAutoRefresh(on);
-    try {
-      localStorage.setItem('cortex_w_cc_auto_refresh', on ? 'on' : 'off');
-    } catch {
-      // storage unavailable; the toggle still works for this session
-    }
-  };
+  const [secondsAgo, setSecondsAgo] = useState(0);
 
   // Dynamic Site Selector State
-  const [selectedSiteId, setSelectedSiteId] = useState<string>(init.site);
-  const [sites, setSites] = useState<Array<{ id: string; name: string }>>([
-    { id: 'ALL', name: 'All Sites (Fleet)' },
-  ]);
+  const [selectedSiteId, setSelectedSiteId] = useState<string>('ALL');
+  const [sites, setSites] = useState<Array<{ id: string; name: string; parentId?: string | null }>>([{ id: 'ALL', name: 'All Sites' }]);
 
-  // Load available sites from backend; refresh periodically and on tab focus so new sites appear
+  // Load available sites from backend
   useEffect(() => {
-    const loadSites = () =>
-      fetchSites()
-        .then((res) => {
-          if (res && res.length > 0) setSites(res);
-        })
-        .catch(() => {});
-    loadSites();
-    const id = setInterval(loadSites, 60000);
-    window.addEventListener('focus', loadSites);
-    return () => {
-      clearInterval(id);
-      window.removeEventListener('focus', loadSites);
-    };
+    fetchSites().then((res) => {
+      if (res && res.length > 0) {
+        setSites(res);
+      }
+    }).catch(() => {});
   }, []);
-
-  // Is stored data keeping up? (scheduled sync, the client's stored session). Checked at load and every 5 minutes.
-  const [health, setHealth] = useState<CommandCenterHealth | null>(null);
-  useEffect(() => {
-    const load = () => fetchCommandCenterHealth().then(setHealth).catch(() => {});
-    load();
-    const id = setInterval(() => { if (!document.hidden) load(); }, 5 * 60 * 1000);
-    return () => clearInterval(id);
-  }, []);
-  const healthWarning =
-    health?.session && health.session.status !== 'ok'
-      ? `Scheduled sync for your account will stop when its session ${health.session.status === 'expired' ? 'has expired' : 'expires soon'}; signing in again renews it.`
-      : health?.syncBehind
-      ? 'Background sync has not completed for over an hour, so recent frames may be missing.'
-      : null;
 
   // Live Summary State with 0ms Stale-While-Revalidate from LocalStorage Cache
-  const [summaryData, setSummaryData] = useState<TelemetrySummaryResponse | null>(() =>
-    getLocalCachedSummary(windowKey(toWindowParams(init.window, { from: init.from, to: init.to })), init.site)
-  );
+  const [summaryData, setSummaryData] = useState<TelemetrySummaryResponse | null>(() => {
+    return getLocalCachedSummary(7, undefined, 'ALL') || null;
+  });
   const [isSyncing, setIsSyncing] = useState<boolean>(!summaryData);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const [metersByGatewayMap, setMetersByGatewayMap] = useState<Record<string, MeterTelemetryItem[]>>({});
-  const [metersLoading, setMetersLoading] = useState(false);
-  const [metersError, setMetersError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Only the newest request may update the page (a slow earlier window/site must not overwrite it)
-  const requestSeq = useRef(0);
-  const summaryAbort = useRef<AbortController | null>(null);
-  useEffect(() => () => summaryAbort.current?.abort(), []);
-  const wasRefreshing = useRef(false);
-  const pollCount = useRef(0);
-
-  // Background fetch routine (windows are resolved on the server clock; nothing date-specific is sent)
-  const loadSummary = useCallback(
-    async (forceRefresh = false) => {
-      const seq = ++requestSeq.current;
-      summaryAbort.current?.abort(); // the request this one replaces is cancelled, not left running
-      const ctrl = new AbortController();
-      summaryAbort.current = ctrl;
-      setIsSyncing(true);
-      try {
-        const live = await fetchCommandCenterSummary(win, forceRefresh, selectedSiteId, ctrl.signal);
-        if (seq !== requestSeq.current) return;
-        // An unchanged answer keeps the same object, so nothing downstream re-renders or reloads for no reason
-        setSummaryData((prev) =>
-          prev && prev.generatedAt === live.generatedAt && !!prev.refreshing === !!live.refreshing ? prev : live
-        );
-        setSyncError(null);
-        // A manual Refresh just finished its background pull: per-gateway meter lists are now out of date
-        wasRefreshing.current = !!live.refreshing;
-      } catch (err) {
-        if (isAbortError(err) || seq !== requestSeq.current) return;
-        console.warn('[CommandCenter] Live summary sync failed:', err);
-        setSyncError(describeError(err, 'Telemetry service unavailable'));
-      } finally {
-        if (seq === requestSeq.current) setIsSyncing(false);
-      }
-    },
-    [win, selectedSiteId]
-  );
-
-  // Window or site changed: drop the previous selection's data (show a recent local cache if we have one)
-  const firstScope = useRef(true);
-  useEffect(() => {
-    setSummaryData(getLocalCachedSummary(winKey, selectedSiteId));
-    setSyncError(null);
-    if (firstScope.current) {
-      firstScope.current = false; // keep a meter/gateway restored from the URL
-      return;
+  // Background fetch routine (supports 1H, 6H, 24H, 7D, 30D and site filtering)
+  const loadSummary = useCallback(async (forceRefresh = false) => {
+    setIsSyncing(true);
+    try {
+      const live = await fetchCommandCenterSummary(
+        daysFor(timeRange),
+        undefined,
+        forceRefresh,
+        selectedSiteId,
+        timeRange === 'CUSTOM' ? customRange : undefined
+      );
+      setSummaryData(live);
+      setSecondsAgo(0);
+      setLoadError(null);
+    } catch (err) {
+      console.warn('[CommandCenter] Live summary could not be loaded:', err);
+      setLoadError(err instanceof Error ? err.message : 'Live data could not be loaded');
+    } finally {
+      setIsSyncing(false);
     }
-    setSelectedMeter(null);
-    setMeterOutsideWindow(false);
-    setFramesViewMeter(null);
-    setInspectedFrame(null);
-  }, [winKey, selectedSiteId]);
+  }, [timeRange, customRange, selectedSiteId]);
 
-  // Sync on mount or when the window or site changes
+  // Sync on mount or when timeRange or selectedSiteId changes
   useEffect(() => {
     loadSummary(false);
   }, [loadSummary]);
 
-  // Auto refresh: only while enabled and the tab is visible (no background polling of a hidden tab)
+  // Periodic background refresh (every 45s) and elapsed timer ticker
   useEffect(() => {
-    const autoSync = autoRefresh
-      ? setInterval(() => {
-          if (!document.hidden) loadSummary(false);
-        }, AUTO_REFRESH_SECONDS * 1000)
-      : null;
+    const ticker = setInterval(() => {
+      setSecondsAgo((prev) => prev + 1);
+    }, 1000);
 
-    const onVisible = () => {
-      if (autoRefresh && !document.hidden) loadSummary(false);
-    };
-    document.addEventListener('visibilitychange', onVisible);
+    const autoSync = setInterval(() => {
+      loadSummary(false);
+    }, 45000);
 
     return () => {
-      if (autoSync) clearInterval(autoSync);
-      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(ticker);
+      clearInterval(autoSync);
     };
-  }, [loadSummary, autoRefresh]);
-
-  // Manual Refresh answers instantly; while the server is still pulling fresh packets, keep checking
-  useEffect(() => {
-    if (!summaryData?.refreshing || pollCount.current >= REFRESH_MAX_POLLS) return;
-    const t = setTimeout(() => {
-      pollCount.current += 1;
-      loadSummary(false);
-    }, REFRESH_POLL_MS);
-    return () => clearTimeout(t);
-  }, [summaryData, loadSummary]);
+  }, [loadSummary]);
 
   const handleManualRefresh = () => {
-    pollCount.current = 0;
     loadSummary(true);
   };
 
   // Derived Gateways list
-  const currentGateways = useMemo(() => {
-    return summaryData?.gateways ?? [];
-  }, [summaryData]);
+  const currentGateways = useMemo(() => summaryData?.gateways ?? NO_GATEWAYS, [summaryData]);
 
-  // Auto-select a gateway once on first load. After that, "no selection" is a deliberate choice (the
-  // All Gateways overview) and must not be overridden; only a selection that no longer exists
-  // (e.g. after switching site) falls back to the first gateway.
-  const autoSelected = useRef(false);
+  // the window and site the per-gateway tabs (Traffic, Radio Health) cover
+  const gatewayScope = {
+    days: daysFor(timeRange),
+    custom: timeRange === 'CUSTOM' ? customRange : undefined,
+    siteId: selectedSiteId,
+  };
+  const windowText = timeRange === 'CUSTOM' ? `${customRange.from} → ${customRange.to}` : timeRange;
+
+  // Ensure an active gateway is selected once gateways are known
   useEffect(() => {
-    if (currentGateways.length === 0) return;
-    const exists = (id: string | null) => !!id && currentGateways.some((g) => g.gatewayId === id);
-    if (!autoSelected.current) {
-      autoSelected.current = true;
-      // honour a gateway from the URL if it is part of this view, otherwise start on the first one
-      setSelectedGatewayId((prev) => (exists(prev) ? prev : currentGateways[0].gatewayId));
-      return;
-    }
-    if (selectedGatewayId && !exists(selectedGatewayId)) {
+    if (!selectedGatewayId && currentGateways.length > 0) {
       setSelectedGatewayId(currentGateways[0].gatewayId);
     }
   }, [currentGateways, selectedGatewayId]);
 
-  const gatewayStatus = useMemo(
-    () => Object.fromEntries(currentGateways.map((g) => [g.gatewayId, g.status])),
-    [currentGateways]
-  );
-
   // Derived KPIs
   const currentKpis = useMemo(() => {
-    return summaryData?.kpis ?? null;
+    return summaryData?.kpis || EMPTY_KPIS;
   }, [summaryData]);
-
-  // Meters are loaded per gateway on selection (the summary no longer embeds ~10k meters). When the summary
-  // refreshes, the open gateway's list is refetched and swapped in place, so it never goes stale or flashes.
-  const summaryToken = summaryData?.generatedAt ?? '';
-  const metersToken = useRef<Record<string, string>>({});
-  useEffect(() => {
-    metersToken.current = {};
-    setMetersByGatewayMap({});
-  }, [winKey, selectedSiteId]);
-
-  useEffect(() => {
-    if (!selectedGatewayId) return;
-    const have = !!metersByGatewayMap[selectedGatewayId];
-    if (have && metersToken.current[selectedGatewayId] === summaryToken) return;
-    const gw = selectedGatewayId;
-    const ctrl = new AbortController();
-    if (!have) setMetersLoading(true);
-    setMetersError(null);
-    fetchGatewayMeters(gw, win, ctrl.signal)
-      .then((list) => {
-        metersToken.current[gw] = summaryToken;
-        setMetersByGatewayMap((prev) => ({ ...prev, [gw]: list }));
-      })
-      .catch((err) => {
-        if (isAbortError(err)) return;
-        if (!have) setMetersError(describeError(err, 'Failed to load meters'));
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setMetersLoading(false);
-      });
-    return () => ctrl.abort();
-  }, [selectedGatewayId, win, metersByGatewayMap, summaryToken]);
-
-  // The open meter's details follow the refresh too (unless it was found outside the window, where they can't change)
-  useEffect(() => {
-    if (!selectedMeter || meterOutsideWindow) return;
-    const ctrl = new AbortController();
-    fetchMeter(selectedMeter.meterId, win, ctrl.signal)
-      .then((hit) => {
-        if (hit) setSelectedMeter(hit.meter);
-      })
-      .catch(() => {});
-    return () => ctrl.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [summaryToken]);
 
   // Derived Raw Frames for live feed and tables
-  const allFrames = useMemo<RawFrameItem[]>(() => {
-    return summaryData?.recentFrames ?? [];
-  }, [summaryData]);
+  const allFrames = useMemo<RawFrameItem[]>(() => summaryData?.recentFrames ?? NO_FRAMES, [summaryData]);
+
+  // Time window filter for frames
+  const timeFilteredFrames = useMemo(() => {
+    if (timeRange === '24H' || timeRange === '7D' || timeRange === 'CUSTOM') {
+      return allFrames;
+    }
+    const now = Date.now();
+    const cutoffMs = timeRange === '1H' ? 3600 * 1000 : 6 * 3600 * 1000;
+    return allFrames.filter((f) => {
+      const t = new Date(f.decodedAt).getTime();
+      return !isNaN(t) && now - t <= cutoffMs;
+    });
+  }, [allFrames, timeRange]);
 
   // Currently selected gateway item
   const currentGateway = useMemo(() => {
@@ -356,176 +185,147 @@ export function CommandCenterPage() {
     return currentGateways.find((g) => g.gatewayId === selectedGatewayId) || null;
   }, [selectedGatewayId, currentGateways]);
 
-  // Meters observed by selected gateway
-  const currentMeters = useMemo(() => {
-    if (!selectedGatewayId) return [];
-    return metersByGatewayMap[selectedGatewayId] ?? [];
-  }, [selectedGatewayId, metersByGatewayMap]);
+  // Meters observed by the selected gateway: one server-side page at a time
+  const [metersPage, setMetersPage] = useState(0);
+  const [metersFilter, setMetersFilter] = useState<MeterFilterKey>('ALL');
+  const [metersData, setMetersData] = useState<GatewayMetersPage>(EMPTY_METERS_PAGE);
+  const [metersLoading, setMetersLoading] = useState(false);
+
+  // a different gateway, filter, window or site starts again at the first page
+  useEffect(() => {
+    setMetersPage(0);
+  }, [selectedGatewayId, metersFilter, timeRange, customRange, selectedSiteId]);
+
+  const summaryStamp = summaryData?.generatedAt;
+  useEffect(() => {
+    if (!selectedGatewayId) {
+      setMetersData(EMPTY_METERS_PAGE);
+      return;
+    }
+    let cancelled = false;
+    setMetersLoading(true);
+    fetchGatewayMeters(selectedGatewayId, {
+      days: daysFor(timeRange),
+      page: metersPage,
+      size: METERS_PAGE_SIZE,
+      filter: metersFilter,
+      custom: timeRange === 'CUSTOM' ? customRange : undefined,
+      siteId: selectedSiteId,
+    })
+      .then((res) => {
+        if (!cancelled) setMetersData(res);
+      })
+      .catch((err) => {
+        console.warn('[CommandCenter] Could not load gateway meters:', err);
+        if (!cancelled) setMetersData(EMPTY_METERS_PAGE);
+      })
+      .finally(() => {
+        if (!cancelled) setMetersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // summaryStamp: the table refreshes together with the 45 s summary refresh
+  }, [selectedGatewayId, metersPage, metersFilter, timeRange, customRange, selectedSiteId, summaryStamp]);
+
+  // Frames received by selected gateway
+  const currentFrames = useMemo(() => {
+    if (!selectedGatewayId) return timeFilteredFrames;
+    return timeFilteredFrames.filter((f) => f.gatewayId === selectedGatewayId);
+  }, [selectedGatewayId, timeFilteredFrames]);
 
   // Handle selecting a meter from table or feed
   const handleSelectMeter = (meter: MeterTelemetryItem) => {
-    setMeterOutsideWindow(false);
     setSelectedMeter(meter);
   };
 
-  // A short-lived message under the search box (also used when "open this meter" finds nothing)
-  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
-  const showNotice = (hint: SearchHint) => {
-    setSearchHint(hint);
-    if (noticeTimer.current) clearTimeout(noticeTimer.current);
-    noticeTimer.current = setTimeout(() => setSearchHint({ kind: 'idle' }), 7000);
-  };
-
-  const handleSelectMeterById = (meterId: string) => {
-    for (const gwId of Object.keys(metersByGatewayMap)) {
-      const found = metersByGatewayMap[gwId].find((m) => m.meterId === meterId);
+  const handleSelectMeterById = async (meterId: string) => {
+    try {
+      const found = (
+        await searchMeters(meterId, daysFor(timeRange), timeRange === 'CUSTOM' ? customRange : undefined, selectedSiteId)
+      ).find((m) => m.meterId === meterId);
       if (found) {
-        handleSelectMeter(found);
+        setSelectedMeter(found);
         return;
       }
+    } catch (err) {
+      console.warn('[CommandCenter] Meter lookup failed, using the frame instead:', err);
     }
-    // Exact lookup (never the capped substring search), then the 90-day look-back, then say so
-    (async () => {
-      const hit = await fetchMeter(meterId, win);
-      if (hit) return handleSelectMeter(hit.meter);
-      const old = await fetchMeter(meterId, OUT_OF_WINDOW_LOOKBACK);
-      if (old) {
-        setMeterOutsideWindow(true);
-        setSelectedMeter(old.meter);
-        showNotice({ kind: 'info', text: `Meter ${meterId} was not heard in the selected window (looked back 90 days).` });
-        return;
-      }
-      showNotice({ kind: 'none', text: `Meter ${meterId} has no stored frames in the last 90 days.` });
-    })().catch((err) => showNotice({ kind: 'error', text: describeError(err, `Could not open meter ${meterId}`) }));
+    // Fallback: construct synthesized item from frame
+    const frame = allFrames.find((f) => f.meterId === meterId);
+    if (frame) {
+      setSelectedMeter({
+        meterId: frame.meterId,
+        devEui: frame.devEui,
+        lastSeenDate: frame.decodedAt,
+        frameAge: 'just now',
+        frames1H: 1,
+        frames24H: 1,
+        lastRssi: frame.rssi,
+        lastSnr: frame.snr,
+        fCnt: frame.fCnt,
+        fPort: frame.fPort,
+        frequency: frame.frequency,
+        dr: frame.dr,
+        adr: frame.adr,
+        confirmed: frame.confirmed,
+        otherGatewaysCount: 0,
+        statusChips: ['live'],
+        gatewaysHeard: [
+          {
+            gatewayId: frame.gatewayId,
+            alias: frame.gatewayAlias,
+            rssi: frame.rssi,
+            snr: frame.snr,
+            lastSeenText: 'just now',
+            isLatest: true,
+          },
+        ],
+      });
+    }
   };
 
-  // A meter id carried in the URL: open it once the page has loaded
-  useEffect(() => {
-    const id = pendingUrlMeter.current;
-    if (!id || !summaryData) return;
-    pendingUrlMeter.current = null;
-    handleSelectMeterById(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [summaryData]);
+  const findGatewayByQuery = useCallback(
+    (q: string) => {
+      const query = q.toLowerCase();
+      return currentGateways.find(
+        (g) => g.alias.toLowerCase().includes(query) || g.gatewayId.toLowerCase().includes(query)
+      );
+    },
+    [currentGateways]
+  );
 
-  // Keep the URL in step with the page (replace, so Back isn't flooded with every click)
-  useEffect(() => {
-    const search = buildUrlSearch({
-      site: selectedSiteId,
-      window: timeRange,
-      from: customRange.from,
-      to: customRange.to,
-      gateway: selectedGatewayId,
-      tab: gatewayTab,
-      meter: selectedMeter?.meterId ?? pendingUrlMeter.current,
-      mode: activeMode,
-    });
-    const target = '/app/command-center' + (search ? `?${search}` : '');
-    if (target !== window.location.pathname + window.location.search) navigate(target, { replace: true });
-  }, [selectedSiteId, timeRange, customRange, selectedGatewayId, gatewayTab, selectedMeter, activeMode, navigate]);
-
-  // Global search: debounced, gateway first, then meter / DevEUI (server-side), with a 90-day look-back
-  // for meters that weren't heard in the selected window. Reads the latest page state through refs so a
-  // background refresh never re-runs the search and steals the selection.
-  const searchCtx = useRef({ gateways: currentGateways, win });
-  searchCtx.current = { gateways: currentGateways, win };
-  const searchSeq = useRef(0);
-  useEffect(() => {
-    const q = searchQuery.trim();
-    const seq = ++searchSeq.current;
-    const ctrl = new AbortController();
-    if (!q) {
-      setSearchHint({ kind: 'idle' });
-      return;
+  // Global search handler: a gateway matches at once, a meter is looked up on the server once typing pauses
+  const handleSearch = (q: string) => {
+    setSearchQuery(q);
+    const query = q.trim();
+    if (!query) return;
+    const gw = findGatewayByQuery(query);
+    if (gw) {
+      setSelectedGatewayId(gw.gatewayId);
+      setGatewayTab('METERS');
     }
-    const lower = q.toLowerCase();
-    const timer = setTimeout(async () => {
-      const { gateways, win: searchWin } = searchCtx.current;
-      const openGateway = (id: string) => {
-        setSearchHint({ kind: 'idle' });
-        setActiveMode('Gateways');
-        setSelectedGatewayId(id);
-        setGatewayTab('METERS');
-      };
-      // A full gateway ID or alias wins outright; a partial one only counts after meters have been tried,
-      // because a meter ID fragment often also appears inside some gateway's ID.
-      const exactGw = gateways.find((g) => g.gatewayId.toLowerCase() === lower || g.alias.toLowerCase() === lower);
-      const partialGw = () => gateways.find((g) => g.alias.toLowerCase().includes(lower) || g.gatewayId.toLowerCase().includes(lower));
-      if (exactGw) return openGateway(exactGw.gatewayId);
-      if (q.length < 3) {
-        const gw = partialGw();
-        if (gw) return openGateway(gw.gatewayId);
-        setSearchHint({ kind: 'info', text: 'No gateway matches. Type at least 3 characters to search meters.' });
-        return;
-      }
-      // Exact Meter ID / DevEUI first (never lost to the 20-row cap), then substring matches
-      const find = async (w: WindowParams) => {
-        const exact = /^[A-Za-z0-9_.-]{1,64}$/.test(q) ? await fetchMeter(q, w, ctrl.signal) : null;
-        return exact ? [exact] : searchMeters(q, w, ctrl.signal);
-      };
-      setSearchHint({ kind: 'searching', text: 'Searching meters…' });
-      try {
-        const hits = await find(searchWin);
-        if (seq !== searchSeq.current) return;
-        if (hits.length > 0) {
-          const pick =
-            hits.find((h) => h.meter.meterId.toLowerCase() === lower || (h.meter.devEui ?? '').toLowerCase() === lower) ?? hits[0];
-          setMeterOutsideWindow(false);
-          setSelectedMeter(pick.meter);
-          if (searchCtx.current.gateways.some((g) => g.gatewayId === pick.gatewayId)) {
-            openGateway(pick.gatewayId);
-          } else {
-            // Its gateway belongs to another site: show the meter, but don't jump to a gateway that isn't in view
-            setSearchHint({ kind: 'info', text: 'Meter found. Its gateway is not part of the selected site.' });
-          }
-          return;
-        }
-        const gw = partialGw();
-        if (gw) return openGateway(gw.gatewayId);
-        const old = await find(OUT_OF_WINDOW_LOOKBACK);
-        if (seq !== searchSeq.current) return;
-        if (old.length > 0) {
-          setSearchHint({ kind: 'info', text: `Found outside the selected window (looked back 90 days).` });
-          setMeterOutsideWindow(true);
-          setSelectedMeter(old[0].meter);
-          return;
-        }
-        setSearchHint({ kind: 'none', text: `No gateway, meter or DevEUI matches “${q}”.` });
-      } catch (err) {
-        if (isAbortError(err)) return;
-        if (seq === searchSeq.current) setSearchHint({ kind: 'error', text: describeError(err, 'Search failed') });
-      }
-    }, SEARCH_DEBOUNCE_MS);
-    return () => {
-      clearTimeout(timer);
-      ctrl.abort(); // typing on cancels the previous lookup
-    };
-  }, [searchQuery]);
+  };
 
-  // Escape peels back one layer at a time: frame details, then the rail drawer, then the full-frames view, then the inspector
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-      if (inspectedFrame) setInspectedFrame(null);
-      else if (railDrawerOpen) setRailDrawerOpen(false);
-      else if (framesViewMeter) setFramesViewMeter(null);
-      else if (selectedMeter) {
-        setSelectedMeter(null);
-        setMeterOutsideWindow(false);
+    const query = searchQuery.trim();
+    if (query.length < 3 || findGatewayByQuery(query)) return;
+    const timer = setTimeout(async () => {
+      try {
+        const found = await searchMeters(query, daysFor(timeRange), timeRange === 'CUSTOM' ? customRange : undefined, selectedSiteId);
+        if (found.length > 0) {
+          setSelectedGatewayId(found[0].gatewayId);
+          setSelectedMeter(found[0]);
+          setGatewayTab('METERS');
+        }
+      } catch (err) {
+        console.warn('[CommandCenter] Meter search failed:', err);
       }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [inspectedFrame, railDrawerOpen, framesViewMeter, selectedMeter]);
-
-  const windowLabel = timeRange === 'CUSTOM' ? 'custom range' : timeRange === 'TODAY' ? 'today' : timeRange;
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchQuery, timeRange, customRange, selectedSiteId, findGatewayByQuery]);
 
   return (
-    <ThresholdsProvider value={summaryData?.thresholds ?? null}>
-    <WindowLabelProvider value={windowLabel}>
     <div className="cc-container">
       {/* Top Command Bar with Live Stream Sync Status */}
       <CommandCenterToolbar
@@ -534,49 +334,31 @@ export function CommandCenterPage() {
         timeRange={timeRange}
         onTimeRangeChange={setTimeRange}
         customRange={customRange}
+        maxDate={summaryData?.dateRange?.toDate}
         onCustomRangeChange={setCustomRange}
         searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        searchHint={searchHint.kind === 'idle' ? null : searchHint}
-        rangeError={rangeError}
+        onSearchChange={handleSearch}
         onRefresh={handleManualRefresh}
-        lastUpdatedAt={summaryData?.generatedAt ?? null}
-        isSyncing={isSyncing || !!summaryData?.refreshing}
+        lastUpdatedText={`${secondsAgo}s ago`}
+        isSyncing={isSyncing}
         sites={sites}
         selectedSiteId={selectedSiteId}
         onSiteChange={setSelectedSiteId}
-        autoRefresh={autoRefresh}
-        onAutoRefreshChange={handleAutoRefreshChange}
-        autoRefreshSeconds={AUTO_REFRESH_SECONDS}
-        onToggleRail={() => setRailDrawerOpen((o) => !o)}
       />
 
-      {syncError && (
-        <div className="cc-card cc-banner" role="alert">
-          <AlertTriangle size={16} />
-          <span>
-            {summaryData
-              ? `Could not refresh telemetry (${syncError}). Showing the last data received.`
-              : `Could not load telemetry (${syncError}).`}
-          </span>
-          <button className="cw-button-secondary" onClick={handleManualRefresh}>
-            Retry
-          </button>
-        </div>
-      )}
-
-      {healthWarning && (
-        <div className="cc-card cc-banner" role="status">
-          <AlertTriangle size={16} />
-          <span>{healthWarning}</span>
-        </div>
-      )}
-
       {/* Network Health 8-KPI Strip with Skeleton Loaders */}
+      {loadError && (
+        <div className="cc-error-banner" role="alert">
+          {summaryData
+            ? 'Live data could not be refreshed — showing the last data received.'
+            : 'Live data could not be loaded.'}
+        </div>
+      )}
+
       <NetworkKpiStrip
         kpis={currentKpis}
-        upstream={summaryData?.upstream ?? null}
         loading={isSyncing && !summaryData}
+        windowText={windowText}
       />
 
       {/* Main Operational Workspace */}
@@ -585,30 +367,12 @@ export function CommandCenterPage() {
           selectedMeter ? 'cc-main-workspace-layout--with-inspector' : ''
         }`}
       >
-        {/* Dimmed backdrops behind the slide-over drawers (only visible on narrow screens) */}
-        <div className={`cc-drawer-backdrop ${railDrawerOpen ? 'cc-drawer-backdrop--open' : ''}`} onClick={() => setRailDrawerOpen(false)} aria-hidden="true" />
-        {selectedMeter && (
-          <div
-            className="cc-drawer-backdrop cc-drawer-backdrop--inspector"
-            onClick={() => {
-              setSelectedMeter(null);
-              setMeterOutsideWindow(false);
-            }}
-            aria-hidden="true"
-          />
-        )}
-
         {/* Left Navigator: Gateway Rail with Live Status */}
         <GatewayRail
           gateways={currentGateways}
-          // In Meters mode no gateway is "current", so clicking one always opens it (never toggles it off)
-          selectedGatewayId={activeMode === 'Meters' ? null : selectedGatewayId}
+          selectedGatewayId={selectedGatewayId}
           loading={isSyncing && !summaryData}
-          drawerOpen={railDrawerOpen}
-          onCloseDrawer={() => setRailDrawerOpen(false)}
           onSelectGateway={(id) => {
-            setRailDrawerOpen(false);
-            setActiveMode('Gateways');
             setSelectedGatewayId(id);
             if (id) {
               setGatewayTab('METERS');
@@ -618,77 +382,57 @@ export function CommandCenterPage() {
 
         {/* Center: Selected Gateway Workspace OR All-Gateway Overview */}
         <main className="cc-center-workspace">
-          {framesViewMeter ? (
-            <MeterFramesView meter={framesViewMeter} win={win} onBack={() => setFramesViewMeter(null)} onInspectFrame={setInspectedFrame} />
-          ) : activeMode === 'Meters' ? (
-            <FleetMetersTable
-              win={win}
-              siteId={selectedSiteId}
-              selectedMeterId={selectedMeter?.meterId || null}
-              onSelectMeter={handleSelectMeter}
-              refreshToken={summaryToken}
-              expectedTotal={currentKpis?.uniqueMetersSeen ?? null}
-            />
-          ) : currentGateway ? (
+          {currentGateway ? (
             <>
               <SelectedGatewayHeader
                 gateway={currentGateway}
                 activeTab={gatewayTab}
                 onTabChange={setGatewayTab}
-                onClearSelection={() => setSelectedGatewayId(null)}
+                windowText={windowText}
               />
 
               {gatewayTab === 'METERS' && (
                 <GatewayMetersTable
-                  loading={metersLoading && !metersByGatewayMap[currentGateway.gatewayId]}
-                  error={metersError}
-                  meters={currentMeters}
+                  meters={metersData.content}
+                  total={metersData.total}
+                  page={metersPage}
+                  pageSize={METERS_PAGE_SIZE}
+                  totalPages={metersData.totalPages}
+                  loading={metersLoading}
+                  filter={metersFilter}
+                  onFilterChange={setMetersFilter}
+                  onPageChange={setMetersPage}
                   selectedMeterId={selectedMeter?.meterId || null}
                   onSelectMeter={handleSelectMeter}
-                  expectedMeters={currentGateway.uniqueMeters}
                 />
               )}
 
               {gatewayTab === 'FRAMES' && (
-                <GatewayFramesPanel
-                  gatewayId={currentGateway.gatewayId}
+                <GatewayFramesTable
+                  frames={currentFrames.length > 0 ? currentFrames : allFrames}
                   gatewayAlias={currentGateway.alias}
-                  win={win}
-                  refreshToken={summaryData?.generatedAt}
                   onSelectFrameMeter={handleSelectMeterById}
-                  onInspectFrame={setInspectedFrame}
-                  paused={!!inspectedFrame}
                 />
               )}
 
               {gatewayTab === 'TRAFFIC' && (
-                <GatewayTrafficView
-                  win={win}
-                  siteId={selectedSiteId}
-                  gateway={{ gatewayId: currentGateway.gatewayId, alias: currentGateway.alias }}
+                <GatewayTrafficChart
+                  gatewayId={currentGateway.gatewayId}
+                  gatewayAlias={currentGateway.alias}
                   allGateways={currentGateways}
-                  refreshToken={summaryData?.generatedAt}
+                  scope={gatewayScope}
+                  totalMeters={currentKpis.uniqueMetersSeen}
                 />
               )}
 
               {gatewayTab === 'RADIO' && (
                 <GatewayRadioHealth
-                  win={win}
-                  siteId={selectedSiteId}
-                  gateway={{ gatewayId: currentGateway.gatewayId, alias: currentGateway.alias }}
-                  refreshToken={summaryData?.generatedAt}
-                  onSelectMeter={handleSelectMeterById}
+                  gatewayId={currentGateway.gatewayId}
+                  gatewayAlias={currentGateway.alias}
+                  scope={gatewayScope}
                 />
               )}
             </>
-          ) : currentGateways.length === 0 ? (
-            <EmptyState
-              message={
-                isSyncing
-                  ? 'Loading gateways…'
-                  : 'No gateway traffic has been observed for this site and time window.'
-              }
-            />
           ) : (
             <AllGatewayComparison
               gateways={currentGateways}
@@ -704,13 +448,7 @@ export function CommandCenterPage() {
         {selectedMeter && (
           <MeterInspector
             meter={selectedMeter}
-            win={win}
-            outsideWindow={meterOutsideWindow}
-            onViewAllFrames={() => setFramesViewMeter(selectedMeter)}
-            onClose={() => {
-              setSelectedMeter(null);
-              setMeterOutsideWindow(false);
-            }}
+            onClose={() => setSelectedMeter(null)}
           />
         )}
       </div>
@@ -718,20 +456,10 @@ export function CommandCenterPage() {
       {/* Bottom: Live Network Telemetry Feed */}
       <LiveNetworkFeed
         frames={allFrames}
+        metersReporting={currentKpis.uniqueMetersSeen}
         onSelectMeter={handleSelectMeterById}
-        meterCount={currentKpis?.uniqueMetersSeen ?? null}
-        gatewayStatus={gatewayStatus}
-        win={win}
-        siteId={selectedSiteId}
-        onInspectFrame={setInspectedFrame}
       />
-
-      {inspectedFrame && (
-        <FrameDetailDrawer frame={inspectedFrame} onClose={() => setInspectedFrame(null)} onOpenMeter={handleSelectMeterById} />
-      )}
     </div>
-    </WindowLabelProvider>
-    </ThresholdsProvider>
   );
 }
 
