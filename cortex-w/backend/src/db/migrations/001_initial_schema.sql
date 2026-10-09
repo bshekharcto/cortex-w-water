@@ -15,8 +15,6 @@ CREATE TABLE IF NOT EXISTS gateways (
     linked_meters       INT NOT NULL DEFAULT 0,
     avg_rssi            REAL,
     avg_snr             REAL,
-    battery_abnormal    INT NOT NULL DEFAULT 0,
-    valve_abnormal      INT NOT NULL DEFAULT 0,
     latest_decoded_at   TIMESTAMPTZ,
     latitude            DOUBLE PRECISION,
     longitude           DOUBLE PRECISION
@@ -27,12 +25,8 @@ CREATE TABLE IF NOT EXISTS meters (
     household_id        TEXT,
     gateway_id          TEXT REFERENCES gateways(gateway_id),
     forward_flow_l      REAL,
-    battery_voltage     REAL,
-    battery_health      TEXT,
-    valve_health        TEXT,
     rssi                REAL,
     snr                 REAL,
-    valve_status        TEXT,
     decoded_at          TIMESTAMPTZ,
     meter_timestamp     TEXT,       -- kept as TEXT because some values are intentionally implausible
     checksum_status     TEXT DEFAULT 'OK',

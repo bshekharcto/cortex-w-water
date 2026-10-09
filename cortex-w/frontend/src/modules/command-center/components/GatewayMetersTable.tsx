@@ -1,30 +1,35 @@
-import { useState, useMemo } from 'react';
 import { MeterTelemetryItem } from '../types/commandCenter.types';
+import type { MeterFilterKey } from '@/services/api/commandCenterApi';
 
 interface Props {
   meters: MeterTelemetryItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  loading: boolean;
+  filter: MeterFilterKey;
+  onFilterChange: (filter: MeterFilterKey) => void;
+  onPageChange: (page: number) => void;
   selectedMeterId: string | null;
   onSelectMeter: (meter: MeterTelemetryItem) => void;
 }
 
 export function GatewayMetersTable({
   meters,
+  total,
+  page,
+  pageSize,
+  totalPages,
+  loading,
+  filter,
+  onFilterChange,
+  onPageChange,
   selectedMeterId,
   onSelectMeter,
 }: Props) {
-  const [filter, setFilter] = useState<string>('ALL');
-
-  const filteredMeters = useMemo(() => {
-    if (filter === 'ALL') return meters;
-    if (filter === 'LIVE') return meters.filter((m) => m.statusChips.includes('live'));
-    if (filter === 'STALE') return meters.filter((m) => m.statusChips.includes('stale'));
-    if (filter === 'SILENT') return meters.filter((m) => m.statusChips.includes('silent'));
-    if (filter === 'WEAK_RSSI') return meters.filter((m) => m.statusChips.includes('weak-rssi'));
-    if (filter === 'POOR_SNR') return meters.filter((m) => m.statusChips.includes('poor-snr'));
-    if (filter === 'MULTI_GW') return meters.filter((m) => m.statusChips.includes('multi-gw'));
-    if (filter === 'FCNT_GAP') return meters.filter((m) => m.statusChips.includes('fcnt-gap'));
-    return meters;
-  }, [meters, filter]);
+  const firstRow = total === 0 ? 0 : page * pageSize + 1;
+  const lastRow = page * pageSize + meters.length;
 
   return (
     <div className="cc-meters-view">
@@ -37,17 +42,18 @@ export function GatewayMetersTable({
           { key: 'WEAK_RSSI', label: 'Weak RSSI' },
           { key: 'POOR_SNR', label: 'Poor SNR' },
           { key: 'MULTI_GW', label: 'Multi-Gateway' },
-          { key: 'FCNT_GAP', label: 'FCnt Gap' },
         ].map((f) => (
           <button
             key={f.key}
             className={`cc-subfilter-chip ${filter === f.key ? 'cc-subfilter-chip--active' : ''}`}
-            onClick={() => setFilter(f.key)}
+            onClick={() => onFilterChange(f.key as MeterFilterKey)}
           >
             {f.label}
           </button>
         ))}
-        <span className="cc-subfilter-count">({filteredMeters.length} meters)</span>
+        <span className="cc-subfilter-count">
+          {loading ? '(loading…)' : `(${total.toLocaleString()} meters)`}
+        </span>
       </div>
 
       <div className="cc-table-scroll-container">
@@ -71,7 +77,7 @@ export function GatewayMetersTable({
             </tr>
           </thead>
           <tbody>
-            {filteredMeters.map((m) => {
+            {meters.map((m) => {
               const isSelected = selectedMeterId === m.meterId;
               const isWeak = m.lastRssi < -95;
               const isPoorSnr = m.lastSnr < -10;
@@ -119,6 +125,30 @@ export function GatewayMetersTable({
             })}
           </tbody>
         </table>
+      </div>
+
+      <div className="cc-subfilter-bar">
+        <button
+          className="cc-subfilter-chip"
+          disabled={page <= 0 || loading}
+          onClick={() => onPageChange(page - 1)}
+        >
+          ‹ Prev
+        </button>
+        <span className="cc-subfilter-count">
+          {total === 0
+            ? 'No meters'
+            : `${firstRow.toLocaleString()}–${lastRow.toLocaleString()} of ${total.toLocaleString()} · page ${
+                page + 1
+              } of ${totalPages}`}
+        </span>
+        <button
+          className="cc-subfilter-chip"
+          disabled={page + 1 >= totalPages || loading}
+          onClick={() => onPageChange(page + 1)}
+        >
+          Next ›
+        </button>
       </div>
     </div>
   );

@@ -2,108 +2,181 @@ import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { proxyUpstream } from '../services/upstreamProxy.js';
-import { fetchAndAggregateTelemetry } from '../services/telemetryAggregator.js';
-import { getPostgresAggregatedSummary } from '../services/telemetryDbService.js';
-import { syncLatestTelemetry } from '../services/telemetrySyncWorker.js';
+import {
+  getPostgresAggregatedSummary,
+  getGatewayMeters,
+  getGatewayRadioHealth,
+  getGatewayHourly,
+  localDateIn,
+  safeZone,
+  searchMeters,
+  toFrameItem,
+  DateWindow,
+  MeterFilter,
+} from '../services/telemetryDbService.js';
+import { resolveSiteScope, resolveViewTimeZone, SessionExpiredError } from '../services/dashboardService.js';
 
 const router = Router();
 
-// ---------- Telemetry Sync & Cron Job ----------
+const MAX_CUSTOM_DAYS = 92;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-router.all('/sync-cron', async (req, res) => {
-  try {
-    // Optional Vercel CRON_SECRET authorization check
-    const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret) {
-      const authHeader = req.headers.authorization;
-      if (authHeader !== `Bearer ${cronSecret}`) {
-        return res.status(401).json({ error: 'Unauthorized: invalid CRON_SECRET' });
-      }
-    }
-
-    const customDate = req.query.date as string | undefined;
-    const customDates = customDate ? [customDate] : undefined;
-
-    console.log('[commandCenter] Cron/Manual sync triggered:', {
-      ip: req.ip,
-      method: req.method,
-      customDate,
-    });
-
-    const result = await syncLatestTelemetry(customDates);
-    return res.json({
-      status: result.success ? 'success' : 'error',
-      ...result,
-    });
-  } catch (err: any) {
-    console.error('[commandCenter] Cron sync failed:', err);
-    return res.status(500).json({ error: 'Sync failed', message: err.message });
-  }
-});
+/**
+ * ?from=YYYY-MM-DD&to=YYYY-MM-DD (days at the site, inclusive) picks a custom window. Returns undefined when neither is
+ * sent, null when they are sent but not usable (bad format, from after to, longer than MAX_CUSTOM_DAYS, later than today
+ * at the site).
+ */
+function customWindow(query: any, zone: string): DateWindow | undefined | null {
+  const from = query.from as string | undefined;
+  const to = query.to as string | undefined;
+  if (!from && !to) return undefined;
+  if (!from || !to || !ISO_DATE.test(from) || !ISO_DATE.test(to)) return null;
+  const fromMs = Date.parse(from);
+  const toMs = Date.parse(to);
+  if (Number.isNaN(fromMs) || Number.isNaN(toMs) || fromMs > toMs) return null;
+  if (to > localDateIn(zone) || (toMs - fromMs) / 86400000 + 1 > MAX_CUSTOM_DAYS) return null;
+  return { fromDate: from, toDate: to };
+}
 
 // ---------- Live Telemetry Aggregator (PostgreSQL 7-Day Default & Sub-second Feed) ----------
 
 router.get('/summary', async (req, res) => {
   try {
     const days = parseInt((req.query.days as string) || '7', 10);
-    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+    const date = req.query.date as string | undefined; // only for looking back from an earlier day; default: today at the site
     const refresh = req.query.refresh === 'true';
     const siteId = (req.query.siteId as string) || (req.query.siteIds as string) || 'ALL';
 
-    try {
-      const pgSummary = await getPostgresAggregatedSummary(days, date, refresh, siteId);
-      return res.json(pgSummary);
-    } catch (pgErr: any) {
-      console.warn('[commandCenter] Fallback to memory aggregator:', pgErr.message);
-      const fallback = await fetchAndAggregateTelemetry(date, refresh);
-      return res.json(fallback);
+    const siteIds = await resolveSiteScope(siteId, req.headers.authorization);
+    if (siteIds && siteIds.length === 0) return res.status(403).json({ error: 'No access to this site' });
+    // the days of the view are the days at the site(s) it covers
+    const zone = await resolveViewTimeZone(siteIds);
+
+    const custom = customWindow(req.query, zone);
+    if (custom === null) {
+      return res.status(400).json({ error: `from/to must be YYYY-MM-DD, from <= to, not in the future, at most ${MAX_CUSTOM_DAYS} days` });
     }
+
+    const pgSummary = await getPostgresAggregatedSummary(days, date, refresh, siteId, custom, siteIds, zone);
+    return res.json(pgSummary);
   } catch (err: any) {
+    if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
     console.error('[commandCenter] Error generating telemetry summary:', err);
     res.status(500).json({ error: 'Failed to aggregate telemetry', message: err.message });
+  }
+});
+
+const METER_FILTERS: MeterFilter[] = ['ALL', 'LIVE', 'STALE', 'WEAK_RSSI', 'POOR_SNR', 'MULTI_GW'];
+
+function intParam(value: unknown, fallback: number, min: number, max: number): number {
+  const n = parseInt(String(value ?? ''), 10);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+}
+
+// One page of the meters a gateway heard (the Meters table of the selected gateway).
+router.get('/gateways/:gatewayId/meters', async (req, res) => {
+  try {
+    const siteIds = await resolveSiteScope(req.query.siteId as string | undefined, req.headers.authorization);
+    if (siteIds && siteIds.length === 0) return res.status(403).json({ error: 'No access to this site' });
+    const zone = await resolveViewTimeZone(siteIds);
+    const custom = customWindow(req.query, zone);
+    if (custom === null) return res.status(400).json({ error: 'Invalid from/to date range' });
+    const filter = String(req.query.filter || 'ALL').toUpperCase() as MeterFilter;
+    const result = await getGatewayMeters({
+      custom,
+      siteIds,
+      zone,
+      gatewayId: req.params.gatewayId,
+      days: intParam(req.query.days, 7, 1, 90),
+      page: intParam(req.query.page, 0, 0, 100000),
+      size: intParam(req.query.size, 100, 1, 200),
+      filter: METER_FILTERS.includes(filter) ? filter : 'ALL',
+      q: req.query.q as string | undefined,
+    });
+    res.json(result);
+  } catch (err: any) {
+    if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
+    console.error('[commandCenter] Error getting gateway meters:', err);
+    res.status(500).json({ error: 'Failed to get gateway meters', message: err.message });
+  }
+});
+
+// The window and site filter shared by the per-gateway endpoints; answers the request itself when they are not usable.
+async function gatewayScope(req: any, res: any) {
+  const siteIds = await resolveSiteScope(req.query.siteId as string | undefined, req.headers.authorization);
+  if (siteIds && siteIds.length === 0) {
+    res.status(403).json({ error: 'No access to this site' });
+    return null;
+  }
+  const zone = await resolveViewTimeZone(siteIds);
+  const custom = customWindow(req.query, zone);
+  if (custom === null) {
+    res.status(400).json({ error: 'Invalid from/to date range' });
+    return null;
+  }
+  return {
+    gatewayId: req.params.gatewayId as string,
+    days: intParam(req.query.days, 7, 1, 90),
+    custom,
+    siteIds,
+    zone,
+  };
+}
+
+router.get('/gateways/:gatewayId/radio-health', async (req, res) => {
+  try {
+    const scope = await gatewayScope(req, res);
+    if (scope) res.json(await getGatewayRadioHealth(scope));
+  } catch (err: any) {
+    if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
+    console.error('[commandCenter] Error getting radio health:', err);
+    res.status(500).json({ error: 'Failed to get radio health', message: err.message });
+  }
+});
+
+router.get('/gateways/:gatewayId/hourly', async (req, res) => {
+  try {
+    const scope = await gatewayScope(req, res);
+    if (scope) res.json(await getGatewayHourly(scope));
+  } catch (err: any) {
+    if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
+    console.error('[commandCenter] Error getting hourly activity:', err);
+    res.status(500).json({ error: 'Failed to get hourly activity', message: err.message });
+  }
+});
+
+// Find a meter by id or DevEUI (search box, and a click on a frame in the live feed).
+router.get('/meters/search', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 3) return res.json([]);
+    const siteIds = await resolveSiteScope(req.query.siteId as string | undefined, req.headers.authorization);
+    if (siteIds && siteIds.length === 0) return res.status(403).json({ error: 'No access to this site' });
+    const zone = await resolveViewTimeZone(siteIds);
+    const custom = customWindow(req.query, zone);
+    if (custom === null) return res.status(400).json({ error: 'Invalid from/to date range' });
+    res.json(
+      await searchMeters(q, intParam(req.query.days, 7, 1, 90), intParam(req.query.limit, 10, 1, 50), undefined, custom, siteIds, zone)
+    );
+  } catch (err: any) {
+    if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
+    console.error('[commandCenter] Error searching meters:', err);
+    res.status(500).json({ error: 'Failed to search meters', message: err.message });
   }
 });
 
 router.get('/feed', async (req, res) => {
   try {
     const limit = parseInt((req.query.limit as string) || '100', 10);
-    try {
-      const result = await pool.query(
-        'SELECT * FROM raw_telemetry_packets ORDER BY decoded_at DESC LIMIT $1',
-        [limit]
-      );
-      if (result.rows.length > 0) {
-        return res.json(
-          result.rows.map((r: any, idx: number) => ({
-            id: `feed-${r.id || idx}-${r.meter_id}`,
-            decodedAt: r.decoded_at,
-            meterTimestamp: r.meter_timestamp || r.decoded_at,
-            meterId: r.meter_id,
-            devEui: r.dev_eui,
-            gatewayId: r.gateway_id,
-            gatewayAlias: `GW-${(r.gateway_id || '').slice(-3).toUpperCase()}`,
-            fCnt: r.fcnt,
-            fPort: r.fport,
-            frequency: r.frequency,
-            dr: r.dr,
-            rssi: r.rssi,
-            snr: r.snr,
-            confirmed: r.confirmed,
-            adr: r.adr,
-            checksumStatus: r.checksum_status,
-            statusByte: r.status_byte,
-            statusEvent: r.reverse_flow > 0.05 ? 'WEAK_RSSI' : 'FRAME_RECEIVED',
-          }))
-        );
-      }
-    } catch (pgErr) {
-      // ignore and fallback
-    }
-
-    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
-    const summary = await fetchAndAggregateTelemetry(date, false);
-    res.json((summary.recentFrames || []).slice(0, limit));
+    const zone = safeZone(await resolveViewTimeZone(null));
+    const result = await pool.query(
+      `SELECT *, to_char(decoded_at AT TIME ZONE '${zone}', 'YYYY-MM-DD HH24:MI:SS') AS local_time
+       FROM water_meter_readings_v2 WHERE is_history = false ORDER BY decoded_at DESC LIMIT $1`,
+      [limit]
+    );
+    res.json(result.rows.map((r: any, idx: number) => toFrameItem(r, `feed-${idx}-${r.meter_id}-${new Date(r.time).getTime()}`)));
   } catch (err: any) {
+    if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
     console.error('[commandCenter] Error getting live feed:', err);
     res.status(500).json({ error: 'Failed to get live feed', message: err.message });
   }
@@ -137,7 +210,7 @@ router.get('/executive-summary', async (req, res) => {
     return res.json({
       householdsOnboarded: 193125, metersConfigured: 27996, householdsMapped: 18364,
       meterReplacementsYesterday: 3, criticalAlerts: 2, openMaintenanceRequests: 5,
-      closedMaintenanceRequests: 12, topAlertTypes: ['Battery Abnormal', 'Valve Abnormal'],
+      closedMaintenanceRequests: 12, topAlertTypes: ['Reverse Flow'],
       region: 'BHUBANESWAR', fromDate: '2026-09-01', toDate: '2026-09-04',
     });
   }
@@ -155,14 +228,14 @@ router.get('/executive-summary', async (req, res) => {
 router.get('/gateway-summary', async (req, res) => {
   if (config.APP_DATA_MODE === 'seed') {
     const result = await pool.query(
-      'SELECT gateway_id, alias, meters_observed, linked_meters, avg_rssi, avg_snr, battery_abnormal, valve_abnormal, latest_decoded_at FROM gateways ORDER BY meters_observed DESC',
+      'SELECT gateway_id, alias, meters_observed, linked_meters, avg_rssi, avg_snr, latest_decoded_at FROM gateways ORDER BY meters_observed DESC',
     );
     const rows = result.rows;
     return res.json({
       totalUniqueMeters: rows.reduce((s: number, r: any) => s + r.meters_observed, 0),
       gatewayCount: rows.length,
       metersOnMultipleGateways: 0,
-      perGateway: rows.map((r: any) => ({ gatewayId: r.gateway_id, uniqueMeterCount: r.meters_observed, alias: r.alias, avgRssi: r.avg_rssi, avgSnr: r.avg_snr, batteryAbnormal: r.battery_abnormal, valveAbnormal: r.valve_abnormal, latestDecodedAt: r.latest_decoded_at })),
+      perGateway: rows.map((r: any) => ({ gatewayId: r.gateway_id, uniqueMeterCount: r.meters_observed, alias: r.alias, avgRssi: r.avg_rssi, avgSnr: r.avg_snr, latestDecodedAt: r.latest_decoded_at })),
     });
   }
   // Upstream: siteIds is comma-joined for this endpoint (spec 28.2)
@@ -177,12 +250,12 @@ router.get('/gateway-summary', async (req, res) => {
 router.get('/meter-health', async (req, res) => {
   if (config.APP_DATA_MODE === 'seed') {
     const result = await pool.query(
-      'SELECT meter_id, household_id, gateway_id, decoded_at, rssi, battery_health, valve_health FROM meters ORDER BY decoded_at DESC',
+      'SELECT meter_id, household_id, gateway_id, decoded_at, rssi FROM meters ORDER BY decoded_at DESC',
     );
     return res.json(result.rows.map((r: any) => ({
       assetId: 0, meterId: r.meter_id, householdId: r.household_id,
       gatewayId: r.gateway_id, decodedAt: r.decoded_at, rssi: r.rssi,
-      batteryStatus: r.battery_health, lastSeenDate: r.decoded_at, timeZone: 'Asia/Kolkata',
+      lastSeenDate: r.decoded_at, timeZone: 'Asia/Kolkata',
     })));
   }
   // Upstream: siteIds as repeated query params (spec 28.2)
@@ -221,9 +294,8 @@ router.post('/latest-meter-status', async (req, res) => {
     return res.json({
       content: result.rows.map((r: any) => ({
         meterId: r.meter_id, householdId: r.household_id, gatewayId: r.gateway_id,
-        currentReading: r.forward_flow_l, batteryVoltage: r.battery_voltage,
-        batteryHealth: r.battery_health, valveHealth: r.valve_health, rssi: r.rssi,
-        snr: r.snr, valveStatus: r.valve_status === 'Closed', checksumStatus: r.checksum_status,
+        currentReading: r.forward_flow_l, rssi: r.rssi,
+        snr: r.snr, checksumStatus: r.checksum_status,
         decodedAt: r.decoded_at, meterTimestamp: r.meter_timestamp,
         siteId: String(r.site_id), siteName: 'BHUBANESWAR',
       })),

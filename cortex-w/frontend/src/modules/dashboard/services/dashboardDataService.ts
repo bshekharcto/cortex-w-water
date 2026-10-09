@@ -2,6 +2,7 @@ import { runtimeConfig } from '@/config/runtimeConfig';
 import { apiRequest } from '@/services/api/httpClient';
 import type { NodeRow, MeterRow } from '../models/dashboardRows';
 import type { ScopeNode } from '../models/dashboardScope';
+import type { Boundary, TrendMode, TrendPoint } from '../models/dashboardTrend';
 
 // Seed mode note: the old hand-written fixtures (dashboardDrilldownSeed.ts)
 // describe a fixed 2-level Zone/DMA model and don't map onto the real,
@@ -67,4 +68,21 @@ export async function fetchNodeAncestors(nodeId: string): Promise<ScopeNode[]> {
     console.warn('[dashboardDataService] Error resolving node ancestors from API:', err);
   }
   return [];
+}
+
+/**
+ * Consumption of everything under an area, day by day (the last `days` days) or month by month (the last 12 months).
+ * Throws when it cannot be loaded, so the dialog can say so instead of showing an empty chart as if it were the truth.
+ */
+export async function fetchNodeTrend(nodeId: string, mode: TrendMode, days: number): Promise<TrendPoint[]> {
+  const res = await apiRequest<TrendPoint[]>(`/dashboard/nodes/${encodeURIComponent(nodeId)}/trend`, {
+    query: mode === 'MONTHLY' ? { mode } : { mode, days },
+  });
+  return Array.isArray(res) ? res : [];
+}
+
+/** The zone / DMA boundary polygons under an area. Throws when they cannot be loaded. */
+export async function fetchNodeBoundaries(nodeId: string): Promise<Boundary[]> {
+  const res = await apiRequest<Boundary[]>(`/dashboard/nodes/${encodeURIComponent(nodeId)}/boundaries`);
+  return Array.isArray(res) ? res : [];
 }

@@ -22,7 +22,7 @@ export function GatewayFramesTable({
         <table className="cc-telemetry-table">
           <thead>
             <tr>
-              <th>Decoded At (UTC)</th>
+              <th>Decoded At</th>
               <th>Meter ID</th>
               <th>DevEUI</th>
               <th>FCnt</th>
@@ -48,7 +48,7 @@ export function GatewayFramesTable({
                   className="cc-table-row"
                   onClick={() => onSelectFrameMeter(frame.meterId)}
                 >
-                  <td className="cc-mono">{frame.decodedAt}</td>
+                  <td className="cc-mono">{frame.localTime ?? frame.decodedAt}</td>
                   <td className="cc-mono cc-cell-bold">{frame.meterId}</td>
                   <td className="cc-mono cc-cell-mute">{frame.devEui}</td>
                   <td className="cc-mono">{frame.fCnt}</td>

@@ -1,17 +1,16 @@
 import { Router } from 'express';
-import { pool } from '../db/pool.js';
+import { getSiteOptions, SessionExpiredError } from '../services/dashboardService.js';
 
 const router = Router();
 
-router.get('/', async (_req, res) => {
+// The sites the caller may filter by: the real site tree from the metadata mirror, limited to what the beta says the
+// caller can open. "All Sites" always comes first.
+router.get('/', async (req, res) => {
   try {
-    const result = await pool.query('SELECT id, name FROM sites ORDER BY name');
-    const sites = [
-      { id: 'ALL', name: 'All Sites' },
-      ...result.rows.map((r: any) => ({ id: String(r.id), name: r.name })),
-    ];
-    res.json(sites);
+    const sites = await getSiteOptions(req.headers.authorization);
+    res.json([{ id: 'ALL', name: 'All Sites', parentId: null, label: 'All Sites' }, ...sites]);
   } catch (err: any) {
+    if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
     res.status(500).json({ error: 'Failed to fetch sites', message: err.message });
   }
 });

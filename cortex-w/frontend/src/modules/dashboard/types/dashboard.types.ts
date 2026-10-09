@@ -41,7 +41,7 @@ export interface ExecutiveSummaryDTO {
 }
 
 export interface GatewayMeterSummaryDTO {
-  totalUniqueMeters: number;
+  totalSendingMeters?: number;
   gatewayCount: number;
   metersOnMultipleGateways: number;
   perGateway: Array<{ gatewayId: string; uniqueMeterCount: number }>;
@@ -55,7 +55,6 @@ export interface MeterHealthDTO {
   lastSeenDate: string;
   decodedAt: string;
   rssi: number;
-  batteryStatus: string;
   timeZone: string;
 }
 
@@ -76,18 +75,11 @@ export interface MeterWiseConsumptionDTO {
   currentReading?: number;
   reverseFlow?: number;
   forwardFlowL?: number;
-  batteryVoltage?: number;
-  batteryStatus?: string;
-  batteryHealth?: string;
   signalStrength?: number;
   signalQuality?: number;
   rssi?: number;
   snr?: number;
-  valveStatus?: boolean;
-  valveClosed?: boolean;
-  valveHealth?: string;
   checksumStatus?: string;
-  statusByte?: number;
   meterTimestamp?: string;
   decodedAt?: string;
   startReading?: number;

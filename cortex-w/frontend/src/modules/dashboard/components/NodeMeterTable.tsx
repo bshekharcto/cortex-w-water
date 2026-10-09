@@ -160,7 +160,7 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
                   {m.totalizerM3 !== undefined ? formatNumber(m.totalizerM3) : '—'}
                 </td>
                 <td style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-                  {m.latestReadingAt ? new Date(m.latestReadingAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                  {m.latestReadingLocal ? m.latestReadingLocal.slice(11, 16) : m.latestReadingAt ? new Date(m.latestReadingAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
                 </td>
                 <td>
                   <StatusBadge status={getBadgeStatus(m.connectivityStatus)} />

@@ -17,28 +17,56 @@ import { LiveNetworkFeed } from '../components/LiveNetworkFeed';
 // Live API & Types
 import {
   fetchCommandCenterSummary,
+  fetchGatewayMeters,
   fetchSites,
   getLocalCachedSummary,
+  searchMeters,
+  CustomRange,
+  GatewayMetersPage,
+  MeterFilterKey,
   TelemetrySummaryResponse,
 } from '@/services/api/commandCenterApi';
 import {
-  BHUBANESWAR_KPIS,
-  BHUBANESWAR_GATEWAYS,
-  SAMPLE_METERS,
-  RAW_TELEMETRY_FRAMES,
-} from '../repository/commandCenterData';
-import {
+  GatewayItem,
   GatewayTabType,
+  NetworkKpiData,
   TimeWindow,
   MeterTelemetryItem,
   RawFrameItem,
 } from '../types/commandCenter.types';
 
-const TARGET_DATE = new Date().toISOString().slice(0, 10);
+// What the page shows before the first answer, or when none could be loaded: nothing, never sample data.
+const NO_GATEWAYS: GatewayItem[] = [];
+const NO_FRAMES: RawFrameItem[] = [];
+const EMPTY_KPIS: NetworkKpiData = {
+  gatewaysWithTraffic: 0,
+  totalConfiguredGateways: 0,
+  uniqueMetersSeen: 0,
+  configuredMeters: 0,
+  framesReceived: 0,
+  framesTrend: '',
+  lastFrameAge: '—',
+  multiGatewayMeters: 0,
+  avgRssi: 0,
+  avgSnr: 0,
+};
+
+const METERS_PAGE_SIZE = 100;
+const EMPTY_METERS_PAGE: GatewayMetersPage = { content: [], page: 0, size: METERS_PAGE_SIZE, total: 0, totalPages: 0 };
+
+function daysFor(range: TimeWindow): number {
+  return range === '30D' ? 30 : range === '7D' ? 7 : 1;
+}
+
+// a day as YYYY-MM-DD on the clock of this browser; only the first guess of the custom range, the server cuts the real days
+function isoDaysAgo(days: number): string {
+  return new Date(Date.now() - days * 86400000).toLocaleDateString('en-CA');
+}
 
 export function CommandCenterPage() {
   const [activeMode, setActiveMode] = useState<'Gateways' | 'Meters'>('Gateways');
   const [timeRange, setTimeRange] = useState<TimeWindow>('7D');
+  const [customRange, setCustomRange] = useState<CustomRange>({ from: isoDaysAgo(6), to: isoDaysAgo(0) });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGatewayId, setSelectedGatewayId] = useState<string | null>(null);
   const [gatewayTab, setGatewayTab] = useState<GatewayTabType>('METERS');
@@ -47,14 +75,7 @@ export function CommandCenterPage() {
 
   // Dynamic Site Selector State
   const [selectedSiteId, setSelectedSiteId] = useState<string>('ALL');
-  const [sites, setSites] = useState<Array<{ id: string; name: string }>>([
-    { id: 'ALL', name: 'All Sites (Fleet)' },
-    { id: '6394', name: 'BHUBANESWAR' },
-    { id: '6916', name: 'Cuttack' },
-    { id: '6906', name: 'Puri' },
-    { id: '6907', name: 'SCS College' },
-    { id: '6908', name: 'Baliapunda' },
-  ]);
+  const [sites, setSites] = useState<Array<{ id: string; name: string; parentId?: string | null }>>([{ id: 'ALL', name: 'All Sites' }]);
 
   // Load available sites from backend
   useEffect(() => {
@@ -67,24 +88,32 @@ export function CommandCenterPage() {
 
   // Live Summary State with 0ms Stale-While-Revalidate from LocalStorage Cache
   const [summaryData, setSummaryData] = useState<TelemetrySummaryResponse | null>(() => {
-    return getLocalCachedSummary(7, TARGET_DATE, 'ALL') || null;
+    return getLocalCachedSummary(7, undefined, 'ALL') || null;
   });
   const [isSyncing, setIsSyncing] = useState<boolean>(!summaryData);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Background fetch routine (supports 1H, 6H, 24H, 7D, 30D and site filtering)
   const loadSummary = useCallback(async (forceRefresh = false) => {
     setIsSyncing(true);
     try {
-      const days = timeRange === '30D' ? 30 : timeRange === '7D' ? 7 : timeRange === '24H' ? 1 : 1;
-      const live = await fetchCommandCenterSummary(days, TARGET_DATE, forceRefresh, selectedSiteId);
+      const live = await fetchCommandCenterSummary(
+        daysFor(timeRange),
+        undefined,
+        forceRefresh,
+        selectedSiteId,
+        timeRange === 'CUSTOM' ? customRange : undefined
+      );
       setSummaryData(live);
       setSecondsAgo(0);
+      setLoadError(null);
     } catch (err) {
-      console.warn('[CommandCenter] Live summary sync note (using cached/fallback):', err);
+      console.warn('[CommandCenter] Live summary could not be loaded:', err);
+      setLoadError(err instanceof Error ? err.message : 'Live data could not be loaded');
     } finally {
       setIsSyncing(false);
     }
-  }, [timeRange, selectedSiteId]);
+  }, [timeRange, customRange, selectedSiteId]);
 
   // Sync on mount or when timeRange or selectedSiteId changes
   useEffect(() => {
@@ -112,12 +141,15 @@ export function CommandCenterPage() {
   };
 
   // Derived Gateways list
-  const currentGateways = useMemo(() => {
-    if (summaryData?.gateways && summaryData.gateways.length > 0) {
-      return summaryData.gateways;
-    }
-    return BHUBANESWAR_GATEWAYS;
-  }, [summaryData]);
+  const currentGateways = useMemo(() => summaryData?.gateways ?? NO_GATEWAYS, [summaryData]);
+
+  // the window and site the per-gateway tabs (Traffic, Radio Health) cover
+  const gatewayScope = {
+    days: daysFor(timeRange),
+    custom: timeRange === 'CUSTOM' ? customRange : undefined,
+    siteId: selectedSiteId,
+  };
+  const windowText = timeRange === 'CUSTOM' ? `${customRange.from} → ${customRange.to}` : timeRange;
 
   // Ensure an active gateway is selected once gateways are known
   useEffect(() => {
@@ -128,21 +160,11 @@ export function CommandCenterPage() {
 
   // Derived KPIs
   const currentKpis = useMemo(() => {
-    return summaryData?.kpis || BHUBANESWAR_KPIS;
-  }, [summaryData]);
-
-  // Derived Meters by Gateway
-  const metersByGatewayMap = useMemo(() => {
-    return summaryData?.metersByGateway || SAMPLE_METERS;
+    return summaryData?.kpis || EMPTY_KPIS;
   }, [summaryData]);
 
   // Derived Raw Frames for live feed and tables
-  const allFrames = useMemo<RawFrameItem[]>(() => {
-    if (summaryData?.recentFrames && summaryData.recentFrames.length > 0) {
-      return summaryData.recentFrames;
-    }
-    return RAW_TELEMETRY_FRAMES;
-  }, [summaryData]);
+  const allFrames = useMemo<RawFrameItem[]>(() => summaryData?.recentFrames ?? NO_FRAMES, [summaryData]);
 
   // Time window filter for frames
   const timeFilteredFrames = useMemo(() => {
@@ -163,16 +185,48 @@ export function CommandCenterPage() {
     return currentGateways.find((g) => g.gatewayId === selectedGatewayId) || null;
   }, [selectedGatewayId, currentGateways]);
 
-  // Meters observed by selected gateway
-  const currentMeters = useMemo(() => {
-    if (!selectedGatewayId) return [];
-    return (
-      metersByGatewayMap[selectedGatewayId] ||
-      SAMPLE_METERS[selectedGatewayId] ||
-      SAMPLE_METERS['506f9800000002a5'] ||
-      []
-    );
-  }, [selectedGatewayId, metersByGatewayMap]);
+  // Meters observed by the selected gateway: one server-side page at a time
+  const [metersPage, setMetersPage] = useState(0);
+  const [metersFilter, setMetersFilter] = useState<MeterFilterKey>('ALL');
+  const [metersData, setMetersData] = useState<GatewayMetersPage>(EMPTY_METERS_PAGE);
+  const [metersLoading, setMetersLoading] = useState(false);
+
+  // a different gateway, filter, window or site starts again at the first page
+  useEffect(() => {
+    setMetersPage(0);
+  }, [selectedGatewayId, metersFilter, timeRange, customRange, selectedSiteId]);
+
+  const summaryStamp = summaryData?.generatedAt;
+  useEffect(() => {
+    if (!selectedGatewayId) {
+      setMetersData(EMPTY_METERS_PAGE);
+      return;
+    }
+    let cancelled = false;
+    setMetersLoading(true);
+    fetchGatewayMeters(selectedGatewayId, {
+      days: daysFor(timeRange),
+      page: metersPage,
+      size: METERS_PAGE_SIZE,
+      filter: metersFilter,
+      custom: timeRange === 'CUSTOM' ? customRange : undefined,
+      siteId: selectedSiteId,
+    })
+      .then((res) => {
+        if (!cancelled) setMetersData(res);
+      })
+      .catch((err) => {
+        console.warn('[CommandCenter] Could not load gateway meters:', err);
+        if (!cancelled) setMetersData(EMPTY_METERS_PAGE);
+      })
+      .finally(() => {
+        if (!cancelled) setMetersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // summaryStamp: the table refreshes together with the 45 s summary refresh
+  }, [selectedGatewayId, metersPage, metersFilter, timeRange, customRange, selectedSiteId, summaryStamp]);
 
   // Frames received by selected gateway
   const currentFrames = useMemo(() => {
@@ -185,22 +239,17 @@ export function CommandCenterPage() {
     setSelectedMeter(meter);
   };
 
-  const handleSelectMeterById = (meterId: string) => {
-    // Look up in metersByGatewayMap
-    for (const gwId of Object.keys(metersByGatewayMap)) {
-      const found = metersByGatewayMap[gwId].find((m) => m.meterId === meterId);
+  const handleSelectMeterById = async (meterId: string) => {
+    try {
+      const found = (
+        await searchMeters(meterId, daysFor(timeRange), timeRange === 'CUSTOM' ? customRange : undefined, selectedSiteId)
+      ).find((m) => m.meterId === meterId);
       if (found) {
         setSelectedMeter(found);
         return;
       }
-    }
-    // Fallback: look up in sample meters
-    for (const gwId of Object.keys(SAMPLE_METERS)) {
-      const found = SAMPLE_METERS[gwId].find((m) => m.meterId === meterId);
-      if (found) {
-        setSelectedMeter(found);
-        return;
-      }
+    } catch (err) {
+      console.warn('[CommandCenter] Meter lookup failed, using the frame instead:', err);
     }
     // Fallback: construct synthesized item from frame
     const frame = allFrames.find((f) => f.meterId === meterId);
@@ -236,35 +285,45 @@ export function CommandCenterPage() {
     }
   };
 
-  // Global search handler
+  const findGatewayByQuery = useCallback(
+    (q: string) => {
+      const query = q.toLowerCase();
+      return currentGateways.find(
+        (g) => g.alias.toLowerCase().includes(query) || g.gatewayId.toLowerCase().includes(query)
+      );
+    },
+    [currentGateways]
+  );
+
+  // Global search handler: a gateway matches at once, a meter is looked up on the server once typing pauses
   const handleSearch = (q: string) => {
     setSearchQuery(q);
-    if (!q) return;
-    const query = q.toLowerCase();
-    // Check gateway alias or id
-    const gw = currentGateways.find(
-      (g) => g.alias.toLowerCase().includes(query) || g.gatewayId.toLowerCase().includes(query)
-    );
+    const query = q.trim();
+    if (!query) return;
+    const gw = findGatewayByQuery(query);
     if (gw) {
       setSelectedGatewayId(gw.gatewayId);
       setGatewayTab('METERS');
-      return;
-    }
-    // Check meter id or deveui across all gateways
-    for (const gwId of Object.keys(metersByGatewayMap)) {
-      const m = metersByGatewayMap[gwId].find(
-        (meter) =>
-          meter.meterId.toLowerCase().includes(query) ||
-          meter.devEui.toLowerCase().includes(query)
-      );
-      if (m) {
-        setSelectedGatewayId(gwId);
-        setSelectedMeter(m);
-        setGatewayTab('METERS');
-        return;
-      }
     }
   };
+
+  useEffect(() => {
+    const query = searchQuery.trim();
+    if (query.length < 3 || findGatewayByQuery(query)) return;
+    const timer = setTimeout(async () => {
+      try {
+        const found = await searchMeters(query, daysFor(timeRange), timeRange === 'CUSTOM' ? customRange : undefined, selectedSiteId);
+        if (found.length > 0) {
+          setSelectedGatewayId(found[0].gatewayId);
+          setSelectedMeter(found[0]);
+          setGatewayTab('METERS');
+        }
+      } catch (err) {
+        console.warn('[CommandCenter] Meter search failed:', err);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchQuery, timeRange, customRange, selectedSiteId, findGatewayByQuery]);
 
   return (
     <div className="cc-container">
@@ -274,6 +333,9 @@ export function CommandCenterPage() {
         onTabChange={setActiveMode}
         timeRange={timeRange}
         onTimeRangeChange={setTimeRange}
+        customRange={customRange}
+        maxDate={summaryData?.dateRange?.toDate}
+        onCustomRangeChange={setCustomRange}
         searchQuery={searchQuery}
         onSearchChange={handleSearch}
         onRefresh={handleManualRefresh}
@@ -285,9 +347,18 @@ export function CommandCenterPage() {
       />
 
       {/* Network Health 8-KPI Strip with Skeleton Loaders */}
+      {loadError && (
+        <div className="cc-error-banner" role="alert">
+          {summaryData
+            ? 'Live data could not be refreshed — showing the last data received.'
+            : 'Live data could not be loaded.'}
+        </div>
+      )}
+
       <NetworkKpiStrip
         kpis={currentKpis}
         loading={isSyncing && !summaryData}
+        windowText={windowText}
       />
 
       {/* Main Operational Workspace */}
@@ -317,12 +388,20 @@ export function CommandCenterPage() {
                 gateway={currentGateway}
                 activeTab={gatewayTab}
                 onTabChange={setGatewayTab}
-                onClearSelection={() => setSelectedGatewayId(null)}
+                windowText={windowText}
               />
 
               {gatewayTab === 'METERS' && (
                 <GatewayMetersTable
-                  meters={currentMeters}
+                  meters={metersData.content}
+                  total={metersData.total}
+                  page={metersPage}
+                  pageSize={METERS_PAGE_SIZE}
+                  totalPages={metersData.totalPages}
+                  loading={metersLoading}
+                  filter={metersFilter}
+                  onFilterChange={setMetersFilter}
+                  onPageChange={setMetersPage}
                   selectedMeterId={selectedMeter?.meterId || null}
                   onSelectMeter={handleSelectMeter}
                 />
@@ -338,14 +417,20 @@ export function CommandCenterPage() {
 
               {gatewayTab === 'TRAFFIC' && (
                 <GatewayTrafficChart
+                  gatewayId={currentGateway.gatewayId}
                   gatewayAlias={currentGateway.alias}
                   allGateways={currentGateways}
-                  hourlyActivity={summaryData?.hourlyActivity}
+                  scope={gatewayScope}
+                  totalMeters={currentKpis.uniqueMetersSeen}
                 />
               )}
 
               {gatewayTab === 'RADIO' && (
-                <GatewayRadioHealth gatewayAlias={currentGateway.alias} />
+                <GatewayRadioHealth
+                  gatewayId={currentGateway.gatewayId}
+                  gatewayAlias={currentGateway.alias}
+                  scope={gatewayScope}
+                />
               )}
             </>
           ) : (
@@ -371,6 +456,7 @@ export function CommandCenterPage() {
       {/* Bottom: Live Network Telemetry Feed */}
       <LiveNetworkFeed
         frames={allFrames}
+        metersReporting={currentKpis.uniqueMetersSeen}
         onSelectMeter={handleSelectMeterById}
       />
     </div>

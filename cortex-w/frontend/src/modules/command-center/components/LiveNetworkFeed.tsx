@@ -4,10 +4,11 @@ import { RawFrameItem } from '../types/commandCenter.types';
 
 interface Props {
   frames: RawFrameItem[];
+  metersReporting: number; // the meters that sent a frame in the chosen window
   onSelectMeter: (meterId: string) => void;
 }
 
-export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
+export function LiveNetworkFeed({ frames, metersReporting, onSelectMeter }: Props) {
   const [filter, setFilter] = useState<'ALL' | 'NORMAL' | 'WEAK' | 'DEGRADED' | 'MULTI_GW'>('ALL');
 
   const filteredFrames = useMemo(() => {
@@ -24,7 +25,7 @@ export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
         <div className="cc-feed-title-wrap">
           <Radio size={14} className="cc-live-pulse-icon" />
           <span className="cc-feed-title">LIVE NETWORK TELEMETRY FEED</span>
-          <span className="cc-feed-status-tag">2,532 meters reporting</span>
+          <span className="cc-feed-status-tag">{metersReporting.toLocaleString()} meters reporting</span>
         </div>
 
         <div className="cc-feed-filters">
@@ -50,7 +51,7 @@ export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
         <table className="cc-telemetry-table cc-feed-table">
           <thead>
             <tr>
-              <th>Time (UTC)</th>
+              <th>Time</th>
               <th>Gateway</th>
               <th>Meter ID</th>
               <th>DevEUI</th>
@@ -74,7 +75,7 @@ export function LiveNetworkFeed({ frames, onSelectMeter }: Props) {
                   onClick={() => onSelectMeter(frame.meterId)}
                   title={`Click to inspect Meter ${frame.meterId}`}
                 >
-                  <td className="cc-mono cc-cell-time">{frame.decodedAt}</td>
+                  <td className="cc-mono cc-cell-time">{frame.localTime ?? frame.decodedAt}</td>
                   <td className="cc-cell-bold">{frame.gatewayAlias}</td>
                   <td className="cc-mono cc-cell-bold">{frame.meterId}</td>
                   <td className="cc-mono cc-cell-mute">{frame.devEui}</td>

@@ -25,12 +25,8 @@ export interface LiveMeterDetailResponse {
   readingDate: string | null;
   consumption: number;
   monthToDateM3: number | null;
-  batteryVoltage: number | null;
-  batteryStatus: string | null;
   signalRssi: number | null;
   signalSnr: number | null;
-  valveStatus: boolean | null;
-  valveClosed: boolean | null;
   lastSeen: string | null;
   consumer: {
     id: number | null;

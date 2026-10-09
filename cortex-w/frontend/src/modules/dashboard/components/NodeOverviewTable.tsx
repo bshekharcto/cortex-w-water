@@ -1,8 +1,10 @@
 import { useState, useMemo } from 'react';
-import { ChevronDown, ChevronUp, ArrowUpDown, ChevronLeft, ChevronRight, ChevronRight as DrillIcon } from 'lucide-react';
+import { ChevronDown, ChevronUp, ArrowUpDown, ChevronLeft, ChevronRight, ChevronRight as DrillIcon, LineChart, MapPinned } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
 import { formatNumber } from '@/utils/number';
 import type { NodeRow } from '../models/dashboardRows';
+import { ConsumptionTrendDialog } from './ConsumptionTrendDialog';
+import { BoundaryMapDialog } from './BoundaryMapDialog';
 
 interface NodeOverviewTableProps {
   nodes: NodeRow[];
@@ -21,6 +23,9 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [page, setPage] = useState<number>(0);
   const pageSize = 10;
+  // the area whose consumption chart / boundary map is open
+  const [trendNode, setTrendNode] = useState<NodeRow | null>(null);
+  const [mapNode, setMapNode] = useState<NodeRow | null>(null);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -33,7 +38,10 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
 
   const sortedNodes = useMemo(() => {
     const list = [...nodes];
+    // "Not in a sub-area" (id own-<site>) is not a real area: it always stays at the end, whatever the sort
+    const isOwn = (n: { id: string }) => n.id.startsWith('own-');
     list.sort((a, b) => {
+      if (isOwn(a) !== isOwn(b)) return isOwn(a) ? 1 : -1;
       let vA: any = sortField === 'name' ? a.name : a[sortField];
       let vB: any = sortField === 'name' ? b.name : b[sortField];
       if (typeof vA === 'string') {
@@ -109,6 +117,7 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Monthly Flow (m³) {renderSortIcon('monthToDateFlowM3')}</div>
               </th>
               <th>Last Updated</th>
+              <th style={{ textAlign: 'center' }}>Actions</th>
               <th style={{ width: 32 }} />
             </tr>
           </thead>
@@ -150,7 +159,38 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
                     {formatNumber(n.monthToDateFlowM3)}
                   </td>
                   <td style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-                    {n.dataTimestamp ? new Date(n.dataTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live'}
+                    {n.dataLocalTime ? n.dataLocalTime.slice(11, 16) : n.dataTimestamp ? new Date(n.dataTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live'}
+                  </td>
+                  <td style={{ textAlign: 'center' }}>
+                   <div style={{ display: 'inline-flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                    <button
+                      className="cw-icon-btn"
+                      title="View consumption trend"
+                      aria-label={`Consumption trend of ${n.name}`}
+                      style={{ color: 'var(--cw-primary)', display: 'inline-flex' }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setTrendNode(n);
+                      }}
+                    >
+                      <LineChart size={16} />
+                    </button>
+                    {/* the map shows zone / DMA boundaries: not for a top-level area, nor for "Not in a sub-area" */}
+                    {n.parentId != null && !n.id.startsWith('own-') && (
+                      <button
+                        className="cw-icon-btn"
+                        title="View boundary on map"
+                        aria-label={`Boundary of ${n.name} on the map`}
+                        style={{ color: 'var(--cw-primary)', display: 'inline-flex' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMapNode(n);
+                        }}
+                      >
+                        <MapPinned size={16} />
+                      </button>
+                    )}
+                   </div>
                   </td>
                   <td style={{ textAlign: 'center', color: 'var(--cw-text-muted)' }}>
                     <DrillIcon size={14} />
@@ -185,6 +225,11 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
           </button>
         </div>
       )}
+
+      {trendNode && (
+        <ConsumptionTrendDialog nodeId={trendNode.id} nodeName={trendNode.name} onClose={() => setTrendNode(null)} />
+      )}
+      {mapNode && <BoundaryMapDialog nodeId={mapNode.id} nodeName={mapNode.name} onClose={() => setMapNode(null)} />}
     </section>
   );
 }

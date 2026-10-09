@@ -7,7 +7,7 @@
 import {
   LayoutDashboard, Activity, Map, RadioTower, MapPin, Users,
   ReceiptIndianRupee, BrainCircuit, BellRing, Waves, Settings, Plug,
-  ShieldCheck, Database, Gauge, Radio, Wifi, BatteryMedium,
+  ShieldCheck, Database, Gauge, Radio, Wifi,
 } from 'lucide-react';
 
 export const CORTEX_ICONS = {
@@ -28,7 +28,6 @@ export const CORTEX_ICONS = {
   meter: Gauge,
   gateway: Radio,
   signal: Wifi,
-  battery: BatteryMedium,
 } as const;
 
 /** Applied ONLY around <CommandCenterPage/>'s route element. See router.tsx. */

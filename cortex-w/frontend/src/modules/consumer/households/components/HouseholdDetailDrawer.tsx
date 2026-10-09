@@ -303,14 +303,13 @@ function HouseholdDetailDrawerContent({ household, onClose }: { household: House
 
           <div className="gis-meter-kpi-card">
             <div className="gis-kpi-top">
-              <span className="gis-kpi-label">Supply Valve / Meter</span>
+              <span className="gis-kpi-label">Meter Number</span>
               <Zap size={13} color="#059669" />
             </div>
             <div className="gis-kpi-val-group">
               <span className="gis-kpi-big" style={{ fontSize: 13, fontFamily: 'monospace' }}>
                 {meterNumber}
               </span>
-              <span className="gis-kpi-small" style={{ color: '#059669', fontWeight: 600 }}>Valve Open</span>
             </div>
             <div className="gis-kpi-footer">
               <span className="gis-meta-seen" style={{ color: '#2563EB', fontWeight: 600 }}>
@@ -591,18 +590,6 @@ function HouseholdDetailDrawerContent({ household, onClose }: { household: House
                 <span className="gis-k">Signal Link Quality (RSSI / SNR)</span>
                 <span className="gis-v" style={{ color: '#059669', fontWeight: 600 }}>
                   {activeMeter?.rssi ?? -84} dBm / {activeMeter?.snr ?? 8} dB
-                </span>
-              </div>
-              <div className="gis-kv-row">
-                <span className="gis-k">Battery Cell Voltage</span>
-                <span className="gis-v" style={{ color: '#059669', fontWeight: 600 }}>
-                  3.6 V Lithium Thionyl (92% Health)
-                </span>
-              </div>
-              <div className="gis-kv-row">
-                <span className="gis-k">Internal Motorized Valve</span>
-                <span className="gis-v" style={{ color: '#059669', fontWeight: 600 }}>
-                  Open (Normal)
                 </span>
               </div>
               <div className="gis-kv-row">

@@ -65,7 +65,7 @@ export function MeterInspector({ meter, onClose }: Props) {
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">Decoded At</span>
-            <span className="cc-v cc-mono">{meter.lastSeenDate.slice(11, 23)} UTC</span>
+            <span className="cc-v cc-mono">{meter.lastSeenLocal ?? meter.lastSeenDate}</span>
           </div>
           <div className="cc-kv-row">
             <span className="cc-k">FCnt</span>

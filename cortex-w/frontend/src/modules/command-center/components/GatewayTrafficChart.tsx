@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ResponsiveContainer,
   BarChart,
@@ -8,30 +8,50 @@ import {
   Tooltip,
   CartesianGrid,
 } from 'recharts';
-import { HOURLY_UPLINK_ACTIVITY } from '../repository/commandCenterData';
 import { GatewayItem } from '../types/commandCenter.types';
+import { fetchGatewayHourly, GatewayHourlyData, GatewayScope } from '@/services/api/commandCenterApi';
 
 interface Props {
+  gatewayId: string;
   gatewayAlias?: string;
   allGateways: GatewayItem[];
-  hourlyActivity?: Array<{ hour: string; count: number }>;
+  scope: GatewayScope;
+  totalMeters: number;
 }
 
 export function GatewayTrafficChart({
+  gatewayId,
   gatewayAlias = 'All Gateways',
   allGateways,
-  hourlyActivity,
+  scope,
+  totalMeters,
 }: Props) {
-  const chartData = useMemo(() => {
-    if (hourlyActivity && hourlyActivity.length > 0) {
-      return hourlyActivity.map((h) => ({
-        time: h.hour,
-        normal: h.count,
-        degraded: Math.floor(h.count * 0.04),
-      }));
-    }
-    return HOURLY_UPLINK_ACTIVITY;
-  }, [hourlyActivity]);
+  const [hourly, setHourly] = useState<GatewayHourlyData | null>(null);
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
+
+  const customFrom = scope.custom?.from;
+  const customTo = scope.custom?.to;
+  useEffect(() => {
+    let cancelled = false;
+    setState('loading');
+    fetchGatewayHourly(gatewayId, scope)
+      .then((res) => {
+        if (cancelled) return;
+        setHourly(res);
+        setState('ready');
+      })
+      .catch((err) => {
+        console.warn('[GatewayTrafficChart] Could not load hourly activity:', err);
+        if (!cancelled) setState('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+    // the scope object is rebuilt on every render; its fields are what matter
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gatewayId, scope.days, customFrom, customTo, scope.siteId]);
+
+  const chartData = (hourly ?? []).map((h) => ({ time: h.hour, normal: h.normal, degraded: h.degraded }));
   const topGateways = [...allGateways]
     .filter((gw) => gw.uniqueMeters > 0)
     .sort((a, b) => b.uniqueMeters - a.uniqueMeters)
@@ -45,7 +65,8 @@ export function GatewayTrafficChart({
       <div className="cc-card cc-chart-card">
         <div className="cc-card-header">
           <span className="cc-card-title">
-            UPLINK ACTIVITY ({gatewayAlias.toUpperCase()}) — 24H
+            UPLINK ACTIVITY ({gatewayAlias.toUpperCase()}) — BY HOUR
+            {state === 'loading' ? ' · loading…' : state === 'error' ? ' · could not load' : ''}
           </span>
           <div className="cc-chart-legend">
             <span className="cc-legend-item">
@@ -92,7 +113,7 @@ export function GatewayTrafficChart({
       <div className="cc-card cc-chart-card">
         <div className="cc-card-header">
           <span className="cc-card-title">TOP GATEWAYS — UNIQUE METERS</span>
-          <span className="cc-card-meta">of 2,532 observed</span>
+          <span className="cc-card-meta">of {totalMeters.toLocaleString()} observed</span>
         </div>
 
         <div className="cc-bars-container">

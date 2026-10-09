@@ -1,6 +1,5 @@
+import { createHash } from 'node:crypto';
 import { pool } from '../db/pool.js';
-import { proxyUpstream } from './upstreamProxy.js';
-import { getAuthToken } from '../routes/gis.js';
 
 export interface TelemetrySummary {
   dateRange: { fromDate: string; toDate: string; days: number };
@@ -9,7 +8,6 @@ export interface TelemetrySummary {
   kpis: {
     gatewaysWithTraffic: number;
     totalConfiguredGateways: number;
-    noRecentTrafficGateways: number;
     uniqueMetersSeen: number;
     configuredMeters: number;
     framesReceived: number;
@@ -18,8 +16,6 @@ export interface TelemetrySummary {
     multiGatewayMeters: number;
     avgRssi: number;
     avgSnr: number;
-    batteryAbnormalCount: number;
-    valveAbnormalCount: number;
     reverseFlowCount: number;
   };
   gateways: Array<{
@@ -34,7 +30,6 @@ export interface TelemetrySummary {
     trendText: string;
     status: 'reporting' | 'degraded' | 'stale' | 'no-traffic';
   }>;
-  metersByGateway: Record<string, any[]>;
   allMetersCount: number;
   recentFrames: any[];
   hourlyActivity: Array<{ hour: string; count: number }>;
@@ -66,173 +61,294 @@ function getGatewayAlias(id: string): string {
   return `GW-${suffix}`;
 }
 
-/**
- * Ingests a single day's packets into PostgreSQL raw_telemetry_packets
- */
-export async function ingestDateIntoPostgres(date: string): Promise<number> {
-  const token = await getAuthToken();
-  let insertedTotal = 0;
-  let cursor: string | undefined = undefined;
-  let hasMore = true;
-  let page = 0;
-  const maxPages = 6; // up to 3000 records per day
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-  while (hasMore && page < maxPages) {
-    const payload: { page: number; size: number; cursor?: string } = { page, size: 500 };
-    if (cursor) payload.cursor = cursor;
-
-    try {
-      const upstreamRes = await proxyUpstream(
-        'POST',
-        `/api/water/raw-data/cursor?fromDate=${date}&endDate=${date}&rawReport=true`,
-        {
-          body: payload,
-          headers: { Authorization: token },
-        }
-      );
-
-      if (upstreamRes.status !== 200 || !upstreamRes.data) break;
-
-      const resData = upstreamRes.data as {
-        content?: any[];
-        nextCursor?: string;
-        hasMore?: boolean;
-      };
-
-      const items = resData.content || [];
-      if (items.length === 0) break;
-
-      // Multi-row batch insert for ultra-fast ingestion
-      const validItems = items.filter(item => item.meterId && item.gatewayId && item.decodedAt);
-      if (validItems.length > 0) {
-        const valuePlaceholders: string[] = [];
-        const values: any[] = [];
-        let pIdx = 1;
-
-        for (const item of validItems) {
-          valuePlaceholders.push(
-            `($${pIdx}, $${pIdx+1}, $${pIdx+2}, $${pIdx+3}, $${pIdx+4}, $${pIdx+5}, $${pIdx+6}, $${pIdx+7}, $${pIdx+8}, $${pIdx+9}, $${pIdx+10}, $${pIdx+11}, $${pIdx+12}, $${pIdx+13}, $${pIdx+14}, $${pIdx+15}, $${pIdx+16}, $${pIdx+17}, $${pIdx+18}, $${pIdx+19}, $${pIdx+20}, $${pIdx+21}, $${pIdx+22})`
-          );
-          values.push(
-            item.meterId,
-            item.gatewayId,
-            item.devEui || `506f9800${item.meterId.slice(-8)}`,
-            item.decodedAt,
-            date,
-            item.forwardFlowL ?? 0,
-            item.reverseFlow ?? 0,
-            item.batteryVoltage ?? 3.6,
-            item.batteryStatus || 'OK',
-            item.batteryHealth || 'Normal',
-            item.valveHealth || 'Normal',
-            item.valveClosed ?? false,
-            item.checksumStatus || 'OK',
-            item.statusByte ?? 0,
-            item.rssi ?? -90,
-            item.snr ?? -10,
-            item.fcnt ?? 1,
-            item.fport ?? 12,
-            item.frequency ?? 865985000,
-            item.dr ?? 0,
-            item.adr ?? false,
-            item.confirmed ?? true,
-            item.meterTimestamp || item.decodedAt
-          );
-          pIdx += 23;
-        }
-
-        try {
-          await pool.query(
-            `INSERT INTO raw_telemetry_packets (
-              meter_id, gateway_id, dev_eui, decoded_at, date_key,
-              forward_flow_l, reverse_flow, battery_voltage, battery_status,
-              battery_health, valve_health, valve_closed, checksum_status,
-              status_byte, rssi, snr, fcnt, fport, frequency, dr, adr, confirmed, meter_timestamp
-            ) VALUES ${valuePlaceholders.join(', ')}
-            ON CONFLICT (meter_id, gateway_id, decoded_at, fcnt) DO NOTHING`,
-            values
-          );
-          insertedTotal += validItems.length;
-        } catch (dbErr: any) {
-          console.warn('[telemetryDb] Batch insert warning:', dbErr.message);
-        }
-      }
-
-      if (resData.hasMore && resData.nextCursor && resData.nextCursor !== cursor) {
-        cursor = resData.nextCursor;
-        page++;
-      } else {
-        hasMore = false;
-      }
-    } catch (err: any) {
-      console.error(`[telemetryDb] Error ingesting date ${date}:`, err.message);
-      break;
-    }
-  }
-
-  return insertedTotal;
+// Readings are stored in UTC and shown in the time zone of the site: every window, day and hour below is cut there.
+// A zone is a name ("Asia/Kolkata") or the POSIX spelling the metadata sync stores ("UTC-05:30" = 5 h 30 min EAST of
+// Greenwich). It is put into SQL text, so only plain zone characters are let through.
+const SAFE_ZONE = /^[A-Za-z0-9_/+:-]+$/;
+export function safeZone(zone?: string): string {
+  return zone && SAFE_ZONE.test(zone) ? zone : 'UTC';
 }
 
+/** The date (YYYY-MM-DD) it is at `instant` in the zone. */
+export function localDateIn(zone: string, instant: Date = new Date()): string {
+  const posix = /^UTC([+-])(\d{2}):(\d{2})$/.exec(zone);
+  if (posix) {
+    const minutes = (posix[1] === '-' ? 1 : -1) * (Number(posix[2]) * 60 + Number(posix[3])); // UTC-05:30 is EAST
+    return new Date(instant.getTime() + minutes * 60000).toISOString().slice(0, 10);
+  }
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(instant);
+  } catch {
+    return instant.toISOString().slice(0, 10);
+  }
+}
+
+/** The frames from the start of day `from` to the end of day `to`, days of the zone. */
+const inWindow = (zone: string, from: string, to: string) =>
+  `time >= (${from}::date)::timestamp AT TIME ZONE '${zone}' AND time < ((${to}::date + 1)::timestamp AT TIME ZONE '${zone}')`;
+
+const KNOWN_GATEWAY_DAYS = 30;                  // a gateway that sent a frame in this many days is "known"
+const STALE_GATEWAY_AFTER_MS = 6 * 60 * 60 * 1000;
+const DEGRADED_AVG_RSSI = -105;
+const DEGRADED_AVG_SNR = -15;
+
+function shiftDate(date: string, days: number): string {
+  return new Date(Date.parse(date) + days * DAY_MS).toISOString().slice(0, 10);
+}
+
+/** "+6.5% vs prev 7d"; "no earlier data" when the window before had no frames. */
+function trendText(current: number, previous: number, days: number): string {
+  if (!previous) return 'no earlier data';
+  const pct = ((current - previous) / previous) * 100;
+  return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% vs prev ${days}d`;
+}
+
+export interface DateWindow {
+  fromDate: string;
+  toDate: string;
+}
+
+/** The last `days` days ending today at the zone's site (or at `referenceDate`, never later than today), or a custom window. */
+function dateRange(days: number, referenceDate?: string, custom?: DateWindow, zone: string = 'UTC'): DateWindow {
+  if (custom) return custom;
+  const today = localDateIn(zone);
+  const toDate = referenceDate && /^\d{4}-\d{2}-\d{2}$/.test(referenceDate) && referenceDate < today ? referenceDate : today;
+  return { fromDate: shiftDate(toDate, -(days - 1)), toDate };
+}
+
+export type MeterFilter = 'ALL' | 'LIVE' | 'STALE' | 'WEAK_RSSI' | 'POOR_SNR' | 'MULTI_GW';
+
+// The same limits the status chips use, so a filter and the chip on the row always agree.
+const STALE_AFTER_MS = DAY_MS;
+const WEAK_RSSI_DBM = -95;
+const POOR_SNR_DB = -10;
+
+function meterStatusChips(m: { decoded_at: string; rssi: number; snr: number; gateway_count: number }): string[] {
+  const chips: string[] = [];
+  const stale = Date.now() - new Date(m.decoded_at).getTime() > STALE_AFTER_MS;
+  chips.push(stale ? 'stale' : 'live');
+  if (m.rssi < WEAK_RSSI_DBM) chips.push('weak-rssi');
+  if (m.snr < POOR_SNR_DB) chips.push('poor-snr');
+  if (m.gateway_count > 1) chips.push('multi-gw');
+  return chips;
+}
+
+// What a frame's link looks like: the same limits as the meter chips.
+function frameStatus(r: { rssi: number | null; snr: number | null; gateway_count: number | null }): string {
+  const weak = r.rssi != null && r.rssi < WEAK_RSSI_DBM;
+  const poorSnr = r.snr != null && r.snr < POOR_SNR_DB;
+  if (weak && poorSnr) return 'POOR_LINK';
+  if (weak) return 'WEAK_RSSI';
+  if (poorSnr) return 'DEGRADED';
+  if ((r.gateway_count ?? 1) > 1) return 'MULTI_GW';
+  return 'FRAME_RECEIVED';
+}
+
+/** A stored row as the Command Center frame item (recent frames, live feed). */
+export function toFrameItem(r: any, id: string) {
+  return {
+    id,
+    decodedAt: r.decoded_at,
+    meterTimestamp: r.meter_timestamp || r.decoded_at,
+    meterId: r.meter_id,
+    devEui: r.dev_eui,
+    gatewayId: r.gateway_id,
+    gatewayAlias: getGatewayAlias(r.gateway_id),
+    fCnt: r.f_cnt,
+    fPort: r.f_port,
+    frequency: r.frequency,
+    dr: r.dr,
+    rssi: r.rssi,
+    snr: r.snr,
+    confirmed: r.confirmed,
+    adr: r.adr,
+    checksumStatus: r.checksum_status,
+    statusEvent: frameStatus(r),
+    localTime: r.local_time ?? null, // decodedAt as clock time at the site: "2026-10-08 17:38:01"
+  };
+}
+
+function toMeterItem(m: any, gatewayId: string) {
+  return {
+    meterId: m.meter_id,
+    devEui: m.dev_eui,
+    lastSeenDate: m.decoded_at,
+    lastSeenLocal: m.local_time ?? null, // lastSeenDate as clock time at the site
+    frameAge: formatRelativeTime(m.decoded_at),
+    frames1H: m.frames_1h,
+    frames24H: m.frames_24h,
+    lastRssi: m.rssi,
+    lastSnr: m.snr,
+    fCnt: m.f_cnt,
+    fPort: m.f_port,
+    frequency: m.frequency,
+    dr: m.dr,
+    adr: m.adr,
+    confirmed: m.confirmed,
+    otherGatewaysCount: Math.max(0, (m.gateway_count ?? 1) - 1),
+    statusChips: meterStatusChips(m),
+    gatewaysHeard: [
+      {
+        gatewayId,
+        alias: getGatewayAlias(gatewayId),
+        rssi: m.rssi,
+        snr: m.snr,
+        lastSeenText: formatRelativeTime(m.decoded_at),
+        isLatest: true,
+      },
+    ],
+    forwardFlowL: m.forward_flow_kl,
+    reverseFlow: m.reverse_flow_m3,
+  };
+}
+
+// Each filter as a SQL condition on the per-meter row built in getGatewayMeters (same limits as meterStatusChips).
+const FILTER_SQL: Record<MeterFilter, string> = {
+  ALL: 'TRUE',
+  LIVE: `decoded_at >= NOW() - INTERVAL '24 hours'`,
+  STALE: `decoded_at < NOW() - INTERVAL '24 hours'`,
+  WEAK_RSSI: `rssi < ${WEAK_RSSI_DBM}`,
+  POOR_SNR: `snr < ${POOR_SNR_DB}`,
+  MULTI_GW: 'gateway_count > 1',
+};
+
+// Limits a query to the meters of some sites; `param` is the placeholder holding the site ids (a bigint[]).
+const siteClause = (param: string) =>
+  ` AND meter_id IN (SELECT meter_id FROM meter_metadata WHERE site_id = ANY(${param}::bigint[]))`;
+
+const framesCte = (zone: string, sitesParam?: string) => `
+  WITH frames AS (
+    SELECT meter_id, gateway_id, dev_eui, decoded_at, rssi, snr, f_cnt, f_port, frequency, dr, adr, confirmed,
+           forward_flow_kl, reverse_flow_m3,
+           to_char(decoded_at AT TIME ZONE '${zone}', 'YYYY-MM-DD HH24:MI:SS') AS local_time
+    FROM water_meter_readings_v2
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${sitesParam ? siteClause(sitesParam) : ''}
+  )`;
+
 /**
- * Ensures the past N days of telemetry are stored in PostgreSQL
+ * One page of the meters a gateway heard: the latest frame per meter, how many frames the gateway got from it in the
+ * last hour / 24 hours, and how many gateways heard it. Filtering and paging happen in SQL, so the page only ever
+ * receives `size` rows however many meters the gateway has.
  */
-export async function ensureDaysIngested(
-  days: number = 7,
+export async function getGatewayMeters(opts: {
+  gatewayId: string;
+  days: number;
+  page: number;
+  size: number;
+  filter: MeterFilter;
+  q?: string;
+  referenceDate?: string;
+  custom?: DateWindow;
+  siteIds?: number[] | null;
+  zone?: string;
+}) {
+  const zone = safeZone(opts.zone);
+  const { fromDate, toDate } = dateRange(opts.days, opts.referenceDate, opts.custom, zone);
+  const search = (opts.q || '').trim();
+  const res = await pool.query(
+    `${framesCte(zone, opts.siteIds ? '$7' : undefined)},
+    mine AS (
+      SELECT DISTINCT ON (meter_id) *
+      FROM frames
+      WHERE gateway_id = $3
+      ORDER BY meter_id, decoded_at DESC
+    ),
+    stats AS (
+      SELECT meter_id,
+             COUNT(*) FILTER (WHERE gateway_id = $3 AND decoded_at >= NOW() - INTERVAL '1 hour')::int AS frames_1h,
+             COUNT(*) FILTER (WHERE gateway_id = $3 AND decoded_at >= NOW() - INTERVAL '24 hours')::int AS frames_24h,
+             COUNT(DISTINCT gateway_id)::int AS gateway_count
+      FROM frames
+      WHERE meter_id IN (SELECT meter_id FROM mine)
+      GROUP BY meter_id
+    ),
+    per_meter AS (
+      SELECT mine.*, stats.frames_1h, stats.frames_24h, stats.gateway_count
+      FROM mine JOIN stats USING (meter_id)
+    )
+    SELECT *, COUNT(*) OVER()::int AS total
+    FROM per_meter
+    WHERE ${FILTER_SQL[opts.filter]}
+      AND ($4 = '' OR meter_id ILIKE '%' || $4 || '%' OR dev_eui ILIKE '%' || $4 || '%')
+    ORDER BY decoded_at DESC, meter_id
+    LIMIT $5 OFFSET $6`,
+    [fromDate, toDate, opts.gatewayId, search, opts.size, opts.page * opts.size, ...(opts.siteIds ? [opts.siteIds] : [])]
+  );
+  const total = res.rows[0]?.total ?? 0;
+  return {
+    content: res.rows.map((m: any) => toMeterItem(m, opts.gatewayId)),
+    page: opts.page,
+    size: opts.size,
+    total,
+    totalPages: Math.ceil(total / opts.size),
+  };
+}
+
+/** Meters whose id or DevEUI contains `q`: the latest frame of each, and the gateway that heard it last. */
+export async function searchMeters(
+  q: string,
+  days: number,
+  limit = 10,
   referenceDate?: string,
-  forceDateIngestion: boolean = false
-): Promise<{ datesIngested: string[]; totalPackets: number }> {
-  const ref = referenceDate ? new Date(referenceDate) : new Date();
-  const dates: string[] = [];
-
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(ref);
-    d.setUTCDate(ref.getUTCDate() - i);
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  const todayStr = new Date().toISOString().slice(0, 10);
-  let totalPackets = 0;
-
-  for (const date of dates) {
-    const checkRes = await pool.query(
-      'SELECT COUNT(*)::int as count FROM raw_telemetry_packets WHERE date_key = $1',
-      [date]
-    );
-    const count = checkRes.rows[0]?.count ?? 0;
-
-    // Past dates don't change unless forced: if already ingested, keep it!
-    if (!forceDateIngestion && count > 0 && date < todayStr) {
-      totalPackets += count;
-      continue;
-    }
-
-    // Ingest date
-    console.log(`[telemetryDb] Ingesting date ${date} into PostgreSQL (current count: ${count})...`);
-    const added = await ingestDateIntoPostgres(date);
-    console.log(`[telemetryDb] Date ${date} ingested: +${added} packets.`);
-    totalPackets += count + added;
-  }
-
-  return { datesIngested: dates, totalPackets };
+  custom?: DateWindow,
+  siteIds?: number[] | null,
+  zone: string = 'UTC'
+) {
+  zone = safeZone(zone);
+  const { fromDate, toDate } = dateRange(days, referenceDate, custom, zone);
+  const res = await pool.query(
+    `${framesCte(zone, siteIds ? '$5' : undefined)},
+    latest AS (
+      SELECT DISTINCT ON (meter_id) *
+      FROM frames
+      WHERE meter_id ILIKE '%' || $3 || '%' OR dev_eui ILIKE '%' || $3 || '%'
+      ORDER BY meter_id, decoded_at DESC
+    ),
+    stats AS (
+      SELECT meter_id,
+             COUNT(*) FILTER (WHERE decoded_at >= NOW() - INTERVAL '1 hour')::int AS frames_1h,
+             COUNT(*) FILTER (WHERE decoded_at >= NOW() - INTERVAL '24 hours')::int AS frames_24h,
+             COUNT(DISTINCT gateway_id)::int AS gateway_count
+      FROM frames
+      WHERE meter_id IN (SELECT meter_id FROM latest)
+      GROUP BY meter_id
+    )
+    SELECT latest.*, stats.frames_1h, stats.frames_24h, stats.gateway_count
+    FROM latest JOIN stats USING (meter_id)
+    ORDER BY (latest.meter_id = $3) DESC, latest.decoded_at DESC
+    LIMIT $4`,
+    [fromDate, toDate, q, limit, ...(siteIds ? [siteIds] : [])]
+  );
+  return res.rows.map((m: any) => ({ ...toMeterItem(m, m.gateway_id), gatewayId: m.gateway_id }));
 }
 
 /**
- * Aggregates telemetry across N days (default 7 or 30 days) directly in PostgreSQL!
+ * Aggregates telemetry across N days (default 7 or 30 days) directly in PostgreSQL. The rows are written by the
+ * cortex scheduler WaterMeterHistoryToRdsScheduler (from iot.water_meter_readings_v2); this service only reads.
+ * The traffic numbers (frames, gateways, radio health) count live frames only; stored days are excluded.
  */
 export async function getPostgresAggregatedSummary(
   days: number = 7,
   referenceDate?: string,
   forceRefresh: boolean = false,
   siteId: string = 'ALL',
-  skipIngestion: boolean = false
+  custom?: DateWindow,
+  siteIds?: number[] | null,
+  zone: string = 'UTC'
 ): Promise<TelemetrySummary> {
-  const ref = referenceDate ? new Date(referenceDate) : new Date();
-  const toDate = ref.toISOString().slice(0, 10);
-  const fromD = new Date(ref);
-  fromD.setUTCDate(ref.getUTCDate() - (days - 1));
-  const fromDate = fromD.toISOString().slice(0, 10);
+  zone = safeZone(zone);
+  const { fromDate, toDate } = dateRange(days, referenceDate, custom, zone);
+  if (custom) {
+    days = Math.round((Date.parse(toDate) - Date.parse(fromDate)) / DAY_MS) + 1;
+  }
 
-  const cacheKey = `${days}d_summary_${toDate}_site_${siteId || 'ALL'}`;
+  // a list of sites would make a long key (the column holds 100 characters): a short hash stands for it
+  const siteKey = !siteId || siteId === 'ALL' ? 'ALL' : siteId.length > 24 ? createHash('md5').update(siteId).digest('hex') : siteId;
+  const cacheKey = custom
+    ? `custom_${fromDate}_${toDate}_site_${siteKey}`
+    : `${days}d_summary_${toDate}_site_${siteKey}`;
 
   // 1. Check cache table if not forcing refresh
   if (!forceRefresh) {
@@ -254,23 +370,11 @@ export async function getPostgresAggregatedSummary(
     }
   }
 
-  // 2. Telemetry ingestion:
-  // If user requested manual refresh, await latest date ingestion so response is immediately fresh!
-  if (forceRefresh && !skipIngestion) {
-    try {
-      console.log(`[telemetryDb] Manual refresh requested: awaiting latest packets for ${toDate}...`);
-      await ingestDateIntoPostgres(toDate);
-    } catch (ingestErr: any) {
-      console.warn('[telemetryDb] Refresh ingestion warning:', ingestErr.message);
-    }
-  } else if (!skipIngestion) {
-    // Otherwise kick off non-blocking background ingestion
-    ensureDaysIngested(days, toDate).catch((err) =>
-      console.warn('[telemetryDb] Background ingestion note:', err.message)
-    );
-  }
+  // a site filter limits every query below to the meters of those sites
+  const SITE = siteIds ? siteClause('$3') : '';
+  const RANGE_ARGS: unknown[] = siteIds ? [fromDate, toDate, siteIds] : [fromDate, toDate];
 
-  // 3. PostgreSQL SQL Aggregation: Overall KPIs
+  // 2. PostgreSQL SQL Aggregation: Overall KPIs
   const kpiRes = await pool.query(`
     SELECT
       COUNT(DISTINCT gateway_id)::int as gateways_with_traffic,
@@ -278,45 +382,58 @@ export async function getPostgresAggregatedSummary(
       COUNT(*)::int as frames_received,
       COALESCE(AVG(rssi)::numeric(10,1), -90)::float as avg_rssi,
       COALESCE(AVG(snr)::numeric(10,1), -10)::float as avg_snr,
-      COUNT(*) FILTER (WHERE battery_status != 'OK')::int as battery_abnormal_count,
-      COUNT(*) FILTER (WHERE valve_health != 'Normal')::int as valve_abnormal_count,
-      COUNT(*) FILTER (WHERE reverse_flow > 0.05)::int as reverse_flow_count,
+      COUNT(*) FILTER (WHERE reverse_flow_m3 > 0.05)::int as reverse_flow_count,
       MAX(decoded_at) as latest_frame_at
-    FROM raw_telemetry_packets
-    WHERE date_key >= $1 AND date_key <= $2
-  `, [fromDate, toDate]);
+    FROM water_meter_readings_v2
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${SITE}
+  `, RANGE_ARGS);
 
   const kpiRow = kpiRes.rows[0] || {};
+
+  // meters that are set up (from the metadata mirror); falls back to the meters heard until the first sync has run
+  const configuredRes = await pool.query(
+    `SELECT COUNT(*)::int AS count FROM meter_metadata WHERE is_active${siteIds ? ' AND site_id = ANY($1::bigint[])' : ''}`,
+    siteIds ? [siteIds] : []
+  );
+  const configuredMeters = configuredRes.rows[0]?.count || (kpiRow.unique_meters_seen ?? 0);
 
   // 4. Multi-Gateway Meters
   const multiGwRes = await pool.query(`
     SELECT COUNT(*)::int as count FROM (
-      SELECT meter_id FROM raw_telemetry_packets
-      WHERE date_key >= $1 AND date_key <= $2
+      SELECT meter_id FROM water_meter_readings_v2
+      WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${SITE}
       GROUP BY meter_id HAVING COUNT(DISTINCT gateway_id) > 1
     ) sub
-  `, [fromDate, toDate]);
+  `, RANGE_ARGS);
   const multiGatewayMeters = multiGwRes.rows[0]?.count ?? 0;
 
-  // 5. Gateway Aggregation List
+  // 5. Gateways: every gateway heard in the last KNOWN_GATEWAY_DAYS days, with its frames in the window and in the
+  //    window just before it (for the trend). One that sent nothing in the window shows as "no traffic".
+  const prevToDate = shiftDate(fromDate, -1);
+  const prevFromDate = shiftDate(prevToDate, -(days - 1));
+  const knownFromDate = shiftDate(toDate, -(KNOWN_GATEWAY_DAYS - 1));
   const gwRes = await pool.query(`
     SELECT
       gateway_id,
-      COUNT(DISTINCT meter_id)::int as unique_meters,
-      COUNT(*)::int as frame_count,
-      MAX(decoded_at) as latest_decoded_at,
-      COALESCE(AVG(rssi)::numeric(10,1), -90)::float as avg_rssi,
-      COALESCE(AVG(snr)::numeric(10,1), -10)::float as avg_snr
-    FROM raw_telemetry_packets
-    WHERE date_key >= $1 AND date_key <= $2
+      COUNT(DISTINCT meter_id) FILTER (WHERE ${inWindow(zone, '$1', '$2')})::int AS unique_meters,
+      COUNT(*) FILTER (WHERE ${inWindow(zone, '$1', '$2')})::int AS frame_count,
+      COUNT(*) FILTER (WHERE ${inWindow(zone, '$3', '$4')})::int AS prev_frame_count,
+      MAX(decoded_at) AS latest_decoded_at,
+      COALESCE((AVG(rssi) FILTER (WHERE ${inWindow(zone, '$1', '$2')}))::numeric(10,1), 0)::float AS avg_rssi,
+      COALESCE((AVG(snr) FILTER (WHERE ${inWindow(zone, '$1', '$2')}))::numeric(10,1), 0)::float AS avg_snr
+    FROM water_meter_readings_v2
+    WHERE is_history = false AND gateway_id IS NOT NULL
+      AND time >= (LEAST($3::date, $5::date))::timestamp AT TIME ZONE '${zone}'
+      AND time < (($2::date + 1)::timestamp AT TIME ZONE '${zone}')${siteIds ? siteClause('$6') : ''}
     GROUP BY gateway_id
-    ORDER BY unique_meters DESC, frame_count DESC
-  `, [fromDate, toDate]);
+    ORDER BY unique_meters DESC, frame_count DESC, gateway_id
+  `, [fromDate, toDate, prevFromDate, prevToDate, knownFromDate, ...(siteIds ? [siteIds] : [])]);
 
   const gateways = gwRes.rows.map((r: any) => {
     let status: 'reporting' | 'degraded' | 'stale' | 'no-traffic' = 'reporting';
     if (r.frame_count === 0) status = 'no-traffic';
-    else if (r.avg_rssi < -105 || r.avg_snr < -15) status = 'degraded';
+    else if (Date.now() - new Date(r.latest_decoded_at).getTime() > STALE_GATEWAY_AFTER_MS) status = 'stale';
+    else if (r.avg_rssi < DEGRADED_AVG_RSSI || r.avg_snr < DEGRADED_AVG_SNR) status = 'degraded';
 
     return {
       gatewayId: r.gateway_id,
@@ -327,83 +444,22 @@ export async function getPostgresAggregatedSummary(
       lastFrameDecodedAt: r.latest_decoded_at,
       avgRssi: r.avg_rssi,
       avgSnr: r.avg_snr,
-      trendText: '+3.8% vs 7d',
+      trendText: trendText(r.frame_count, r.prev_frame_count, days),
       status,
     };
   });
-
-  // 6. Meters by Gateway
-  const metersRes = await pool.query(`
-    WITH ranked_frames AS (
-      SELECT
-        meter_id, gateway_id, dev_eui, decoded_at,
-        forward_flow_l, reverse_flow, battery_voltage, battery_status,
-        battery_health, valve_health, checksum_status, rssi, snr,
-        fcnt, fport, frequency, dr, adr, confirmed,
-        ROW_NUMBER() OVER(PARTITION BY gateway_id, meter_id ORDER BY decoded_at DESC) as rn
-      FROM raw_telemetry_packets
-      WHERE date_key >= $1 AND date_key <= $2
-    )
-    SELECT * FROM ranked_frames WHERE rn = 1
-  `, [fromDate, toDate]);
-
-  const metersByGateway: Record<string, any[]> = {};
-  for (const gw of gateways) {
-    metersByGateway[gw.gatewayId] = [];
-  }
-
-  for (const m of metersRes.rows) {
-    const gwId = m.gateway_id;
-    if (!metersByGateway[gwId]) metersByGateway[gwId] = [];
-
-    metersByGateway[gwId].push({
-      meterId: m.meter_id,
-      devEui: m.dev_eui,
-      lastSeenDate: m.decoded_at,
-      frameAge: formatRelativeTime(m.decoded_at),
-      frames1H: 1,
-      frames24H: 14,
-      lastRssi: m.rssi,
-      lastSnr: m.snr,
-      fCnt: m.fcnt,
-      fPort: m.fport,
-      frequency: m.frequency,
-      dr: m.dr,
-      adr: m.adr,
-      confirmed: m.confirmed,
-      otherGatewaysCount: 0,
-      statusChips: [
-        m.battery_status !== 'OK' ? 'stale' : 'live',
-      ],
-      gatewaysHeard: [
-        {
-          gatewayId: gwId,
-          alias: getGatewayAlias(gwId),
-          rssi: m.rssi,
-          snr: m.snr,
-          lastSeenText: formatRelativeTime(m.decoded_at),
-          isLatest: true,
-        },
-      ],
-      batteryVoltage: m.battery_voltage,
-      batteryStatus: m.battery_status,
-      batteryHealth: m.battery_health,
-      valveHealth: m.valve_health,
-      forwardFlowL: m.forward_flow_l,
-      reverseFlow: m.reverse_flow,
-    });
-  }
+  const previousFrames = gwRes.rows.reduce((sum: number, r: any) => sum + r.prev_frame_count, 0);
 
   // 7. Hourly Activity distribution across the 7 days (or 24 hours aggregated)
   const hourlyRes = await pool.query(`
     SELECT
-      TO_CHAR(decoded_at, 'HH24:00') as hour_str,
+      TO_CHAR(decoded_at AT TIME ZONE '${zone}', 'HH24:00') as hour_str,
       COUNT(*)::int as count
-    FROM raw_telemetry_packets
-    WHERE date_key >= $1 AND date_key <= $2
+    FROM water_meter_readings_v2
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${SITE}
     GROUP BY hour_str
     ORDER BY hour_str ASC
-  `, [fromDate, toDate]);
+  `, RANGE_ARGS);
 
   const hourlyActivityMap = new Map<string, number>();
   for (let h = 0; h < 24; h++) {
@@ -428,39 +484,21 @@ export async function getPostgresAggregatedSummary(
       COUNT(*) FILTER (WHERE snr < 0 AND snr >= -5)::int as snr_good,
       COUNT(*) FILTER (WHERE snr < -5 AND snr >= -12)::int as snr_fair,
       COUNT(*) FILTER (WHERE snr < -12)::int as snr_poor
-    FROM raw_telemetry_packets
-    WHERE date_key >= $1 AND date_key <= $2
-  `, [fromDate, toDate]);
+    FROM water_meter_readings_v2
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${SITE}
+  `, RANGE_ARGS);
   const radioRow = radioRes.rows[0] || {};
 
   // 9. Recent raw frames (last 100)
   const framesRes = await pool.query(`
-    SELECT *
-    FROM raw_telemetry_packets
+    SELECT *, to_char(decoded_at AT TIME ZONE '${zone}', 'YYYY-MM-DD HH24:MI:SS') AS local_time
+    FROM water_meter_readings_v2
+    WHERE is_history = false${siteIds ? siteClause('$1') : ''}
     ORDER BY decoded_at DESC
     LIMIT 100
-  `);
+  `, siteIds ? [siteIds] : []);
 
-  const recentFrames = framesRes.rows.map((r: any, idx: number) => ({
-    id: `pg-frame-${idx}-${r.meter_id}`,
-    decodedAt: r.decoded_at,
-    meterTimestamp: r.meter_timestamp || r.decoded_at,
-    meterId: r.meter_id,
-    devEui: r.dev_eui,
-    gatewayId: r.gateway_id,
-    gatewayAlias: getGatewayAlias(r.gateway_id),
-    fCnt: r.fcnt,
-    fPort: r.fport,
-    frequency: r.frequency,
-    dr: r.dr,
-    rssi: r.rssi,
-    snr: r.snr,
-    confirmed: r.confirmed,
-    adr: r.adr,
-    checksumStatus: r.checksum_status,
-    statusByte: r.status_byte,
-    statusEvent: r.reverse_flow > 0.05 ? 'WEAK_RSSI' : 'FRAME_RECEIVED',
-  }));
+  const recentFrames = framesRes.rows.map((r: any, idx: number) => toFrameItem(r, `pg-frame-${idx}-${r.meter_id}`));
 
   const summary: TelemetrySummary = {
     dateRange: { fromDate, toDate, days },
@@ -468,22 +506,18 @@ export async function getPostgresAggregatedSummary(
     source: 'postgresql',
     kpis: {
       gatewaysWithTraffic: kpiRow.gateways_with_traffic ?? gateways.length,
-      totalConfiguredGateways: Math.max(18, gateways.length),
-      noRecentTrafficGateways: Math.max(0, 18 - gateways.length),
+      totalConfiguredGateways: gateways.length,
       uniqueMetersSeen: kpiRow.unique_meters_seen ?? 0,
-      configuredMeters: Math.max(2799, kpiRow.unique_meters_seen ?? 0),
+      configuredMeters,
       framesReceived: kpiRow.frames_received ?? 0,
-      framesTrend: '+6.5% vs 7d',
+      framesTrend: trendText(kpiRow.frames_received ?? 0, previousFrames, days),
       lastFrameAge: formatRelativeTime(kpiRow.latest_frame_at),
       multiGatewayMeters,
       avgRssi: kpiRow.avg_rssi ?? -90,
       avgSnr: kpiRow.avg_snr ?? -10,
-      batteryAbnormalCount: kpiRow.battery_abnormal_count ?? 0,
-      valveAbnormalCount: kpiRow.valve_abnormal_count ?? 0,
       reverseFlowCount: kpiRow.reverse_flow_count ?? 0,
     },
     gateways,
-    metersByGateway,
     allMetersCount: kpiRow.unique_meters_seen ?? 0,
     recentFrames,
     hourlyActivity,
@@ -517,4 +551,72 @@ export async function getPostgresAggregatedSummary(
   }
 
   return summary;
+}
+
+function windowArgs(opts: { days: number; referenceDate?: string; custom?: DateWindow; siteIds?: number[] | null; zone?: string }) {
+  const zone = safeZone(opts.zone);
+  const { fromDate, toDate } = dateRange(opts.days, opts.referenceDate, opts.custom, zone);
+  return { zone, fromDate, toDate, site: opts.siteIds ? siteClause('$4') : '', extra: opts.siteIds ? [opts.siteIds] : [] };
+}
+
+/** How the frames one gateway received split into signal-quality bands (the Radio Health tab). */
+export async function getGatewayRadioHealth(opts: {
+  gatewayId: string;
+  days: number;
+  referenceDate?: string;
+  custom?: DateWindow;
+  siteIds?: number[] | null;
+  zone?: string;
+}) {
+  const { zone, fromDate, toDate, site, extra } = windowArgs(opts);
+  const res = await pool.query(
+    `SELECT
+       COUNT(*)::int AS frames,
+       COUNT(*) FILTER (WHERE rssi >= -80)::int                      AS rssi_strong,
+       COUNT(*) FILTER (WHERE rssi < -80 AND rssi >= -90)::int       AS rssi_good,
+       COUNT(*) FILTER (WHERE rssi < -90 AND rssi >= -100)::int      AS rssi_weak,
+       COUNT(*) FILTER (WHERE rssi < -100)::int                      AS rssi_critical,
+       COUNT(*) FILTER (WHERE snr >= 5)::int                         AS snr_excellent,
+       COUNT(*) FILTER (WHERE snr < 5 AND snr >= 0)::int             AS snr_good,
+       COUNT(*) FILTER (WHERE snr < 0 AND snr >= -10)::int           AS snr_marginal,
+       COUNT(*) FILTER (WHERE snr < -10)::int                        AS snr_poor
+     FROM water_meter_readings_v2
+     WHERE is_history = false AND gateway_id = $3 AND ${inWindow(zone, '$1', '$2')}${site}`,
+    [fromDate, toDate, opts.gatewayId, ...extra]
+  );
+  const r = res.rows[0] || {};
+  return {
+    frames: r.frames ?? 0,
+    rssi: { strong: r.rssi_strong ?? 0, good: r.rssi_good ?? 0, weak: r.rssi_weak ?? 0, critical: r.rssi_critical ?? 0 },
+    snr: { excellent: r.snr_excellent ?? 0, good: r.snr_good ?? 0, marginal: r.snr_marginal ?? 0, poor: r.snr_poor ?? 0 },
+  };
+}
+
+/** Frames one gateway received by hour of the day (display time zone); degraded = weak RSSI or poor SNR. */
+export async function getGatewayHourly(opts: {
+  gatewayId: string;
+  days: number;
+  referenceDate?: string;
+  custom?: DateWindow;
+  siteIds?: number[] | null;
+  zone?: string;
+}) {
+  const { zone, fromDate, toDate, site, extra } = windowArgs(opts);
+  const res = await pool.query(
+    `SELECT TO_CHAR(decoded_at AT TIME ZONE '${zone}', 'HH24:00') AS hour,
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE rssi < ${WEAK_RSSI_DBM} OR snr < ${POOR_SNR_DB})::int AS degraded
+     FROM water_meter_readings_v2
+     WHERE is_history = false AND gateway_id = $3 AND ${inWindow(zone, '$1', '$2')}${site}
+     GROUP BY hour`,
+    [fromDate, toDate, opts.gatewayId, ...extra]
+  );
+  const byHour = new Map<string, { total: number; degraded: number }>(
+    res.rows.map((r: any) => [r.hour, { total: r.total, degraded: r.degraded }])
+  );
+  return Array.from({ length: 24 }, (_, h) => {
+    const hour = `${String(h).padStart(2, '0')}:00`;
+    const v = byHour.get(hour) ?? { total: 0, degraded: 0 };
+    return { hour, normal: v.total - v.degraded, degraded: v.degraded };
+  });
 }

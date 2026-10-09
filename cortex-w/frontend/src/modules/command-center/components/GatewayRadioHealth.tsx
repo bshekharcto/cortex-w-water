@@ -1,64 +1,93 @@
+import { useEffect, useState } from 'react';
+import {
+  fetchGatewayRadioHealth,
+  GatewayRadioHealthData,
+  GatewayScope,
+} from '@/services/api/commandCenterApi';
+
 interface Props {
+  gatewayId: string;
   gatewayAlias: string;
+  scope: GatewayScope;
 }
 
-export function GatewayRadioHealth({ gatewayAlias }: Props) {
-  const rssiBands = [
-    { label: 'Strong (>= -80 dBm)', count: 412, pct: 56, color: '#10B981' },
-    { label: 'Good (-81 to -90 dBm)', count: 218, pct: 30, color: '#3B82F6' },
-    { label: 'Weak (-91 to -100 dBm)', count: 82, pct: 11, color: '#F59E0B' },
-    { label: 'Critical (< -100 dBm)', count: 26, pct: 3, color: '#EF4444' },
-  ];
+const RSSI_BANDS = [
+  { key: 'strong', label: 'Strong (>= -80 dBm)', color: '#10B981' },
+  { key: 'good', label: 'Good (-81 to -90 dBm)', color: '#3B82F6' },
+  { key: 'weak', label: 'Weak (-91 to -100 dBm)', color: '#F59E0B' },
+  { key: 'critical', label: 'Critical (< -100 dBm)', color: '#EF4444' },
+] as const;
 
-  const snrBands = [
-    { label: 'Excellent (>= 5 dB)', count: 320, pct: 43, color: '#10B981' },
-    { label: 'Good (0 to <5 dB)', count: 260, pct: 35, color: '#3B82F6' },
-    { label: 'Marginal (-10 to <0 dB)', count: 110, pct: 15, color: '#F59E0B' },
-    { label: 'Poor (< -10 dB)', count: 48, pct: 7, color: '#EF4444' },
-  ];
+const SNR_BANDS = [
+  { key: 'excellent', label: 'Excellent (>= 5 dB)', color: '#10B981' },
+  { key: 'good', label: 'Good (0 to <5 dB)', color: '#3B82F6' },
+  { key: 'marginal', label: 'Marginal (-10 to <0 dB)', color: '#F59E0B' },
+  { key: 'poor', label: 'Poor (< -10 dB)', color: '#EF4444' },
+] as const;
+
+export function GatewayRadioHealth({ gatewayId, gatewayAlias, scope }: Props) {
+  const [data, setData] = useState<GatewayRadioHealthData | null>(null);
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
+
+  const customFrom = scope.custom?.from;
+  const customTo = scope.custom?.to;
+  useEffect(() => {
+    let cancelled = false;
+    setState('loading');
+    fetchGatewayRadioHealth(gatewayId, scope)
+      .then((res) => {
+        if (cancelled) return;
+        setData(res);
+        setState('ready');
+      })
+      .catch((err) => {
+        console.warn('[GatewayRadioHealth] Could not load radio health:', err);
+        if (!cancelled) setState('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+    // the scope object is rebuilt on every render; its fields are what matter
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gatewayId, scope.days, customFrom, customTo, scope.siteId]);
+
+  const frames = data?.frames ?? 0;
+  const meta = state === 'loading' ? 'loading…' : state === 'error' ? 'could not load' : `${frames.toLocaleString()} frames`;
+
+  const renderBars = (bands: ReadonlyArray<{ key: string; label: string; color: string }>, counts?: Record<string, number>) => (
+    <div className="cc-bars-container">
+      {bands.map((b) => {
+        const count = counts?.[b.key] ?? 0;
+        const pct = frames > 0 ? Math.round((count / frames) * 100) : 0;
+        return (
+          <div key={b.key} className="cc-bar-row">
+            <span className="cc-bar-label">{b.label}</span>
+            <div className="cc-bar-track">
+              <div className="cc-bar-fill" style={{ width: `${pct}%`, backgroundColor: b.color }} />
+            </div>
+            <span className="cc-bar-val">{count.toLocaleString()}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div className="cc-radio-health-view">
       <div className="cc-card cc-chart-card">
         <div className="cc-card-header">
           <span className="cc-card-title">RSSI DISTRIBUTION — {gatewayAlias.toUpperCase()}</span>
-          <span className="cc-card-meta">738 frames</span>
+          <span className="cc-card-meta">{meta}</span>
         </div>
-        <div className="cc-bars-container">
-          {rssiBands.map((b) => (
-            <div key={b.label} className="cc-bar-row">
-              <span className="cc-bar-label">{b.label}</span>
-              <div className="cc-bar-track">
-                <div
-                  className="cc-bar-fill"
-                  style={{ width: `${b.pct}%`, backgroundColor: b.color }}
-                />
-              </div>
-              <span className="cc-bar-val">{b.count}</span>
-            </div>
-          ))}
-        </div>
+        {renderBars(RSSI_BANDS, data?.rssi)}
       </div>
 
       <div className="cc-card cc-chart-card">
         <div className="cc-card-header">
           <span className="cc-card-title">SNR DISTRIBUTION — {gatewayAlias.toUpperCase()}</span>
-          <span className="cc-card-meta">738 frames</span>
+          <span className="cc-card-meta">{meta}</span>
         </div>
-        <div className="cc-bars-container">
-          {snrBands.map((b) => (
-            <div key={b.label} className="cc-bar-row">
-              <span className="cc-bar-label">{b.label}</span>
-              <div className="cc-bar-track">
-                <div
-                  className="cc-bar-fill"
-                  style={{ width: `${b.pct}%`, backgroundColor: b.color }}
-                />
-              </div>
-              <span className="cc-bar-val">{b.count}</span>
-            </div>
-          ))}
-        </div>
+        {renderBars(SNR_BANDS, data?.snr)}
       </div>
     </div>
   );

@@ -1,17 +1,21 @@
 import { Activity, RefreshCw, Search } from 'lucide-react';
 import { TimeWindow } from '../types/commandCenter.types';
+import { SiteTreeSelect } from './SiteTreeSelect';
 
 interface Props {
   activeTab: 'Gateways' | 'Meters';
   onTabChange: (tab: 'Gateways' | 'Meters') => void;
   timeRange: TimeWindow;
   onTimeRangeChange: (range: TimeWindow) => void;
+  customRange?: { from: string; to: string };
+  maxDate?: string; // the last day that can be picked: today at the site
+  onCustomRangeChange?: (range: { from: string; to: string }) => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   onRefresh: () => void;
   lastUpdatedText: string;
   isSyncing?: boolean;
-  sites?: Array<{ id: string; name: string }>;
+  sites?: Array<{ id: string; name: string; parentId?: string | null }>;
   selectedSiteId?: string;
   onSiteChange?: (siteId: string) => void;
 }
@@ -21,6 +25,9 @@ export function CommandCenterToolbar({
   onTabChange,
   timeRange,
   onTimeRangeChange,
+  customRange,
+  maxDate,
+  onCustomRangeChange,
   searchQuery,
   onSearchChange,
   onRefresh,
@@ -60,26 +67,7 @@ export function CommandCenterToolbar({
             </button>
           </div>
 
-          <select
-            className="cc-site-selector"
-            value={selectedSiteId}
-            onChange={(e) => onSiteChange?.(e.target.value)}
-          >
-            {sites && sites.length > 0 ? (
-              sites.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.id === 'ALL' ? 'All Sites (Fleet)' : `Site: ${s.name} (${s.id})`}
-                </option>
-              ))
-            ) : (
-              <>
-                <option value="ALL">All Sites (Fleet)</option>
-                <option value="6394">Site: BHUBANESWAR (6394)</option>
-                <option value="6916">Site: Cuttack (6916)</option>
-                <option value="6906">Site: Puri (6906)</option>
-              </>
-            )}
-          </select>
+          <SiteTreeSelect sites={sites ?? []} value={selectedSiteId} onChange={(v) => onSiteChange?.(v)} />
         </div>
 
         <div className="cc-header-right">
@@ -105,6 +93,26 @@ export function CommandCenterToolbar({
               </button>
             ))}
           </div>
+
+          {timeRange === 'CUSTOM' && customRange && (
+            <div className="cc-time-group" title="Up to 92 days">
+              <input
+                type="date"
+                className="cc-time-btn"
+                value={customRange.from}
+                max={customRange.to}
+                onChange={(e) => e.target.value && onCustomRangeChange?.({ ...customRange, from: e.target.value })}
+              />
+              <input
+                type="date"
+                className="cc-time-btn"
+                value={customRange.to}
+                min={customRange.from}
+                max={maxDate}
+                onChange={(e) => e.target.value && onCustomRangeChange?.({ ...customRange, to: e.target.value })}
+              />
+            </div>
+          )}
 
           <div
             className={`cc-sync-pill ${isSyncing ? '' : 'cc-sync-pill--live'}`}

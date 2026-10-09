@@ -4,6 +4,8 @@
    =================================================================== */
 
 .cc-container {
+  /* the height of the working area (gateway list | meters | inspector): the screen minus the header, toolbar and KPI strip */
+  --cc-workspace-height: clamp(640px, calc(100vh - 300px), 900px);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -317,12 +319,14 @@
 /* ---------- Main Operational Body Layout ---------- */
 .cc-main-workspace-layout {
   display: grid;
-  grid-template-columns: 290px 1fr;
+  grid-template-columns: 290px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
+  height: var(--cc-workspace-height);
 }
 .cc-main-workspace-layout--with-inspector {
-  grid-template-columns: 290px 1fr 350px;
+  grid-template-columns: 290px minmax(0, 1fr) 350px;
 }
 
 /* ---------- Left Gateway Rail ---------- */
@@ -332,7 +336,7 @@
   border-radius: 8px;
   display: flex;
   flex-direction: column;
-  height: 640px;
+  min-height: 0;
   overflow: hidden;
 }
 .cc-rail-header {
@@ -496,7 +500,7 @@
   border-radius: 8px;
   display: flex;
   flex-direction: column;
-  min-height: 640px;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -560,23 +564,6 @@
   border: 1px solid rgba(100, 116, 139, 0.3);
 }
 
-.cc-close-gw-btn {
-  background: #1E293B;
-  border: 1px solid #334155;
-  color: #CBD5E1;
-  font-size: 11.5px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border-radius: 5px;
-  cursor: pointer;
-}
-.cc-close-gw-btn:hover {
-  background: #334155;
-  color: #FFFFFF;
-}
-
 .cc-gw-meta-row {
   display: flex;
   align-items: center;
@@ -622,6 +609,13 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+.cc-traffic-view,
+.cc-radio-health-view,
+.cc-all-gw-view {
+  overflow-y: auto;
 }
 
 .cc-subfilter-bar {
@@ -659,11 +653,12 @@
 }
 
 .cc-table-scroll-container {
-  overflow-x: auto;
+  overflow: auto;
   border: 1px solid #1E293B;
   border-radius: 6px;
   background: #0A0F1D;
-  max-height: 520px;
+  flex: 1;
+  min-height: 0;
 }
 .cc-telemetry-table {
   width: 100%;
@@ -724,7 +719,8 @@
 .cc-chip-stack {
   display: flex;
   gap: 4px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;          /* all the chips of a meter stay on one line, so the rows keep their height */
+  align-items: center;
 }
 .cc-chip {
   font-size: 10px;
@@ -732,6 +728,7 @@
   padding: 1px 6px;
   border-radius: 4px;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 .cc-chip--live { background: rgba(16, 185, 129, 0.15); color: #34D399; }
 .cc-chip--stale { background: rgba(249, 115, 22, 0.15); color: #FB923C; }
@@ -852,7 +849,8 @@
   flex-direction: column;
   gap: 12px;
   padding: 14px;
-  min-height: 640px;
+  min-height: 0;
+  overflow-y: auto;
 }
 .cc-inspector-header {
   display: flex;
@@ -1086,7 +1084,7 @@
 }
 
 .cc-feed-stream-container {
-  max-height: 220px;
+  max-height: 300px;
   overflow-y: auto;
   background: #0A0F1D;
 }
@@ -1156,4 +1154,222 @@
     opacity: 0.4;
     transform: scale(0.85);
   }
+}
+
+.cc-error-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid #7f1d1d;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  font-size: 12px;
+}
+
+/* ---- site filter: a tree with check boxes ---- */
+.cc-sitetree {
+  position: relative;
+}
+
+.cc-sitetree-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 140px;
+  justify-content: space-between;
+}
+
+.cc-sitetree-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  width: 320px;
+  background: #0E1626;
+  border: 1px solid #1E293B;
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  padding: 12px;
+  color: #CBD5E1;
+  font-size: 12px;
+}
+
+.cc-sitetree-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.cc-sitetree-title {
+  font-weight: 700;
+  color: #94A3B8;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.cc-sitetree-link {
+  background: none;
+  border: none;
+  color: #60A5FA;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.cc-sitetree-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  max-height: 64px;
+  overflow-y: auto;
+}
+
+.cc-sitetree-chip {
+  background: #1E293B;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #E2E8F0;
+}
+
+.cc-sitetree-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #1E293B;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  color: #64748B;
+}
+
+.cc-sitetree-search input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #E2E8F0;
+  font-size: 12px;
+}
+
+.cc-sitetree-clear {
+  background: none;
+  border: none;
+  color: #64748B;
+  cursor: pointer;
+  display: inline-flex;
+}
+
+.cc-sitetree-list {
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid #1E293B;
+  border-radius: 6px;
+  padding: 4px 0;
+}
+
+.cc-sitetree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  padding-right: 8px;
+}
+
+.cc-sitetree-row:hover {
+  background: #121C30;
+}
+
+.cc-sitetree-row--checked {
+  background: rgba(37, 99, 235, 0.18);
+}
+
+.cc-sitetree-arrow {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: #94A3B8;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.cc-sitetree-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  cursor: pointer;
+}
+
+.cc-sitetree-empty {
+  padding: 12px;
+  color: #64748B;
+  text-align: center;
+}
+
+.cc-sitetree-foot {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.cc-sitetree-reset {
+  background: transparent;
+  border: 1px solid #334155;
+  color: #CBD5E1;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.cc-sitetree-apply {
+  background: #2563EB;
+  border: none;
+  color: #fff;
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ---- dark scrollbars inside the Command Center (the browser's default ones are white) ---- */
+.cc-container {
+  color-scheme: dark;
+}
+
+.cc-container * {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 #0E1626;
+}
+
+.cc-container *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.cc-container *::-webkit-scrollbar-track {
+  background: #0E1626;
+}
+
+.cc-container *::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 4px;
+}
+
+.cc-container *::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+.cc-container *::-webkit-scrollbar-corner {
+  background: #0E1626;
 }

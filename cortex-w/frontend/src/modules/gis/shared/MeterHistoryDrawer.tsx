@@ -142,11 +142,6 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
       ? liveDetail.latestReading
       : meter.currentReadingM3 ?? null;
   const lastSeenDate = liveDetail?.readingDate || liveDetail?.lastSeen || meter.lastSeen || null;
-  const batteryVolts = liveDetail?.batteryVoltage ?? meter.batteryVoltage ?? null;
-  const batteryStat = liveDetail?.batteryStatus ?? meter.batteryStatus ?? null;
-  const valveStateText = liveDetail
-    ? (liveDetail.valveClosed === null ? null : liveDetail.valveClosed ? 'Closed' : 'Open')
-    : (meter.valveState ?? null);
 
   const yesterdayL =
     liveDetail?.consumption !== undefined && liveDetail?.consumption !== null
@@ -261,9 +256,6 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             <span className={`gis-status-badge gis-status-badge--${statusStr}`}>
               {statusStr.toUpperCase()}
             </span>
-            <span className={`gis-badge-sub ${valveStateText === 'Open' ? 'gis-badge-sub--ok' : 'gis-badge-sub--warn'}`}>
-              VALVE {valveStateText ? valveStateText.toUpperCase() : 'UNKNOWN'}
-            </span>
             {isLoadingDetail && (
               <span className="gis-drawer-loading">
                 <RefreshCw size={11} className="gis-spin" /> Live Telemetry Synced
@@ -360,9 +352,6 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
                 for this hardware — say so rather than showing a fake "0 Static". */}
             <span className="gis-kpi-big">—</span>
             <span className="gis-kpi-small">Not available</span>
-          </div>
-          <div className="gis-kpi-footer">
-            <span className="gis-meta-seen">Battery: {batteryVolts ?? '—'}V ({meter.batteryPercentage ?? '—'}%)</span>
           </div>
         </div>
       </div>
@@ -580,7 +569,7 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
               <CheckCircle2 size={32} color="#10B981" />
               <strong>No Active or Historical Alerts</strong>
               <p>
-                This meter has operated with nominal link parameters, flow rates, and battery levels over the
+                This meter has operated with nominal link parameters and flow rates over the
                 last 30 days.
               </p>
             </div>
@@ -662,22 +651,6 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
 
           <div className="gis-card">
             <span className="gis-card-title">Hardware & Metrology</span>
-            <div className="gis-kv-row">
-              <span className="gis-k">Battery Cell Voltage</span>
-              <span className="gis-v" style={{ color: batteryVolts == null ? undefined : batteryVolts >= 3.4 ? '#059669' : '#DC2626' }}>
-                {batteryVolts != null ? `${batteryVolts} V` : '—'} ({meter.batteryPercentage ?? '—'}%)
-              </span>
-            </div>
-            <div className="gis-kv-row">
-              <span className="gis-k">Battery Health Diagnostic</span>
-              <span className="gis-v">{batteryStat}</span>
-            </div>
-            <div className="gis-kv-row">
-              <span className="gis-k">Internal Motorized Valve</span>
-              <span className="gis-v">
-                {valveStateText} ({meter.valveStatus || 'Normal'})
-              </span>
-            </div>
             <div className="gis-kv-row">
               <span className="gis-k">Nominal Pipe Diameter</span>
               <span className="gis-v">{meter.pipeDiameter || '15mm (1/2")'}</span>

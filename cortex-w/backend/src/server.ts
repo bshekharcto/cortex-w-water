@@ -17,7 +17,6 @@ import alarmsRoutes from "./routes/alarms.js";
 import sitesRoutes from "./routes/sites.js";
 import gisRoutes from "./routes/gis.js";
 import dashboardRoutes from "./routes/dashboard.js";
-import { startTelemetrySyncScheduler } from "./services/telemetrySyncWorker.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -140,8 +139,9 @@ async function runMigrations() {
     ...(isSeedMode
       ? ["001_initial_schema.sql", "002_seed_data.sql", "006_geographical_dma.sql"]
       : []),
-    "005_raw_telemetry.sql",
     "007_water_rollup_tables.sql",
+    "008_water_meter_readings_v2.sql",
+    "010_metadata_mirror.sql",
   ];
 
   for (const file of migrations) {
@@ -199,8 +199,6 @@ async function start() {
 
   app.listen(config.PORT, () => {
     console.log(`[cortex-w bff] Listening on :${config.PORT}`);
-    // Start local in-process recurring scheduler (every 15 mins)
-    startTelemetrySyncScheduler(15 * 60 * 1000);
   });
 }
 

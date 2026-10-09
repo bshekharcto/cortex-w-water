@@ -107,9 +107,8 @@ async function run() {
 
       const cols = [
         'meter_id', 'gateway_id', 'dev_eui', 'decoded_at', 'date_key',
-        'forward_flow_l', 'reverse_flow', 'battery_voltage', 'battery_status',
-        'battery_health', 'valve_health', 'valve_closed', 'checksum_status',
-        'status_byte', 'rssi', 'snr', 'fcnt', 'fport', 'frequency', 'dr', 'adr', 'confirmed', 'meter_timestamp'
+        'forward_flow_l', 'reverse_flow', 'checksum_status',
+        'rssi', 'snr', 'fcnt', 'fport', 'frequency', 'dr', 'adr', 'confirmed', 'meter_timestamp'
       ];
 
       const valuePlaceholders: string[] = [];

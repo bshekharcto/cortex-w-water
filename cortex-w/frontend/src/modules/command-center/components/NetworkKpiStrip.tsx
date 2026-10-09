@@ -3,13 +3,14 @@ import { NetworkKpiData } from '../types/commandCenter.types';
 interface Props {
   kpis?: NetworkKpiData | null;
   loading?: boolean;
+  windowText?: string;
 }
 
-export function NetworkKpiStrip({ kpis, loading }: Props) {
+export function NetworkKpiStrip({ kpis, loading, windowText = '24H' }: Props) {
   if (loading && !kpis) {
     return (
       <div className="cc-kpi-grid">
-        {[1, 2, 3, 4, 5, 6, 7].map((i) => (
+        {[1, 2, 3, 4, 5, 6].map((i) => (
           <div key={i} className="cc-kpi-card" style={{ padding: '12px 14px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span className="cc-skeleton-box" style={{ width: 8, height: 8, borderRadius: '50%' }} />
@@ -41,18 +42,6 @@ export function NetworkKpiStrip({ kpis, loading }: Props) {
         </div>
       </div>
 
-      {/* KPI 2 */}
-      <div className="cc-kpi-card">
-        <div className="cc-kpi-top">
-          <span className="cc-kpi-dot cc-kpi-dot--red" />
-          <span className="cc-kpi-label">NO RECENT TRAFFIC</span>
-        </div>
-        <div className="cc-kpi-value-row">
-          <span className="cc-kpi-val cc-kpi-val--danger">{kpis.noRecentTrafficGateways}</span>
-          <span className="cc-kpi-sub cc-kpi-sub--danger">silent</span>
-        </div>
-      </div>
-
       {/* KPI 3 */}
       <div className="cc-kpi-card">
         <div className="cc-kpi-top">
@@ -69,7 +58,7 @@ export function NetworkKpiStrip({ kpis, loading }: Props) {
       <div className="cc-kpi-card">
         <div className="cc-kpi-top">
           <span className="cc-kpi-dot cc-kpi-dot--blue" />
-          <span className="cc-kpi-label">FRAMES RECEIVED (24H)</span>
+          <span className="cc-kpi-label">FRAMES RECEIVED ({windowText})</span>
         </div>
         <div className="cc-kpi-value-row">
           <span className="cc-kpi-val">{kpis.framesReceived.toLocaleString()}</span>

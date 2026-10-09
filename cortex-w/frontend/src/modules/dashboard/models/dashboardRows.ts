@@ -18,6 +18,7 @@ export interface NodeRow {
   monthToDateFlowM3: number;
   meterCount: number;
   dataTimestamp?: string;
+  dataLocalTime?: string;        // when the numbers were built, as clock time at the area's site
 }
 
 export interface MeterRow {
@@ -31,6 +32,7 @@ export interface MeterRow {
   meterSize?: string;
   totalizerM3?: number;          // latest cumulative reading
   latestReadingAt?: string;      // ISO timestamp
+  latestReadingLocal?: string;   // the same moment as clock time at the meter's site
   connectivityStatus: 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN';
   subDmaName?: string;
   distanceMeters?: number;

@@ -29,6 +29,7 @@ export interface MeterTelemetryItem {
   meterId: string;
   devEui: string;
   lastSeenDate: string;
+  lastSeenLocal?: string; // lastSeenDate as clock time at the site
   frameAge: string;
   frames1H: number;
   frames24H: number;
@@ -64,6 +65,7 @@ export interface MeterFrameRecord {
 export interface RawFrameItem {
   id: string;
   decodedAt: string;
+  localTime?: string; // decodedAt as clock time at the site
   meterTimestamp: string;
   meterId: string;
   devEui: string;
@@ -78,14 +80,12 @@ export interface RawFrameItem {
   confirmed: boolean;
   adr: boolean;
   checksumStatus: string;
-  statusByte: number;
   statusEvent: 'FRAME_RECEIVED' | 'WEAK_RSSI' | 'POOR_LINK' | 'MULTI_GW' | 'DEGRADED';
 }
 
 export interface NetworkKpiData {
   gatewaysWithTraffic: number;
   totalConfiguredGateways: number;
-  noRecentTrafficGateways: number;
   uniqueMetersSeen: number;
   configuredMeters: number;
   framesReceived: number;

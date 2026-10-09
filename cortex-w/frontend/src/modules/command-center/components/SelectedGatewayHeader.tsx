@@ -1,18 +1,17 @@
-import { X } from 'lucide-react';
 import { GatewayItem, GatewayTabType } from '../types/commandCenter.types';
 
 interface Props {
   gateway: GatewayItem;
   activeTab: GatewayTabType;
   onTabChange: (tab: GatewayTabType) => void;
-  onClearSelection: () => void;
+  windowText: string; // the window the numbers cover: 1H, 7D, 2026-10-01 → 2026-10-08 ...
 }
 
 export function SelectedGatewayHeader({
   gateway,
   activeTab,
   onTabChange,
-  onClearSelection,
+  windowText,
 }: Props) {
   const statusBadge =
     gateway.status === 'reporting'
@@ -33,15 +32,6 @@ export function SelectedGatewayHeader({
             {gateway.status.toUpperCase()}
           </span>
         </div>
-
-        <button
-          className="cc-close-gw-btn"
-          onClick={onClearSelection}
-          title="Return to All-Gateway Overview"
-        >
-          <X size={15} />
-          <span>All Gateways</span>
-        </button>
       </div>
 
       <div className="cc-gw-meta-row">
@@ -50,7 +40,7 @@ export function SelectedGatewayHeader({
         </span>
         <span className="cc-gw-meta-sep">·</span>
         <span className="cc-gw-meta-item">
-          <strong>{gateway.frameCount}</strong> frames (24h)
+          <strong>{gateway.frameCount}</strong> frames ({windowText})
         </span>
         <span className="cc-gw-meta-sep">·</span>
         <span className="cc-gw-meta-item">
