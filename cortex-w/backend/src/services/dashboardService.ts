@@ -358,6 +358,60 @@ function summaryOf(
   };
 }
 
+export interface DataFreshness {
+  /** When the cortex history scheduler last looked for new readings (it runs every 15 minutes); null before the first run. */
+  updatedAt: string | null;
+  /** The same moment as clock time at the site: "2026-10-09 18:15:00". */
+  localTime: string | null;
+}
+
+const FRESHNESS_TTL_MS = 15 * 1000;
+let freshnessCache: { at: number; value: DataFreshness } | null = null;
+let rebuiltForUpdate = 0; // the last update the snapshot was rebuilt for
+
+// the time of the scheduler's last finished run (water_sync_status), else the newest update of the daily rows
+const FRESHNESS_SQL = (withStatus: boolean) => `
+  SELECT t.ts AS updated_at,
+         to_char(t.ts AT TIME ZONE COALESCE(z.tz, 'UTC'), 'YYYY-MM-DD HH24:MI:SS') AS local
+  FROM (
+    SELECT ${
+      withStatus
+        ? `COALESCE((SELECT last_run_at FROM water_sync_status WHERE job = 'history'),
+                  (SELECT MAX(updated_at) FROM water_meter_daily WHERE day >= CURRENT_DATE - 2))`
+        : `(SELECT MAX(updated_at) FROM water_meter_daily WHERE day >= CURRENT_DATE - 2)`
+    } AS ts
+  ) t
+  LEFT JOIN LATERAL (
+    SELECT tz_sql AS tz FROM site_metadata WHERE is_active AND tz_sql IS NOT NULL ORDER BY site_id LIMIT 1
+  ) z ON TRUE`;
+
+/**
+ * When the numbers were last updated. The pages ask this every minute and reload their values (without a loader) when it
+ * changes, so a new update shows without anyone pressing a button. It is one small indexed query, answered from memory
+ * for 15 seconds. When the update is newer than the snapshot the Dashboard is serving, the snapshot is rebuilt here
+ * first, so what the page asks for next is current.
+ */
+export async function getDataFreshness(): Promise<DataFreshness> {
+  if (!freshnessCache || Date.now() - freshnessCache.at >= FRESHNESS_TTL_MS) {
+    // before migration 016 has been run there is no water_sync_status: use the daily rows
+    const res = await pool.query(FRESHNESS_SQL(true)).catch(() => pool.query(FRESHNESS_SQL(false)));
+    const row = res.rows[0];
+    freshnessCache = {
+      at: Date.now(),
+      value: { updatedAt: row?.updated_at ? new Date(row.updated_at).toISOString() : null, localTime: row?.local ?? null },
+    };
+  }
+  const { value } = freshnessCache;
+  const updatedMs = value.updatedAt ? new Date(value.updatedAt).getTime() : 0;
+  if (snapshot && updatedMs > rebuiltForUpdate) {
+    rebuiltForUpdate = updatedMs;
+    await startBuild().catch((err) => console.warn('[dashboard] Snapshot rebuild after a new run failed:', err?.message || err));
+  } else if (!snapshot) {
+    rebuiltForUpdate = Math.max(rebuiltForUpdate, updatedMs); // the first build will already be current
+  }
+  return value;
+}
+
 /** The direct children of `parentId`, or the top-level sites when it is null. Each carries its whole subtree's totals. */
 export async function getNodeChildren(parentRef: string | null, authHeader?: string): Promise<NodeSummary[]> {
   const allowed = await getAllowedSiteIds(authHeader);

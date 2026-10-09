@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Bell, RefreshCw } from 'lucide-react';
-import { runtimeConfig } from '@/config/runtimeConfig';
+import { Bell, Clock } from 'lucide-react';
+import { useDataFreshness } from './DataFreshness';
 
 const ROUTE_TITLES: Record<string, string> = {
   '/app/dashboard': 'Dashboard',
@@ -47,7 +47,9 @@ export function TopHeader() {
     .sort((a, b) => b.length - a.length)[0];
   const title = matchedPath ? ROUTE_TITLES[matchedPath] : 'Cortex-W';
 
-  const dataMode = runtimeConfig.APP_DATA_MODE;
+  // when the scheduler last updated the numbers, as clock time at the site (HH:MM)
+  const { localTime } = useDataFreshness();
+  const updatedAt = localTime ? localTime.slice(11, 16) : null;
 
   return (
     <header className={`cw-top-header ${isCommandCenter ? 'cw-top-header--dark' : ''}`}>
@@ -56,12 +58,10 @@ export function TopHeader() {
         <span className="cw-top-header-powered">POWERED BY COGNECTO</span>
       </div>
       <div className="cw-top-header-right">
-        <span className={`cw-data-badge cw-data-badge--${dataMode}`}>
-          {dataMode === 'seed' ? 'SEED DATA' : dataMode === 'api' ? 'LIVE' : 'HYBRID'}
-        </span>
-        {/* The Command Center has its own working refresh in its toolbar, so this one is omitted there */}
-        {!isCommandCenter && (
-          <button className="cw-icon-btn" aria-label="Refresh"><RefreshCw size={16} /></button>
+        {updatedAt && (
+          <span className="cw-data-updated" title="When the numbers were last updated. They update by themselves.">
+            <Clock size={13} /> Last updated {updatedAt}
+          </span>
         )}
         <div className="cw-notif-wrap" ref={notifRef}>
           <button
