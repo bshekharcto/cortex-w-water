@@ -121,6 +121,40 @@ export function aggregateNodeKpis(nodes: NodeRow[]): DashboardKpis {
 }
 
 /**
+ * The cards at a leaf, from the totals the server sends for the whole node (not from the page on screen).
+ */
+export function aggregateSummaryKpis(summary: {
+  totalDevices: number;
+  connected: number;
+  disconnected: number;
+  neverSeen: number;
+  yesterdayFlowM3: number;
+  todayFlowM3: number;
+  monthToDateFlowM3: number;
+}): DashboardKpis {
+  const { connectedPct, disconnectedPct, neverSeenPct } = computePercentages(
+    summary.connected,
+    summary.disconnected,
+    summary.neverSeen,
+    summary.totalDevices
+  );
+  return {
+    // childAreaCount is omitted at leaf/meter level — there's nothing "under" a meter
+    totalDevices: summary.totalDevices,
+    connected: summary.connected,
+    disconnected: summary.disconnected,
+    neverSeen: summary.neverSeen,
+    connectedPct,
+    disconnectedPct,
+    neverSeenPct,
+    yesterdayFlowM3: summary.yesterdayFlowM3,
+    todayFlowM3: summary.todayFlowM3,
+    monthToDateFlowM3: summary.monthToDateFlowM3,
+    dataTimestamp: new Date().toISOString(),
+  };
+}
+
+/**
  * Aggregates KPIs from a list of meters — used at a real leaf node (one
  * with no further children), where the "child rows" are individual meters
  * instead of sub-nodes.

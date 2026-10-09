@@ -1,5 +1,6 @@
 import { pool } from '../db/pool.js';
 import { proxyUpstream } from './upstreamProxy.js';
+import { tidySiteName } from './siteNames.js';
 
 /**
  * The Dashboard (district -> zone -> DMA ...) served from Postgres.
@@ -37,7 +38,8 @@ export interface SiteNode {
   timeZone: string; // a zone Postgres reads correctly, e.g. "UTC-05:30" (5 h 30 min east) or "Asia/Kolkata"
 }
 
-export interface DashboardMeter {
+/** One row of a node's meter list (a page of it): what the meter table shows. */
+export interface MeterPageRow {
   assetId: number;
   meterId: string;
   siteId: number | null;
@@ -49,13 +51,11 @@ export interface DashboardMeter {
   decodedAt: string | null;
   decodedLocal: string | null; // the same moment as clock time at the meter's site: "2026-10-08 17:38:01"
   connectivity: Connectivity;
-  yesterdayKl: number;
-  todayKl: number;
-  monthKl: number;
 }
 
+/** The meters of one site (or of a whole subtree, summed) and how they are doing. */
 interface NodeTotals {
-  meters: DashboardMeter[];
+  meters: number;
   connected: number;
   disconnected: number;
   neverSeen: number;
@@ -65,76 +65,69 @@ interface NodeTotals {
 }
 
 interface Snapshot {
-  builtAt: number;
-  nowLocal: Map<string, string>; // zone -> the clock time there when the snapshot was built
+  builtAt: number;       // when this snapshot was built (it is rebuilt a minute later)
+  dataUpdatedAt: number; // when the scheduler last updated the numbers (every 15 minutes)
+  nowLocal: Map<string, string>; // zone -> the clock time there when the scheduler last updated the numbers
   sites: Map<number, SiteNode>;
   childrenOf: Map<number, number[]>;
-  totals: Map<number, NodeTotals>;
+  direct: Map<number, NodeTotals>;  // per site, the meters attached to that site itself
+  subtree: Map<number, NodeTotals>; // per site, itself and everything below (filled on first use)
 }
 
-const METERS_SQL = `
-  WITH mt AS (
-    -- each meter's time zone is the one of its site
-    SELECT m.meter_id, COALESCE(s.tz_sql, 'UTC') AS tz
+// Per site, how many of its meters are connected / disconnected / never seen and the water they used. Everything is
+// worked out in the database from the CURRENT meter -> site link, so moving a meter to another site changes the totals
+// at the next refresh; only one row per site comes back, not one per meter. A site's meters share its time zone.
+const STATS_SQL = `
+  WITH mtd AS (
+    SELECT m.meter_id, m.site_id, COALESCE(s.tz_sql, 'UTC') AS tz,
+           (NOW() AT TIME ZONE COALESCE(s.tz_sql, 'UTC'))::date AS today
     FROM meter_metadata m
     LEFT JOIN site_metadata s ON s.site_id = m.site_id
     WHERE m.is_active
   ),
-  mtd AS (
-    SELECT meter_id, tz, (NOW() AT TIME ZONE tz)::date AS today FROM mt
+  status AS (
+    SELECT d.site_id,
+           COUNT(*)::int AS meters,
+           COUNT(*) FILTER (WHERE l.decoded_at IS NULL)::int AS never_seen,
+           COUNT(*) FILTER (WHERE l.decoded_at IS NOT NULL AND (l.decoded_at AT TIME ZONE d.tz)::date = d.today)::int AS connected
+    FROM mtd d
+    LEFT JOIN water_meter_latest l ON l.meter_id = d.meter_id
+    GROUP BY d.site_id
   ),
-  -- water_meter_daily (kept current by the cortex history scheduler) holds the water each meter used per day, so the
-  -- flows are a small sum, not a pass over the readings
+  -- water_meter_daily (kept current by the cortex history scheduler) holds the water each meter used per day
   flows AS (
-    SELECT w.meter_id,
+    SELECT d.site_id,
            COALESCE(SUM(w.used_kl) FILTER (WHERE w.day = d.today), 0)     AS today_kl,
            COALESCE(SUM(w.used_kl) FILTER (WHERE w.day = d.today - 1), 0) AS yesterday_kl,
            COALESCE(SUM(w.used_kl) FILTER (WHERE w.day >= date_trunc('month', d.today)::date), 0) AS month_kl
     FROM water_meter_daily w
     JOIN mtd d ON d.meter_id = w.meter_id
     WHERE w.day >= LEAST(date_trunc('month', d.today)::date, d.today - 1)
-    GROUP BY w.meter_id, d.today
+    GROUP BY d.site_id
   )
-  SELECT m.meter_id, m.asset_id, m.site_id, m.household_custom_id, m.consumer_name, m.address,
-         l.dev_eui, l.decoded_at, COALESCE(l.forward_flow_kl, 0) AS totalizer_kl,
-         to_char(l.decoded_at AT TIME ZONE d.tz, 'YYYY-MM-DD HH24:MI:SS') AS decoded_local,
-         CASE
-           WHEN l.decoded_at IS NULL THEN 'NEVER_SEEN'
-           WHEN (l.decoded_at AT TIME ZONE d.tz)::date = d.today THEN 'CONNECTED'
-           ELSE 'DISCONNECTED'
-         END AS connectivity,
-         COALESCE(f.yesterday_kl, 0) AS yesterday_kl, COALESCE(f.today_kl, 0) AS today_kl,
-         COALESCE(f.month_kl, 0) AS month_kl
-  FROM meter_metadata m
-  JOIN mtd d ON d.meter_id = m.meter_id
-  LEFT JOIN water_meter_latest l ON l.meter_id = m.meter_id
-  LEFT JOIN flows f  ON f.meter_id = m.meter_id
-  WHERE m.is_active
+  SELECT st.site_id, st.meters, st.connected, (st.meters - st.connected - st.never_seen) AS disconnected, st.never_seen,
+         COALESCE(f.yesterday_kl, 0) AS yesterday_kl, COALESCE(f.today_kl, 0) AS today_kl, COALESCE(f.month_kl, 0) AS month_kl
+  FROM status st
+  LEFT JOIN flows f ON f.site_id IS NOT DISTINCT FROM st.site_id
 `;
 
 let snapshot: Snapshot | null = null;
 let snapshotBuild: Promise<Snapshot> | null = null;
 
 function emptyTotals(): NodeTotals {
-  return { meters: [], connected: 0, disconnected: 0, neverSeen: 0, yesterdayKl: 0, todayKl: 0, monthKl: 0 };
+  return { meters: 0, connected: 0, disconnected: 0, neverSeen: 0, yesterdayKl: 0, todayKl: 0, monthKl: 0 };
 }
 
-function totalsOf(meters: DashboardMeter[]): NodeTotals {
-  const t = emptyTotals();
-  for (const m of meters) {
-    t.meters.push(m);
-    if (m.connectivity === 'CONNECTED') t.connected++;
-    else if (m.connectivity === 'DISCONNECTED') t.disconnected++;
-    else t.neverSeen++;
-    t.yesterdayKl += m.yesterdayKl;
-    t.todayKl += m.todayKl;
-    t.monthKl += m.monthKl;
-  }
-  return t;
+function addTotals(into: NodeTotals, from: NodeTotals) {
+  into.meters += from.meters;
+  into.connected += from.connected;
+  into.disconnected += from.disconnected;
+  into.neverSeen += from.neverSeen;
+  into.yesterdayKl += from.yesterdayKl;
+  into.todayKl += from.todayKl;
+  into.monthKl += from.monthKl;
 }
 
-// A node that has sub-areas AND meters assigned straight to it (not to any sub-area) gets one extra row for those
-// meters, "own-<id>", so they can be reached and the page's totals add up to the whole node.
 const OWN_PREFIX = 'own-';
 const OWN_NAME = 'Not in a sub-area';
 
@@ -145,8 +138,9 @@ function parseNodeRef(ref: string | number): { id: number; own: boolean } | null
   return Number.isFinite(id) ? { id, own } : null;
 }
 
-function directMeters(snap: Snapshot, siteId: number): DashboardMeter[] {
-  return (snap.totals.get(siteId)?.meters ?? []).filter((m) => m.siteId === siteId);
+/** The meters attached to the site itself, not to a site below it. */
+function directTotals(snap: Snapshot, siteId: number): NodeTotals {
+  return snap.direct.get(siteId) ?? emptyTotals();
 }
 
 /** The site and every site below it. */
@@ -164,22 +158,36 @@ function subtreeSiteIds(snap: Snapshot, siteId: number): number[] {
   return ids;
 }
 
+/** The site's meters and the meters of every site below it, summed. */
+function subtreeTotals(snap: Snapshot, siteId: number): NodeTotals {
+  const cached = snap.subtree.get(siteId);
+  if (cached) return cached;
+  const total = emptyTotals();
+  for (const id of subtreeSiteIds(snap, siteId)) addTotals(total, directTotals(snap, id));
+  snap.subtree.set(siteId, total);
+  return total;
+}
+
 async function buildSnapshot(): Promise<Snapshot> {
-  const [siteRes, meterRes, zoneRes] = await Promise.all([
+  const [siteRes, statsRes, zoneRes] = await Promise.all([
     pool.query(`SELECT site_id, name, level, parent_site_id, tz_sql FROM site_metadata WHERE is_active`),
-    pool.query(METERS_SQL),
+    pool.query(STATS_SQL),
+    // when the cortex history scheduler last updated the daily rows (every 15 minutes), as the clock time of each zone
     pool.query(
-      `SELECT tz, to_char(NOW() AT TIME ZONE tz, 'YYYY-MM-DD HH24:MI:SS') AS local
-       FROM (SELECT DISTINCT tz_sql AS tz FROM site_metadata WHERE is_active) z`
+      `SELECT z.tz, to_char(u.ts AT TIME ZONE z.tz, 'YYYY-MM-DD HH24:MI:SS') AS local, u.ts AS updated_at
+       FROM (SELECT DISTINCT tz_sql AS tz FROM site_metadata WHERE is_active) z
+       CROSS JOIN (SELECT MAX(updated_at) AS ts FROM water_meter_daily WHERE day >= CURRENT_DATE - 2) u`
     ),
   ]);
-  const nowLocal = new Map<string, string>(zoneRes.rows.map((r: any) => [r.tz, r.local]));
+  const nowLocal = new Map<string, string>(zoneRes.rows.filter((r: any) => r.local).map((r: any) => [r.tz, r.local]));
+  const updatedAtRow = zoneRes.rows.find((r: any) => r.updated_at);
+  const dataUpdatedAt: number = updatedAtRow ? new Date(updatedAtRow.updated_at).getTime() : Date.now();
 
   const sites = new Map<number, SiteNode>();
   for (const r of siteRes.rows) {
     sites.set(Number(r.site_id), {
       id: Number(r.site_id),
-      name: r.name,
+      name: tidySiteName(r.name),
       level: r.level,
       parentId: r.parent_site_id != null ? Number(r.parent_site_id) : null,
       parentName: null,
@@ -197,47 +205,22 @@ async function buildSnapshot(): Promise<Snapshot> {
     }
   }
 
-  // every meter counts in its own site and in every site above it
-  const totals = new Map<number, NodeTotals>();
-  for (const r of meterRes.rows) {
-    const meter: DashboardMeter = {
-      assetId: Number(r.asset_id),
-      meterId: r.meter_id,
-      siteId: r.site_id != null ? Number(r.site_id) : null,
-      devEui: r.dev_eui ?? null,
-      consumerId: r.household_custom_id ?? null,
-      consumerName: r.consumer_name ?? null,
-      address: r.address ?? null,
-      totalizerKl: Number(r.totalizer_kl) || 0,
-      decodedAt: r.decoded_at ? new Date(r.decoded_at).toISOString() : null,
-      decodedLocal: r.decoded_local ?? null,
-      connectivity: r.connectivity,
+  // a meter whose site is not a known site counts nowhere, as before
+  const direct = new Map<number, NodeTotals>();
+  for (const r of statsRes.rows) {
+    if (r.site_id == null || !sites.has(Number(r.site_id))) continue;
+    direct.set(Number(r.site_id), {
+      meters: Number(r.meters) || 0,
+      connected: Number(r.connected) || 0,
+      disconnected: Number(r.disconnected) || 0,
+      neverSeen: Number(r.never_seen) || 0,
       yesterdayKl: Number(r.yesterday_kl) || 0,
       todayKl: Number(r.today_kl) || 0,
       monthKl: Number(r.month_kl) || 0,
-    };
-
-    const seen = new Set<number>();
-    let siteId: number | null = meter.siteId;
-    while (siteId != null && sites.has(siteId) && !seen.has(siteId)) {
-      seen.add(siteId);
-      let t = totals.get(siteId);
-      if (!t) {
-        t = emptyTotals();
-        totals.set(siteId, t);
-      }
-      t.meters.push(meter);
-      if (meter.connectivity === 'CONNECTED') t.connected++;
-      else if (meter.connectivity === 'DISCONNECTED') t.disconnected++;
-      else t.neverSeen++;
-      t.yesterdayKl += meter.yesterdayKl;
-      t.todayKl += meter.todayKl;
-      t.monthKl += meter.monthKl;
-      siteId = sites.get(siteId)!.parentId;
-    }
+    });
   }
 
-  return { builtAt: Date.now(), nowLocal, sites, childrenOf, totals };
+  return { builtAt: Date.now(), dataUpdatedAt, nowLocal, sites, childrenOf, direct, subtree: new Map() };
 }
 
 function startBuild(): Promise<Snapshot> {
@@ -339,7 +322,7 @@ export interface NodeSummary {
 const round2 = (n: number) => Number(n.toFixed(2));
 
 function summarize(snap: Snapshot, node: SiteNode, allowed: Set<number>, parentIdParam: string | null): NodeSummary {
-  return summaryOf(snap, node.id, node.name, node.level, node.parentName, snap.totals.get(node.id) ?? emptyTotals(), {
+  return summaryOf(snap, node.id, node.name, node.level, node.parentName, subtreeTotals(snap, node.id), {
     parentIdParam,
     hasChildren: (snap.childrenOf.get(node.id) ?? []).some((c) => allowed.has(c)),
     zone: node.timeZone,
@@ -362,16 +345,16 @@ function summaryOf(
     parentId: opts.parentIdParam,
     parentName,
     hasChildren: opts.hasChildren,
-    meterCount: t.meters.length,
-    totalDevices: t.meters.length,
+    meterCount: t.meters,
+    totalDevices: t.meters,
     connected: t.connected,
     disconnected: t.disconnected,
     neverSeen: t.neverSeen,
     yesterdayFlowM3: round2(t.yesterdayKl),
     todayFlowM3: round2(t.todayKl),
     monthToDateFlowM3: round2(t.monthKl),
-    dataTimestamp: new Date(snap.builtAt).toISOString(),
-    dataLocalTime: snap.nowLocal.get(opts.zone) ?? new Date(snap.builtAt).toISOString().slice(0, 19).replace('T', ' '),
+    dataTimestamp: new Date(snap.dataUpdatedAt).toISOString(),
+    dataLocalTime: snap.nowLocal.get(opts.zone) ?? '',
   };
 }
 
@@ -396,8 +379,8 @@ export async function getNodeChildren(parentRef: string | null, authHeader?: str
   const rows = nodes.map((n) => summarize(snap, n, allowed, parentId == null ? null : String(parentId)));
 
   const parent = parentId != null ? snap.sites.get(parentId) : undefined;
-  const own = parent ? directMeters(snap, parent.id) : [];
-  if (parent && own.length > 0 && rows.length > 0) {
+  const own = parent ? directTotals(snap, parent.id) : emptyTotals();
+  if (parent && own.meters > 0 && rows.length > 0) {
     rows.push(
       summaryOf(
         snap,
@@ -405,7 +388,7 @@ export async function getNodeChildren(parentRef: string | null, authHeader?: str
         OWN_NAME,
         parent.level != null ? parent.level + 1 : null,
         parent.name,
-        totalsOf(own),
+        own,
         { parentIdParam: String(parent.id), hasChildren: false, zone: parent.timeZone }
       )
     );
@@ -413,14 +396,146 @@ export async function getNodeChildren(parentRef: string | null, authHeader?: str
   return rows;
 }
 
-/** Every meter in the subtree of `nodeId` (the Dashboard asks for this only at the last level). */
-export async function getNodeMeters(nodeRef: string, authHeader?: string): Promise<DashboardMeter[]> {
+export type MeterSortKey = 'devEui' | 'meterId' | 'consumerId' | 'consumerName' | 'totalizerM3' | 'latestReadingAt' | 'connectivityStatus';
+
+export const METER_SORT_KEYS: readonly MeterSortKey[] = [
+  'devEui', 'meterId', 'consumerId', 'consumerName', 'totalizerM3', 'latestReadingAt', 'connectivityStatus',
+];
+
+// What each sort key orders by. A missing value always sorts last, whichever way the list is sorted.
+// (an empty text counts as missing, and text sorts in byte order of its lower case, as the browser sorted it)
+const SORT_SQL: Record<MeterSortKey, string> = {
+  devEui: `NULLIF(LOWER(dev_eui), '') COLLATE "C"`,
+  meterId: `NULLIF(LOWER(meter_id), '') COLLATE "C"`,
+  consumerId: `NULLIF(LOWER(household_custom_id), '') COLLATE "C"`,
+  consumerName: `NULLIF(LOWER(consumer_name), '') COLLATE "C"`,
+  totalizerM3: 'totalizer_kl',
+  latestReadingAt: 'decoded_at',
+  connectivityStatus: `connectivity COLLATE "C"`,
+};
+
+export interface MeterPageOptions {
+  page: number;
+  size: number;
+  sort: MeterSortKey;
+  dir: 'asc' | 'desc';
+  q?: string;
+  status?: Connectivity | 'ALL';
+}
+
+export interface NodeSummaryTotals {
+  totalDevices: number;
+  connected: number;
+  disconnected: number;
+  neverSeen: number;
+  yesterdayFlowM3: number;
+  todayFlowM3: number;
+  monthToDateFlowM3: number;
+  /** When the scheduler last updated the numbers, as clock time at the node's site: "2026-10-09 18:15:00". */
+  dataLocalTime: string;
+}
+
+export interface MeterPage {
+  content: MeterPageRow[];
+  page: number;
+  size: number;
+  total: number;
+  totalPages: number;
+  /** The whole node, whatever the search and the status filter: the numbers of the cards above the table. */
+  summary: NodeSummaryTotals;
+}
+
+/** A search text as a LIKE pattern that matches it literally. */
+const likePattern = (text: string) => `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+
+/**
+ * One page of the meters of a node (for a node with no sites below it, the meters attached to it). Sorting, search and the
+ * status filter run in the database, so only `size` rows are read and sent however many meters the node has.
+ * Resolves to null when the caller may not see the node.
+ */
+export async function getNodeMeters(nodeRef: string, opts: MeterPageOptions, authHeader?: string): Promise<MeterPage | null> {
   const ref = parseNodeRef(nodeRef);
-  if (!ref) return [];
+  if (!ref) return { content: [], page: 0, size: opts.size, total: 0, totalPages: 0, summary: summaryTotals(emptyTotals(), '') };
   const allowed = await getAllowedSiteIds(authHeader);
-  if (!allowed.has(ref.id)) return [];
+  if (!allowed.has(ref.id)) return null;
   const snap = await getSnapshot();
-  return ref.own ? directMeters(snap, ref.id) : snap.totals.get(ref.id)?.meters ?? [];
+
+  const siteIds = ref.own ? [ref.id] : subtreeSiteIds(snap, ref.id);
+  const totals = ref.own ? directTotals(snap, ref.id) : subtreeTotals(snap, ref.id);
+  const summary = summaryTotals(totals, snap.nowLocal.get(snap.sites.get(ref.id)?.timeZone ?? DEFAULT_ZONE) ?? '');
+  if (siteIds.length === 0) return { content: [], page: opts.page, size: opts.size, total: 0, totalPages: 0, summary };
+
+  const params: unknown[] = [siteIds];
+  let search = '';
+  const q = (opts.q ?? '').trim().slice(0, 64);
+  if (q) {
+    params.push(likePattern(q));
+    const p = `$${params.length}`;
+    search = `AND (m.meter_id ILIKE ${p} OR l.dev_eui ILIKE ${p} OR m.consumer_name ILIKE ${p} OR m.household_custom_id ILIKE ${p} OR m.address ILIKE ${p})`;
+  }
+  let statusFilter = '';
+  if (opts.status && opts.status !== 'ALL') {
+    params.push(opts.status);
+    statusFilter = `WHERE connectivity = $${params.length}`;
+  }
+  params.push(opts.size, opts.page * opts.size);
+  const order = `${SORT_SQL[opts.sort]} ${opts.dir === 'desc' ? 'DESC' : 'ASC'} NULLS LAST, meter_id ASC`;
+
+  const res = await pool.query(
+    `WITH base AS (
+       SELECT m.asset_id, m.meter_id, m.site_id, m.household_custom_id, m.consumer_name, m.address,
+              l.dev_eui, l.decoded_at, COALESCE(l.forward_flow_kl, 0) AS totalizer_kl,
+              to_char(l.decoded_at AT TIME ZONE z.tz, 'YYYY-MM-DD HH24:MI:SS') AS decoded_local,
+              CASE
+                WHEN l.decoded_at IS NULL THEN 'NEVER_SEEN'
+                WHEN (l.decoded_at AT TIME ZONE z.tz)::date = (NOW() AT TIME ZONE z.tz)::date THEN 'CONNECTED'
+                ELSE 'DISCONNECTED'
+              END AS connectivity
+       FROM meter_metadata m
+       LEFT JOIN site_metadata s ON s.site_id = m.site_id
+       CROSS JOIN LATERAL (SELECT COALESCE(s.tz_sql, 'UTC') AS tz) z
+       LEFT JOIN water_meter_latest l ON l.meter_id = m.meter_id
+       WHERE m.is_active AND m.site_id = ANY($1::bigint[])
+       ${search}
+     )
+     SELECT *, COUNT(*) OVER()::int AS total
+     FROM base
+     ${statusFilter}
+     ORDER BY ${order}
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+
+  // a page past the end (the list shrank meanwhile): answer with the first page instead of an empty one
+  if (res.rows.length === 0 && opts.page > 0) return getNodeMeters(nodeRef, { ...opts, page: 0 }, authHeader);
+  const total: number = res.rows[0]?.total ?? 0;
+  const content: MeterPageRow[] = res.rows.map((r: any) => ({
+    assetId: Number(r.asset_id),
+    meterId: r.meter_id,
+    siteId: r.site_id != null ? Number(r.site_id) : null,
+    devEui: r.dev_eui ?? null,
+    consumerId: r.household_custom_id ?? null,
+    consumerName: r.consumer_name ?? null,
+    address: r.address ?? null,
+    totalizerKl: Number(r.totalizer_kl) || 0,
+    decodedAt: r.decoded_at ? new Date(r.decoded_at).toISOString() : null,
+    decodedLocal: r.decoded_local ?? null,
+    connectivity: r.connectivity,
+  }));
+  return { content, page: opts.page, size: opts.size, total, totalPages: Math.ceil(total / opts.size), summary };
+}
+
+function summaryTotals(t: NodeTotals, dataLocalTime: string): NodeSummaryTotals {
+  return {
+    dataLocalTime,
+    totalDevices: t.meters,
+    connected: t.connected,
+    disconnected: t.disconnected,
+    neverSeen: t.neverSeen,
+    yesterdayFlowM3: round2(t.yesterdayKl),
+    todayFlowM3: round2(t.todayKl),
+    monthToDateFlowM3: round2(t.monthKl),
+  };
 }
 
 /** Root-to-node chain of names, for the breadcrumb on a fresh page load or a pasted link. */

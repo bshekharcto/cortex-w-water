@@ -6,14 +6,15 @@ import { DashboardBreadcrumb } from '../components/DashboardBreadcrumb';
 import { DashboardKpiRow } from '../components/DashboardKpiRow';
 import { NodeOverviewTable } from '../components/NodeOverviewTable';
 import { NodeMeterTable } from '../components/NodeMeterTable';
+import { DashboardLoader } from '../components/DashboardLoader';
 import { MeterHistoryDrawer } from '@/modules/gis/shared/MeterHistoryDrawer';
 import type { GisMeter } from '@/modules/gis/shared/gisData';
 import type { MeterRow, NodeRow } from '../models/dashboardRows';
 import { useDashboardScope } from '../hooks/useDashboardScope';
 import { useNodeAncestors } from '../hooks/useNodeAncestors';
 import { useNodeChildren } from '../hooks/useNodeChildren';
-import { useNodeMeters } from '../hooks/useNodeMeters';
-import { aggregateNodeKpis, aggregateMeterKpis } from '../services/dashboardAggregation';
+import { useNodeMeters, METERS_PAGE_SIZE } from '../hooks/useNodeMeters';
+import { aggregateNodeKpis, aggregateSummaryKpis } from '../services/dashboardAggregation';
 import '@/modules/gis/shared/gis.css';
 
 function meterRowToGisMeter(row: MeterRow, locality: string): GisMeter {
@@ -68,7 +69,6 @@ export function DashboardPage() {
   // Real root-to-current name chain, resolved fresh from the live site tree
   // every time — correct on a deep link or refresh, not just on in-app clicks.
   const { ancestors, isLoading: ancestorsLoading } = useNodeAncestors(currentNodeId);
-  const parentId = ancestors.length > 1 ? ancestors[ancestors.length - 2].id : null;
 
   // Children of the current node (or the real top-level sites at the root).
   const {
@@ -85,32 +85,30 @@ export function DashboardPage() {
 
   const {
     meters,
+    total: metersTotal,
+    totalPages: metersTotalPages,
+    page: metersPage,
+    setPage: setMetersPage,
+    sort: metersSort,
+    toggleSort: toggleMetersSort,
+    summary: leafSummary,
+    isFirstLoad: metersFirstLoad,
     isLoading: metersLoading,
     error: metersError,
     refetch: refetchMeters,
   } = useNodeMeters(isLeafView ? currentNodeId : null, searchQuery, statusFilter);
 
-  // A leaf's own totals (yesterday/today/month flow) live on its row in its
-  // PARENT's children list, not on the (empty) call to itself — so at a
-  // leaf, also fetch the sibling list to recover them for the KPI row.
-  const { rawNodes: siblingNodes } = useNodeChildren(parentId, '', isLeafView && parentId !== null);
-  const currentNodeTotals = useMemo<NodeRow | undefined>(
-    () => siblingNodes.find((n) => n.id === currentNodeId),
-    [siblingNodes, currentNodeId]
-  );
-
+  // At a leaf the cards (devices, connected, ..., yesterday / today / month flow) are the totals of the whole node, which
+  // the server sends with every page, so they do not change with the search, the status filter or the page.
   const kpis = useMemo(() => {
-    if (isLeafView) {
-      return aggregateMeterKpis(meters, {
-        yesterdayFlowM3: currentNodeTotals?.yesterdayFlowM3 ?? 0,
-        todayFlowM3: currentNodeTotals?.todayFlowM3 ?? 0,
-        monthToDateFlowM3: currentNodeTotals?.monthToDateFlowM3 ?? 0,
-      });
-    }
+    if (isLeafView) return aggregateSummaryKpis(leafSummary);
     return aggregateNodeKpis(rawChildNodes);
-  }, [isLeafView, meters, currentNodeTotals, rawChildNodes]);
+  }, [isLeafView, leafSummary, rawChildNodes]);
 
-  const isLoading = currentNodeId === null ? childrenLoading : childrenLoading || (isLeafView && metersLoading) || ancestorsLoading;
+  // One loader for the whole page while its first data is on the way; the cards and the table have none of their own.
+  // Paging or sorting a meter list later keeps the cards and the table on screen.
+  const showMainLoader =
+    currentNodeId === null ? childrenLoading : childrenLoading || (isLeafView && metersFirstLoad) || ancestorsLoading;
 
   const handleResetFilters = useCallback(() => {
     setSearchQuery('');
@@ -187,65 +185,79 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* 3. KPI Row */}
-      <DashboardKpiRow
-        isLeaf={isLeafView}
-        kpis={kpis}
-        isLoading={isLoading}
-        selectedStatusFilter={statusFilter}
-        onStatusFilterChange={setStatusFilter}
-      />
-
-      {/* 4. Filter Bar */}
-      <section className="cw-section" style={{ marginBottom: 16 }}>
-        <FilterBar
-          searchValue={searchQuery}
-          onSearchChange={setSearchQuery}
-          searchPlaceholder={searchPlaceholder}
-          onReset={searchQuery || statusFilter !== 'ALL' ? handleResetFilters : undefined}
-        >
-          {isLeafView && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label htmlFor="dashboard-status-filter" style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)', whiteSpace: 'nowrap' }}>
-                Status:
-              </label>
-              <select
-                id="dashboard-status-filter"
-                className="cw-filter-select"
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as any)}
-                style={{
-                  background: 'var(--cw-bg-input, #fff)',
-                  border: '1px solid var(--cw-border, #cbd5e1)',
-                  borderRadius: 'var(--cw-radius, 6px)',
-                  padding: '6px 12px',
-                  fontSize: '0.85rem',
-                  color: 'var(--cw-text, #1e293b)',
-                }}
-              >
-                <option value="ALL">All Statuses</option>
-                <option value="CONNECTED">Connected</option>
-                <option value="DISCONNECTED">Disconnected</option>
-                <option value="NEVER_SEEN">Never Seen</option>
-              </select>
-            </div>
-          )}
-        </FilterBar>
-      </section>
-
-      {/* 5. Scope-specific Data Table */}
-      {isLeafView ? (
-        <NodeMeterTable
-          meters={meters}
-          isLoading={metersLoading}
-          onSelectMeter={(meter) => setSelectedMeter(meter)}
-        />
+      {showMainLoader ? (
+        <DashboardLoader />
       ) : (
-        <NodeOverviewTable
-          nodes={childNodes}
-          isLoading={childrenLoading}
-          onSelectNode={handleSelectNode}
-        />
+        <>
+          {/* 3. KPI Row */}
+          <DashboardKpiRow
+            isLeaf={isLeafView}
+            kpis={kpis}
+            isLoading={false}
+            selectedStatusFilter={statusFilter}
+            onStatusFilterChange={setStatusFilter}
+          />
+
+          {/* 4. Filter Bar */}
+          <section className="cw-section" style={{ marginBottom: 16 }}>
+            <FilterBar
+              searchValue={searchQuery}
+              onSearchChange={setSearchQuery}
+              searchPlaceholder={searchPlaceholder}
+              onReset={searchQuery || statusFilter !== 'ALL' ? handleResetFilters : undefined}
+            >
+              {isLeafView && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <label htmlFor="dashboard-status-filter" style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)', whiteSpace: 'nowrap' }}>
+                    Status:
+                  </label>
+                  <select
+                    id="dashboard-status-filter"
+                    className="cw-filter-select"
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value as any)}
+                    style={{
+                      background: 'var(--cw-bg-input, #fff)',
+                      border: '1px solid var(--cw-border, #cbd5e1)',
+                      borderRadius: 'var(--cw-radius, 6px)',
+                      padding: '6px 12px',
+                      fontSize: '0.85rem',
+                      color: 'var(--cw-text, #1e293b)',
+                    }}
+                  >
+                    <option value="ALL">All Statuses</option>
+                    <option value="CONNECTED">Connected</option>
+                    <option value="DISCONNECTED">Disconnected</option>
+                    <option value="NEVER_SEEN">Never Seen</option>
+                  </select>
+                </div>
+              )}
+            </FilterBar>
+          </section>
+
+          {/* 5. Scope-specific Data Table */}
+          {isLeafView ? (
+            <NodeMeterTable
+              meters={meters}
+              total={metersTotal}
+              page={metersPage}
+              totalPages={metersTotalPages}
+              pageSize={METERS_PAGE_SIZE}
+              sort={metersSort}
+              onSort={toggleMetersSort}
+              onPageChange={setMetersPage}
+              isLoading={metersLoading}
+              onSelectMeter={(meter) => setSelectedMeter(meter)}
+              dataUpdatedAt={leafSummary.dataLocalTime ? leafSummary.dataLocalTime.slice(11, 16) : null}
+            />
+          ) : (
+            <NodeOverviewTable
+              nodes={childNodes}
+              isLoading={childrenLoading}
+              onSelectNode={handleSelectNode}
+            />
+          )}
+        </>
       )}
 
       {/* 6. Meter 360° History Drawer */}

@@ -1,71 +1,91 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import type { MeterRow } from '../models/dashboardRows';
-import { fetchNodeMeters } from '../services/dashboardDataService';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { EMPTY_METER_PAGE, fetchNodeMeters, type MeterPage, type MeterSortField } from '../services/dashboardDataService';
+
+export const METERS_PAGE_SIZE = 15;
 
 /**
- * Fetches the meters directly attached to a node. Only meaningful for a
- * real leaf (a node with no further children) — call this once
- * useNodeChildren for the same id has come back empty.
+ * One page of the meters attached to a node, sorted, searched and filtered by the server. Only meaningful for a real
+ * leaf (a node with no further children) — call this once useNodeChildren for the same id has come back empty.
+ * A new node, search, status or sort starts again at the first page; a slow answer never replaces a newer one.
  */
 export function useNodeMeters(
   nodeId: string | null,
   searchQuery: string = '',
   statusFilter: 'ALL' | 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN' = 'ALL'
 ) {
-  const [meters, setMeters] = useState<MeterRow[]>([]);
+  const [data, setData] = useState<MeterPage>(EMPTY_METER_PAGE);
+  const [page, setPage] = useState<number>(0);
+  const [sort, setSort] = useState<{ field: MeterSortField; dir: 'asc' | 'desc' }>({ field: 'devEui', dir: 'asc' });
+  const [debouncedQuery, setDebouncedQuery] = useState<string>(searchQuery);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [loadedNode, setLoadedNode] = useState<string | null>(null); // the node whose first page has arrived
   const [error, setError] = useState<string | null>(null);
+  const seq = useRef(0);
 
-  const loadMeters = useCallback(async () => {
+  // typing in the search box asks the server once the user pauses, not on every key
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(searchQuery), 300);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  // another node, search or status: back to the first page
+  useEffect(() => {
+    setPage(0);
+  }, [nodeId, debouncedQuery, statusFilter]);
+
+  const load = useCallback(async () => {
     if (!nodeId) {
-      setMeters([]);
+      setData(EMPTY_METER_PAGE);
       setIsLoading(false);
       return;
     }
+    const id = ++seq.current;
     setIsLoading(true);
     setError(null);
     try {
-      const data = await fetchNodeMeters(nodeId);
-      setMeters(data);
+      const result = await fetchNodeMeters(nodeId, {
+        page,
+        size: METERS_PAGE_SIZE,
+        sort: sort.field,
+        dir: sort.dir,
+        q: debouncedQuery,
+        status: statusFilter,
+      });
+      if (id !== seq.current) return;
+      setData(result);
+      setLoadedNode(nodeId);
+      if (result.page !== page) setPage(result.page); // the list shrank: the server answered with the first page
     } catch (err: any) {
+      if (id !== seq.current) return;
       console.error('[useNodeMeters] Failed to load node meters:', err);
       setError(err?.message || 'Failed to load meters');
     } finally {
-      setIsLoading(false);
+      if (id === seq.current) setIsLoading(false);
     }
-  }, [nodeId]);
+  }, [nodeId, page, sort, debouncedQuery, statusFilter]);
 
   useEffect(() => {
-    loadMeters();
-  }, [loadMeters]);
+    load();
+  }, [load]);
 
-  const filteredMeters = useMemo(() => {
-    let result = meters;
-
-    if (statusFilter !== 'ALL') {
-      result = result.filter((m) => m.connectivityStatus === statusFilter);
-    }
-
-    const q = searchQuery.trim().toLowerCase();
-    if (q) {
-      result = result.filter(
-        (m) =>
-          m.meterId.toLowerCase().includes(q) ||
-          (m.devEui && m.devEui.toLowerCase().includes(q)) ||
-          (m.consumerName && m.consumerName.toLowerCase().includes(q)) ||
-          (m.consumerId && m.consumerId.toLowerCase().includes(q)) ||
-          (m.address && m.address.toLowerCase().includes(q))
-      );
-    }
-
-    return result;
-  }, [meters, searchQuery, statusFilter]);
+  const toggleSort = useCallback((field: MeterSortField) => {
+    setSort((current) => (current.field === field ? { field, dir: current.dir === 'asc' ? 'desc' : 'asc' } : { field, dir: 'asc' }));
+    setPage(0);
+  }, []);
 
   return {
-    meters: filteredMeters,
-    rawMeters: meters,
+    meters: data.content,
+    total: data.total,
+    totalPages: data.totalPages,
+    page,
+    setPage,
+    sort,
+    toggleSort,
+    summary: data.summary,
     isLoading,
+    /** True until the first page of the current node has arrived (later pages keep the cards and the table on screen). */
+    isFirstLoad: !!nodeId && loadedNode !== nodeId && isLoading,
     error,
-    refetch: loadMeters,
+    refetch: load,
   };
 }

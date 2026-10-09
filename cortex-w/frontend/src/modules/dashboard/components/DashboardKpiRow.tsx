@@ -20,16 +20,18 @@ export function DashboardKpiRow({
 }: DashboardKpiRowProps) {
   if (isLoading || !kpis) {
     return (
-      <div className="cw-kpi-grid" style={{ marginBottom: 24 }}>
-        {[...Array(isLeaf ? 7 : 8)].map((_, idx) => (
-          <div
-            key={idx}
-            className="cw-surface cw-kpi-card"
-            style={{ height: 110, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.6 }}
-          >
-            <div className="cw-spinner" style={{ width: 24, height: 24 }} />
-          </div>
-        ))}
+      <div className="cw-kpi-wrap" style={{ marginBottom: 24 }}>
+        <div className="cw-kpi-grid cw-kpi-grid--balanced" data-cards={isLeaf ? 7 : 8}>
+          {[...Array(isLeaf ? 7 : 8)].map((_, idx) => (
+            <div
+              key={idx}
+              className="cw-surface cw-kpi-card"
+              style={{ height: 110, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.6 }}
+            >
+              <div className="cw-spinner" style={{ width: 24, height: 24 }} />
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -44,7 +46,8 @@ export function DashboardKpiRow({
   };
 
   return (
-    <div className="cw-kpi-grid" style={{ marginBottom: 24 }}>
+    <div className="cw-kpi-wrap" style={{ marginBottom: 24 }}>
+    <div className="cw-kpi-grid cw-kpi-grid--balanced" data-cards={isLeaf ? 7 : 8}>
       {/* 1. Child area count — hidden once drilled down to a leaf (meters) */}
       {!isLeaf && (
         <KpiCard
@@ -121,6 +124,7 @@ export function DashboardKpiRow({
         value={formatNumber(Math.round(kpis.monthToDateFlowM3))}
         subtitle="Month-to-date total"
       />
+    </div>
     </div>
   );
 }

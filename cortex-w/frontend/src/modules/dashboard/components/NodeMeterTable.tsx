@@ -1,74 +1,50 @@
-import { useState, useMemo } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, ChevronLeft, ChevronRight, Eye } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
 import { StatusBadge } from '@/components/status/StatusBadge';
 import { formatNumber } from '@/utils/number';
 import type { MeterRow } from '../models/dashboardRows';
+import type { MeterSortField } from '../services/dashboardDataService';
 
 interface NodeMeterTableProps {
+  /** The page on screen: the server has already sorted, filtered and cut it. */
   meters: MeterRow[];
+  total: number;
+  page: number;
+  totalPages: number;
+  pageSize: number;
+  sort: { field: MeterSortField; dir: 'asc' | 'desc' };
+  onSort: (field: MeterSortField) => void;
+  onPageChange: (page: number) => void;
   isLoading?: boolean;
   onSelectMeter: (meter: MeterRow) => void;
+  /** When the scheduler last updated the numbers, as a clock time at the site (HH:MM). */
+  dataUpdatedAt?: string | null;
 }
 
-type SortField =
-  | 'devEui'
-  | 'meterId'
-  | 'consumerId'
-  | 'consumerName'
-  | 'totalizerM3'
-  | 'latestReadingAt'
-  | 'connectivityStatus';
+type SortField = MeterSortField;
 
 // Renders the meter list for whichever real leaf node the user has drilled
 // into. The breadcrumb above already shows the full ancestor chain, so this
 // table doesn't repeat "Zone"/"DMA" columns — those were tied to the old
 // fixed 2-level model and don't generalize to arbitrary depth anyway.
-export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTableProps) {
-  const [sortField, setSortField] = useState<SortField>('devEui');
-  const [sortAsc, setSortAsc] = useState<boolean>(true);
-  const [page, setPage] = useState<number>(0);
-  const pageSize = 15;
-
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortAsc(!sortAsc);
-    } else {
-      setSortField(field);
-      setSortAsc(true);
-    }
-  };
-
-  const sortedMeters = useMemo(() => {
-    const list = [...meters];
-    list.sort((a, b) => {
-      let vA: any = a[sortField];
-      let vB: any = b[sortField];
-      const aEmpty = vA === null || vA === undefined || vA === '';
-      const bEmpty = vB === null || vB === undefined || vB === '';
-      // Missing values (e.g. a meter with no synced dev_eui yet) always sort
-      // last, regardless of sort direction — so "has real data" naturally
-      // comes before "nothing to show yet" rather than empty strings
-      // collating before real ones alphabetically.
-      if (aEmpty && bEmpty) return 0;
-      if (aEmpty) return 1;
-      if (bEmpty) return -1;
-      if (typeof vA === 'string') {
-        vA = vA.toLowerCase();
-        vB = (vB as string).toLowerCase();
-      }
-      if (vA < vB) return sortAsc ? -1 : 1;
-      if (vA > vB) return sortAsc ? 1 : -1;
-      return 0;
-    });
-    return list;
-  }, [meters, sortField, sortAsc]);
-
-  const totalPages = Math.ceil(sortedMeters.length / pageSize) || 1;
-  const pagedMeters = useMemo(() => {
-    const start = page * pageSize;
-    return sortedMeters.slice(start, start + pageSize);
-  }, [sortedMeters, page, pageSize]);
+export function NodeMeterTable({
+  meters,
+  total,
+  page,
+  totalPages,
+  pageSize: _pageSize,
+  sort,
+  onSort,
+  onPageChange,
+  isLoading,
+  onSelectMeter,
+  dataUpdatedAt,
+}: NodeMeterTableProps) {
+  // Sorting, search and paging are done by the server (missing values always come last, whichever way it is sorted).
+  const handleSort = (field: SortField) => onSort(field);
+  const pagedMeters = meters;
+  const sortField = sort.field;
+  const sortAsc = sort.dir === 'asc';
 
   const renderSortIcon = (field: SortField) => {
     if (sortField !== field) return <ArrowUpDown size={12} style={{ opacity: 0.4, marginLeft: 4 }} />;
@@ -88,7 +64,7 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
     }
   };
 
-  if (isLoading) {
+  if (isLoading && meters.length === 0) {
     return (
       <div className="cw-surface" style={{ padding: 32, textAlign: 'center' }}>
         <div className="cw-spinner" style={{ margin: '0 auto 12px auto' }} />
@@ -106,12 +82,13 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <h2 className="cw-section-title" style={{ margin: 0 }}>Meter Records</h2>
         <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-          Showing {sortedMeters.length} {sortedMeters.length === 1 ? 'meter' : 'meters'}
+          Showing {total.toLocaleString()} {total === 1 ? 'meter' : 'meters'}
+          {dataUpdatedAt && <> · Data updated {dataUpdatedAt} (refreshes every 15 minutes)</>}
         </span>
       </div>
 
-      <div className="cw-surface cw-table-wrap">
-        <table className="cw-table">
+      <div className="cw-surface cw-table-wrap" style={isLoading ? { opacity: 0.55, pointerEvents: 'none', transition: 'opacity 0.15s' } : undefined} aria-busy={isLoading}>
+        <table className="cw-table cw-table--centered">
           <thead>
             <tr>
               <th style={{ cursor: 'pointer' }} onClick={() => handleSort('devEui')}>
@@ -189,7 +166,7 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
           <button
             className="cw-icon-btn"
             disabled={page === 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            onClick={() => onPageChange(Math.max(0, page - 1))}
             style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
           >
             <ChevronLeft size={16} /> Prev
@@ -200,7 +177,7 @@ export function NodeMeterTable({ meters, isLoading, onSelectMeter }: NodeMeterTa
           <button
             className="cw-icon-btn"
             disabled={page >= totalPages - 1}
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+            onClick={() => onPageChange(Math.min(totalPages - 1, page + 1))}
             style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
           >
             Next <ChevronRight size={16} />

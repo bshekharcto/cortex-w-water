@@ -278,6 +278,30 @@
 /* ---------- KPI grid ---------- */
 .cw-kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
 
+/* The Dashboard cards: all in one row while there is room (a card needs about 190px), otherwise two balanced rows, and
+   never one card left alone on a second row. The width that counts is the page's, so opening the sidebar re-balances them.
+   The wrapper is the container the queries look at; data-cards is how many cards the row has. */
+.cw-kpi-wrap { container-type: inline-size; }
+
+/* a table whose headings and cells all sit in the middle of their column (the Dashboard tables) */
+.cw-table--centered th,
+.cw-table--centered td { text-align: center !important; }
+.cw-table--centered th > div { justify-content: center !important; }
+.cw-kpi-grid--balanced[data-cards="8"] { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+.cw-kpi-grid--balanced[data-cards="7"] { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+@container (max-width: 1610px) {
+  .cw-kpi-grid--balanced[data-cards="8"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@container (max-width: 1410px) {
+  .cw-kpi-grid--balanced[data-cards="7"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@container (max-width: 780px) {
+  .cw-kpi-grid--balanced { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+}
+@container (max-width: 440px) {
+  .cw-kpi-grid--balanced { grid-template-columns: minmax(0, 1fr) !important; }
+}
+
 /* ---------- Section ---------- */
 .cw-section { margin-bottom: 28px; }
 .cw-section-title { font: var(--cw-font-section-title); margin: 0 0 14px; }
