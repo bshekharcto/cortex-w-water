@@ -5,9 +5,11 @@ import { MeterTelemetryItem } from '../types/commandCenter.types';
 interface Props {
   meter: MeterTelemetryItem;
   onClose: () => void;
+  /** Opens the meter's whole frame history in the workspace. */
+  onViewFrames?: (meter: MeterTelemetryItem) => void;
 }
 
-export function MeterInspector({ meter, onClose }: Props) {
+export function MeterInspector({ meter, onClose, onViewFrames }: Props) {
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   const copyToClipboard = (text: string, field: string) => {
@@ -153,6 +155,12 @@ export function MeterInspector({ meter, onClose }: Props) {
           <span className="cc-diag-chip cc-diag-chip--good">Normal FCnt Progression</span>
         </div>
       </div>
+
+      {onViewFrames && (
+        <button className="cw-button-secondary cc-inspector-wide-btn" onClick={() => onViewFrames(meter)}>
+          View all frames from this meter
+        </button>
+      )}
     </aside>
   );
 }

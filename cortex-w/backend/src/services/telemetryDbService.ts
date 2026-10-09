@@ -41,7 +41,7 @@ export interface TelemetrySummary {
   };
 }
 
-function formatRelativeTime(dateStr: string | null): string {
+export function formatRelativeTime(dateStr: string | null): string {
   if (!dateStr) return 'unknown';
   const diffMs = Date.now() - new Date(dateStr).getTime();
   if (diffMs < 0) return 'just now';
@@ -55,7 +55,7 @@ function formatRelativeTime(dateStr: string | null): string {
   return `${diffDays}d ago`;
 }
 
-function getGatewayAlias(id: string): string {
+export function getGatewayAlias(id: string): string {
   if (!id) return 'GW-UNK';
   const suffix = id.slice(-3).toUpperCase();
   return `GW-${suffix}`;
@@ -86,7 +86,7 @@ export function localDateIn(zone: string, instant: Date = new Date()): string {
 }
 
 /** The frames from the start of day `from` to the end of day `to`, days of the zone. */
-const inWindow = (zone: string, from: string, to: string) =>
+export const inWindow = (zone: string, from: string, to: string) =>
   `time >= (${from}::date)::timestamp AT TIME ZONE '${zone}' AND time < ((${to}::date + 1)::timestamp AT TIME ZONE '${zone}')`;
 
 const KNOWN_GATEWAY_DAYS = 30;                  // a gateway that sent a frame in this many days is "known"
@@ -111,7 +111,7 @@ export interface DateWindow {
 }
 
 /** The last `days` days ending today at the zone's site (or at `referenceDate`, never later than today), or a custom window. */
-function dateRange(days: number, referenceDate?: string, custom?: DateWindow, zone: string = 'UTC'): DateWindow {
+export function dateRange(days: number, referenceDate?: string, custom?: DateWindow, zone: string = 'UTC'): DateWindow {
   if (custom) return custom;
   const today = localDateIn(zone);
   const toDate = referenceDate && /^\d{4}-\d{2}-\d{2}$/.test(referenceDate) && referenceDate < today ? referenceDate : today;
@@ -122,8 +122,8 @@ export type MeterFilter = 'ALL' | 'LIVE' | 'STALE' | 'WEAK_RSSI' | 'POOR_SNR' | 
 
 // The same limits the status chips use, so a filter and the chip on the row always agree.
 const STALE_AFTER_MS = DAY_MS;
-const WEAK_RSSI_DBM = -95;
-const POOR_SNR_DB = -10;
+export const WEAK_RSSI_DBM = -95;
+export const POOR_SNR_DB = -10;
 
 function meterStatusChips(m: { decoded_at: string; rssi: number; snr: number; gateway_count: number }): string[] {
   const chips: string[] = [];
@@ -215,7 +215,7 @@ const FILTER_SQL: Record<MeterFilter, string> = {
 };
 
 // Limits a query to the meters of some sites; `param` is the placeholder holding the site ids (a bigint[]).
-const siteClause = (param: string) =>
+export const siteClause = (param: string) =>
   ` AND meter_id IN (SELECT meter_id FROM meter_metadata WHERE site_id = ANY(${param}::bigint[]))`;
 
 const framesCte = (zone: string, sitesParam?: string) => `

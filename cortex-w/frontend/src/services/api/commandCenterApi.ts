@@ -4,6 +4,8 @@ import {
   MeterTelemetryItem,
   RawFrameItem,
   NetworkKpiData,
+  RadioHealthData,
+  TrafficSeries,
 } from '@/modules/command-center/types/commandCenter.types';
 
 /** A custom window: days at the site as YYYY-MM-DD, both inclusive. */
@@ -204,4 +206,139 @@ export async function searchMeters(
       ...(custom ? { from: custom.from, to: custom.to } : {}),
     },
   });
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Frames, fleet meters, one meter, traffic over time and radio analysis
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** The window and site of a request (the Command Center's days at the site, or a custom range). */
+export type WindowParams = GatewayScope;
+
+/** Changes whenever the window or the site does: what a list reloads on. */
+export function windowKey(w: WindowParams): string {
+  return [w.days, w.custom?.from ?? '', w.custom?.to ?? '', w.siteId ?? 'ALL'].join('|');
+}
+
+function windowQuery(w: WindowParams, siteId?: string): Record<string, string | number> {
+  const query: Record<string, string | number> = { ...scopeQuery(w) };
+  const site = siteId ?? w.siteId;
+  if (site && site !== 'ALL') query.siteId = site;
+  else delete query.siteId;
+  return query;
+}
+
+export type MeterStatusFilter = 'live' | 'stale' | 'silent';
+
+export interface FleetMetersPage {
+  total: number;
+  limit: number;
+  offset: number;
+  items: MeterTelemetryItem[];
+  /** Values present in the window/site, for the data-rate and frequency drop-downs. */
+  facets: { dr: number[]; frequency: number[] };
+}
+
+/** Every meter's latest frame, searched, filtered and paginated on the server. */
+export async function fetchFleetMeters(opts: {
+  win: WindowParams;
+  siteId: string;
+  q?: string;
+  status?: MeterStatusFilter;
+  dr?: number;
+  frequency?: number;
+  confirmed?: boolean;
+  limit?: number;
+  offset?: number;
+  signal?: AbortSignal;
+}): Promise<FleetMetersPage> {
+  const query: Record<string, string | number> = { ...windowQuery(opts.win, opts.siteId), limit: opts.limit ?? 100, offset: opts.offset ?? 0 };
+  if (opts.q) query.q = opts.q;
+  if (opts.status) query.status = opts.status;
+  if (opts.dr !== undefined) query.dr = opts.dr;
+  if (opts.frequency !== undefined) query.frequency = opts.frequency;
+  if (opts.confirmed !== undefined) query.confirmed = String(opts.confirmed);
+  return apiRequest<FleetMetersPage>('/command-center/meters', { method: 'GET', query, signal: opts.signal });
+}
+
+export interface FramesPage {
+  total: number;
+  limit: number;
+  offset: number;
+  items: RawFrameItem[];
+}
+
+/** Newest frames one gateway took (paginated, newest first). */
+export async function fetchGatewayFrames(
+  gatewayId: string,
+  win: WindowParams,
+  opts: { limit?: number; offset?: number; signal?: AbortSignal } = {}
+): Promise<FramesPage> {
+  return apiRequest<FramesPage>(`/command-center/gateways/${encodeURIComponent(gatewayId)}/frames`, {
+    method: 'GET',
+    query: { ...windowQuery(win), limit: opts.limit ?? 100, offset: opts.offset ?? 0 },
+    signal: opts.signal,
+  });
+}
+
+/** Frames from one meter across every gateway that took them (paginated, newest first). */
+export async function fetchMeterFrames(
+  meterId: string,
+  win: WindowParams,
+  opts: { limit?: number; offset?: number; signal?: AbortSignal } = {}
+): Promise<FramesPage> {
+  return apiRequest<FramesPage>(`/command-center/meters/${encodeURIComponent(meterId)}/frames`, {
+    method: 'GET',
+    query: { ...windowQuery(win), limit: opts.limit ?? 20, offset: opts.offset ?? 0 },
+    signal: opts.signal,
+  });
+}
+
+/** Newest frames across the fleet or one site (paginated): "Load more" in the live feed. */
+export async function fetchFleetFrames(
+  win: WindowParams,
+  siteId: string,
+  opts: { limit?: number; offset?: number; signal?: AbortSignal } = {}
+): Promise<FramesPage> {
+  return apiRequest<FramesPage>('/command-center/frames', {
+    method: 'GET',
+    query: { ...windowQuery(win, siteId), limit: opts.limit ?? 100, offset: opts.offset ?? 0 },
+    signal: opts.signal,
+  });
+}
+
+/** Frames and distinct meters per time bucket, with the previous equal period, for a gateway, a site or the fleet. */
+export async function fetchTraffic(
+  win: WindowParams,
+  scope: { siteId: string; gatewayId?: string },
+  signal?: AbortSignal
+): Promise<TrafficSeries> {
+  const query = windowQuery(win, scope.siteId);
+  if (scope.gatewayId) query.gatewayId = scope.gatewayId;
+  return apiRequest<TrafficSeries>('/command-center/traffic', { method: 'GET', query, signal });
+}
+
+/** RSSI / SNR distributions, data rate, frequency and the weakest / strongest meters. */
+export async function fetchRadioHealth(
+  win: WindowParams,
+  scope: { siteId: string; gatewayId?: string },
+  signal?: AbortSignal
+): Promise<RadioHealthData> {
+  const query = windowQuery(win, scope.siteId);
+  if (scope.gatewayId) query.gatewayId = scope.gatewayId;
+  return apiRequest<RadioHealthData>('/command-center/radio', { method: 'GET', query, signal });
+}
+
+/** One meter by exact Meter ID / DevEUI (its latest frame in the window); null when it sent none there. */
+export async function fetchMeter(
+  meterId: string,
+  win: WindowParams,
+  signal?: AbortSignal
+): Promise<{ gatewayId: string; meter: MeterTelemetryItem } | null> {
+  try {
+    return await apiRequest(`/command-center/meters/${encodeURIComponent(meterId)}`, { method: 'GET', query: windowQuery(win), signal });
+  } catch (err) {
+    if ((err as { status?: number })?.status === 404) return null;
+    throw err;
+  }
 }

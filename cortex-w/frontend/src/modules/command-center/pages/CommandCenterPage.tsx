@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import '../styles/commandCenter.css';
+import '../styles/commandCenterExtras.css';
 
 // Components
 import { CommandCenterToolbar } from '../components/CommandCenterToolbar';
@@ -7,8 +8,11 @@ import { NetworkKpiStrip } from '../components/NetworkKpiStrip';
 import { GatewayRail } from '../components/GatewayRail';
 import { SelectedGatewayHeader } from '../components/SelectedGatewayHeader';
 import { GatewayMetersTable } from '../components/GatewayMetersTable';
-import { GatewayFramesTable } from '../components/GatewayFramesTable';
-import { GatewayTrafficChart } from '../components/GatewayTrafficChart';
+import { GatewayFramesPanel } from '../components/GatewayFramesPanel';
+import { GatewayTrafficView } from '../components/GatewayTrafficView';
+import { FrameDetailDrawer } from '../components/FrameDetailDrawer';
+import { FleetMetersTable } from '../components/FleetMetersTable';
+import { MeterFramesView } from '../components/MeterFramesView';
 import { GatewayRadioHealth } from '../components/GatewayRadioHealth';
 import { AllGatewayComparison } from '../components/AllGatewayComparison';
 import { MeterInspector } from '../components/MeterInspector';
@@ -18,6 +22,7 @@ import { LiveNetworkFeed } from '../components/LiveNetworkFeed';
 import {
   fetchCommandCenterSummary,
   fetchGatewayMeters,
+  fetchMeter,
   fetchSites,
   getLocalCachedSummary,
   searchMeters,
@@ -71,6 +76,9 @@ export function CommandCenterPage() {
   const [selectedGatewayId, setSelectedGatewayId] = useState<string | null>(null);
   const [gatewayTab, setGatewayTab] = useState<GatewayTabType>('METERS');
   const [selectedMeter, setSelectedMeter] = useState<MeterTelemetryItem | null>(null);
+  // the frame whose details are open, and the meter whose whole frame history replaces the workspace
+  const [inspectedFrame, setInspectedFrame] = useState<RawFrameItem | null>(null);
+  const [framesMeter, setFramesMeter] = useState<MeterTelemetryItem | null>(null);
   const [secondsAgo, setSecondsAgo] = useState(0);
 
   // Dynamic Site Selector State
@@ -166,19 +174,6 @@ export function CommandCenterPage() {
   // Derived Raw Frames for live feed and tables
   const allFrames = useMemo<RawFrameItem[]>(() => summaryData?.recentFrames ?? NO_FRAMES, [summaryData]);
 
-  // Time window filter for frames
-  const timeFilteredFrames = useMemo(() => {
-    if (timeRange === '24H' || timeRange === '7D' || timeRange === 'CUSTOM') {
-      return allFrames;
-    }
-    const now = Date.now();
-    const cutoffMs = timeRange === '1H' ? 3600 * 1000 : 6 * 3600 * 1000;
-    return allFrames.filter((f) => {
-      const t = new Date(f.decodedAt).getTime();
-      return !isNaN(t) && now - t <= cutoffMs;
-    });
-  }, [allFrames, timeRange]);
-
   // Currently selected gateway item
   const currentGateway = useMemo(() => {
     if (!selectedGatewayId) return null;
@@ -228,18 +223,22 @@ export function CommandCenterPage() {
     // summaryStamp: the table refreshes together with the 45 s summary refresh
   }, [selectedGatewayId, metersPage, metersFilter, timeRange, customRange, selectedSiteId, summaryStamp]);
 
-  // Frames received by selected gateway
-  const currentFrames = useMemo(() => {
-    if (!selectedGatewayId) return timeFilteredFrames;
-    return timeFilteredFrames.filter((f) => f.gatewayId === selectedGatewayId);
-  }, [selectedGatewayId, timeFilteredFrames]);
-
   // Handle selecting a meter from table or feed
   const handleSelectMeter = (meter: MeterTelemetryItem) => {
     setSelectedMeter(meter);
   };
 
   const handleSelectMeterById = async (meterId: string) => {
+    try {
+      // an exact lookup first: it finds the meter whatever the search limit, and tells the gateway that heard it last
+      const exact = await fetchMeter(meterId, gatewayScope);
+      if (exact) {
+        setSelectedMeter(exact.meter);
+        return;
+      }
+    } catch (err) {
+      console.warn('[CommandCenter] Exact meter lookup failed, trying the search:', err);
+    }
     try {
       const found = (
         await searchMeters(meterId, daysFor(timeRange), timeRange === 'CUSTOM' ? customRange : undefined, selectedSiteId)
@@ -382,7 +381,23 @@ export function CommandCenterPage() {
 
         {/* Center: Selected Gateway Workspace OR All-Gateway Overview */}
         <main className="cc-center-workspace">
-          {currentGateway ? (
+          {framesMeter ? (
+            <MeterFramesView
+              meter={framesMeter}
+              win={gatewayScope}
+              onBack={() => setFramesMeter(null)}
+              onInspectFrame={setInspectedFrame}
+            />
+          ) : activeMode === 'Meters' ? (
+            <FleetMetersTable
+              win={gatewayScope}
+              siteId={selectedSiteId}
+              selectedMeterId={selectedMeter?.meterId || null}
+              onSelectMeter={handleSelectMeter}
+              expectedTotal={currentKpis.uniqueMetersSeen}
+              refreshToken={summaryStamp}
+            />
+          ) : currentGateway ? (
             <>
               <SelectedGatewayHeader
                 gateway={currentGateway}
@@ -408,28 +423,34 @@ export function CommandCenterPage() {
               )}
 
               {gatewayTab === 'FRAMES' && (
-                <GatewayFramesTable
-                  frames={currentFrames.length > 0 ? currentFrames : allFrames}
+                <GatewayFramesPanel
+                  gatewayId={currentGateway.gatewayId}
                   gatewayAlias={currentGateway.alias}
+                  win={gatewayScope}
+                  refreshToken={summaryStamp}
                   onSelectFrameMeter={handleSelectMeterById}
+                  onInspectFrame={setInspectedFrame}
+                  paused={!!inspectedFrame}
                 />
               )}
 
               {gatewayTab === 'TRAFFIC' && (
-                <GatewayTrafficChart
-                  gatewayId={currentGateway.gatewayId}
-                  gatewayAlias={currentGateway.alias}
+                <GatewayTrafficView
+                  win={gatewayScope}
+                  siteId={selectedSiteId}
+                  gateway={{ gatewayId: currentGateway.gatewayId, alias: currentGateway.alias }}
                   allGateways={currentGateways}
-                  scope={gatewayScope}
-                  totalMeters={currentKpis.uniqueMetersSeen}
+                  refreshToken={summaryStamp}
                 />
               )}
 
               {gatewayTab === 'RADIO' && (
                 <GatewayRadioHealth
-                  gatewayId={currentGateway.gatewayId}
-                  gatewayAlias={currentGateway.alias}
-                  scope={gatewayScope}
+                  win={gatewayScope}
+                  siteId={selectedSiteId}
+                  gateway={{ gatewayId: currentGateway.gatewayId, alias: currentGateway.alias }}
+                  refreshToken={summaryStamp}
+                  onSelectMeter={handleSelectMeterById}
                 />
               )}
             </>
@@ -449,9 +470,18 @@ export function CommandCenterPage() {
           <MeterInspector
             meter={selectedMeter}
             onClose={() => setSelectedMeter(null)}
+            onViewFrames={setFramesMeter}
           />
         )}
       </div>
+
+      {inspectedFrame && (
+        <FrameDetailDrawer
+          frame={inspectedFrame}
+          onClose={() => setInspectedFrame(null)}
+          onOpenMeter={handleSelectMeterById}
+        />
+      )}
 
       {/* Bottom: Live Network Telemetry Feed */}
       <LiveNetworkFeed

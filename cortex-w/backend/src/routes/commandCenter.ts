@@ -15,7 +15,17 @@ import {
   MeterFilter,
 } from '../services/telemetryDbService.js';
 import { resolveSiteScope, resolveViewTimeZone, SessionExpiredError } from '../services/dashboardService.js';
-import { badRequest, validId } from './validation.js';
+import { badRequest, pageParams, validId } from './validation.js';
+import {
+  getFleetFrames,
+  getGatewayFrames,
+  getMeterDetail,
+  getMeterFrames,
+  getRadioHealth,
+  getTraffic,
+  listFleetMeters,
+  type MeterStatusFilter,
+} from '../services/commandCenterDeep.js';
 
 const router = Router();
 
@@ -168,6 +178,131 @@ router.get('/meters/search', async (req, res) => {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
     console.error('[commandCenter] Error searching meters:', err);
     res.status(500).json({ error: 'Failed to search meters', message: err.message });
+  }
+});
+
+// ---------- Deeper views: frames, fleet meters, one meter, traffic over time, radio analysis ----------
+
+// The window and site filter shared by the endpoints that are not tied to one gateway; answers the request itself when
+// they are not usable.
+async function viewScope(req: any, res: any) {
+  const siteIds = await resolveSiteScope(req.query.siteId as string | undefined, req.headers.authorization);
+  if (siteIds && siteIds.length === 0) {
+    res.status(403).json({ error: 'No access to this site' });
+    return null;
+  }
+  const zone = await resolveViewTimeZone(siteIds);
+  const custom = customWindow(req.query, zone);
+  if (custom === null) {
+    res.status(400).json({ error: 'Invalid from/to date range' });
+    return null;
+  }
+  return { days: intParam(req.query.days, 7, 1, 90), custom, siteIds, zone };
+}
+
+function failed(res: any, what: string, err: any) {
+  if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
+  console.error(`[commandCenter] Error ${what}:`, err);
+  return res.status(500).json({ error: `Failed ${what}` });
+}
+
+// Newest frames one gateway took, paginated.
+router.get('/gateways/:gatewayId/frames', async (req, res) => {
+  try {
+    const scope = await gatewayScope(req, res);
+    if (!scope) return;
+    res.json(await getGatewayFrames({ ...scope, ...pageParams(req.query, 100) }));
+  } catch (err: any) {
+    failed(res, 'loading gateway frames', err);
+  }
+});
+
+// Newest frames across the fleet or one site, paginated ("Load more" in the live feed).
+router.get('/frames', async (req, res) => {
+  try {
+    const scope = await viewScope(req, res);
+    if (!scope) return;
+    res.json(await getFleetFrames({ ...scope, ...pageParams(req.query, 100) }));
+  } catch (err: any) {
+    failed(res, 'loading frames', err);
+  }
+});
+
+// The Meters view: every meter's latest frame, searched, filtered and paginated on the server.
+router.get('/meters', async (req, res) => {
+  try {
+    const scope = await viewScope(req, res);
+    if (!scope) return;
+    const status = ['live', 'stale', 'silent'].includes(req.query.status as string) ? (req.query.status as MeterStatusFilter) : undefined;
+    const intOrUndef = (v: unknown) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? undefined : Number(v));
+    const confirmed = req.query.confirmed === 'true' ? true : req.query.confirmed === 'false' ? false : undefined;
+    const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 64) : undefined;
+    res.json(
+      await listFleetMeters({
+        ...scope,
+        q,
+        status,
+        dr: intOrUndef(req.query.dr),
+        frequency: intOrUndef(req.query.frequency),
+        confirmed,
+        ...pageParams(req.query, 100),
+      })
+    );
+  } catch (err: any) {
+    failed(res, 'listing meters', err);
+  }
+});
+
+// One meter by exact Meter ID or DevEUI: what "open this meter" uses (search is substring based and capped).
+router.get('/meters/:meterId', async (req, res) => {
+  const meterId = validId(req.params.meterId);
+  if (!meterId) return badRequest(res, 'meter id');
+  try {
+    const scope = await viewScope(req, res);
+    if (!scope) return;
+    const found = await getMeterDetail({ ...scope, idOrEui: meterId });
+    if (!found) return res.status(404).json({ error: 'Meter not found in this window' });
+    res.json(found);
+  } catch (err: any) {
+    failed(res, 'loading the meter', err);
+  }
+});
+
+router.get('/meters/:meterId/frames', async (req, res) => {
+  const meterId = validId(req.params.meterId);
+  if (!meterId) return badRequest(res, 'meter id');
+  try {
+    const scope = await viewScope(req, res);
+    if (!scope) return;
+    res.json(await getMeterFrames({ ...scope, meterId, ...pageParams(req.query, 20) }));
+  } catch (err: any) {
+    failed(res, 'loading meter frames', err);
+  }
+});
+
+// Traffic over time (frames and distinct meters per bucket) with the equal period before it.
+router.get('/traffic', async (req, res) => {
+  try {
+    const scope = await viewScope(req, res);
+    if (!scope) return;
+    const gatewayId = req.query.gatewayId === undefined ? undefined : validId(req.query.gatewayId);
+    if (gatewayId === null) return badRequest(res, 'gateway id');
+    res.json(await getTraffic({ ...scope, gatewayId }));
+  } catch (err: any) {
+    failed(res, 'loading traffic', err);
+  }
+});
+
+// Radio analysis: RSSI / SNR distributions, data rate, frequency, weakest and strongest meters.
+router.get('/radio', async (req, res) => {
+  try {
+    const scope = await viewScope(req, res);
+    if (!scope) return;
+    const gatewayId = req.query.gatewayId === undefined ? undefined : validId(req.query.gatewayId);
+    if (gatewayId === null) return badRequest(res, 'gateway id');
+    res.json(await getRadioHealth({ ...scope, gatewayId }));
+  } catch (err: any) {
+    failed(res, 'loading radio health', err);
   }
 });
 
