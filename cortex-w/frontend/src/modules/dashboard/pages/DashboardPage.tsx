@@ -248,7 +248,6 @@ export function DashboardPage() {
               onPageChange={setMetersPage}
               isLoading={metersLoading}
               onSelectMeter={(meter) => setSelectedMeter(meter)}
-              dataUpdatedAt={leafSummary.dataLocalTime ? leafSummary.dataLocalTime.slice(11, 16) : null}
             />
           ) : (
             <NodeOverviewTable

@@ -5,6 +5,7 @@ import {
   getNodeAncestors,
   getNodeTrend,
   getNodeBoundaries,
+  getDataFreshness,
   METER_SORT_KEYS,
   MeterSortKey,
   TrendMode,
@@ -16,6 +17,19 @@ const router = Router();
 // The Dashboard is served from Postgres (see services/dashboardService.ts): the site tree and the meters from the
 // metadata mirror, the numbers from water_meter_readings_v2. The beta API is asked only which sites the caller may
 // open. The routes work at any depth of the tree.
+
+/**
+ * GET /api/dashboard/freshness
+ * When the numbers were last updated by the scheduler. Cheap: the pages poll it to know when to reload their values.
+ */
+router.get('/freshness', async (_req, res) => {
+  try {
+    return res.json(await getDataFreshness());
+  } catch (err: any) {
+    console.error('[dashboard] Error reading the data freshness:', err);
+    return res.status(500).json({ error: 'Failed to read when the data was last updated' });
+  }
+});
 
 /**
  * GET /api/dashboard/nodes?parentId=<id>

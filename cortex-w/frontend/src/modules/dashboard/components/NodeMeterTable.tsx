@@ -17,8 +17,6 @@ interface NodeMeterTableProps {
   onPageChange: (page: number) => void;
   isLoading?: boolean;
   onSelectMeter: (meter: MeterRow) => void;
-  /** When the scheduler last updated the numbers, as a clock time at the site (HH:MM). */
-  dataUpdatedAt?: string | null;
 }
 
 type SortField = MeterSortField;
@@ -38,7 +36,6 @@ export function NodeMeterTable({
   onPageChange,
   isLoading,
   onSelectMeter,
-  dataUpdatedAt,
 }: NodeMeterTableProps) {
   // Sorting, search and paging are done by the server (missing values always come last, whichever way it is sorted).
   const handleSort = (field: SortField) => onSort(field);
@@ -83,7 +80,6 @@ export function NodeMeterTable({
         <h2 className="cw-section-title" style={{ margin: 0 }}>Meter Records</h2>
         <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
           Showing {total.toLocaleString()} {total === 1 ? 'meter' : 'meters'}
-          {dataUpdatedAt && <> · Data updated {dataUpdatedAt} (refreshes every 15 minutes)</>}
         </span>
       </div>
 

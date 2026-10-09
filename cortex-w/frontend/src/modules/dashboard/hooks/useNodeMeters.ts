@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { EMPTY_METER_PAGE, fetchNodeMeters, type MeterPage, type MeterSortField } from '../services/dashboardDataService';
+import { useDataFreshness } from '@/components/layout/DataFreshness';
 
 export const METERS_PAGE_SIZE = 15;
 
@@ -33,15 +34,19 @@ export function useNodeMeters(
     setPage(0);
   }, [nodeId, debouncedQuery, statusFilter]);
 
-  const load = useCallback(async () => {
+  // `silent`: a reload by itself when new data has arrived. No loader and no error: the rows on screen stay until the new
+  // values replace them.
+  const load = useCallback(async (silent: boolean = false) => {
     if (!nodeId) {
       setData(EMPTY_METER_PAGE);
       setIsLoading(false);
       return;
     }
     const id = ++seq.current;
-    setIsLoading(true);
-    setError(null);
+    if (!silent) {
+      setIsLoading(true);
+      setError(null);
+    }
     try {
       const result = await fetchNodeMeters(nodeId, {
         page,
@@ -56,17 +61,24 @@ export function useNodeMeters(
       setLoadedNode(nodeId);
       if (result.page !== page) setPage(result.page); // the list shrank: the server answered with the first page
     } catch (err: any) {
-      if (id !== seq.current) return;
+      if (id !== seq.current || silent) return;
       console.error('[useNodeMeters] Failed to load node meters:', err);
       setError(err?.message || 'Failed to load meters');
     } finally {
-      if (id === seq.current) setIsLoading(false);
+      if (id === seq.current && !silent) setIsLoading(false);
     }
   }, [nodeId, page, sort, debouncedQuery, statusFilter]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // new data has arrived: update the page on screen in place
+  const { version } = useDataFreshness();
+  useEffect(() => {
+    if (version > 0) load(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version]);
 
   const toggleSort = useCallback((field: MeterSortField) => {
     setSort((current) => (current.field === field ? { field, dir: current.dir === 'asc' ? 'desc' : 'asc' } : { field, dir: 'asc' }));
@@ -86,6 +98,6 @@ export function useNodeMeters(
     /** True until the first page of the current node has arrived (later pages keep the cards and the table on screen). */
     isFirstLoad: !!nodeId && loadedNode !== nodeId && isLoading,
     error,
-    refetch: load,
+    refetch: () => load(),
   };
 }

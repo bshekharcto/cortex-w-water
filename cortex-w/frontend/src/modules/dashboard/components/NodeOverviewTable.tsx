@@ -23,8 +23,6 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [page, setPage] = useState<number>(0);
   const pageSize = 10;
-  // when the scheduler last updated the numbers, on the clock of the site
-  const updatedAt = nodes.find((n) => n.dataLocalTime)?.dataLocalTime?.slice(11, 16) ?? null;
   // the area whose consumption chart / boundary map is open
   const [trendNode, setTrendNode] = useState<NodeRow | null>(null);
   const [mapNode, setMapNode] = useState<NodeRow | null>(null);
@@ -87,7 +85,6 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
         <h2 className="cw-section-title" style={{ margin: 0 }}>Area Overview</h2>
         <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
           Showing {sortedNodes.length} {sortedNodes.length === 1 ? 'area' : 'areas'}
-          {updatedAt && <> · Data updated {updatedAt} (refreshes every 15 minutes)</>}
         </span>
       </div>
 

@@ -178,6 +178,7 @@ async function runMigrations() {
     "012_water_meter_readings_v2.sql",
     "014_metadata_mirror.sql",
     "015_water_meter_daily.sql",
+    "016_water_sync_status.sql",
   ];
 
   for (const file of migrations) {

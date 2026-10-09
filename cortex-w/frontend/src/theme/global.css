@@ -198,6 +198,14 @@
 .cw-data-badge--api { background: var(--cw-green-soft); color: var(--cw-green); }
 .cw-data-badge--hybrid { background: var(--cw-primary-soft); color: var(--cw-primary); }
 
+/* when the numbers were last updated (the page header) */
+.cw-top-header--dark .cw-data-updated { background: rgba(255, 255, 255, 0.08); color: #cbd5e1; }
+.cw-data-updated {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 500 12.5px var(--cw-font-family); color: var(--cw-text-muted);
+  padding: 4px 10px; border-radius: 10px; background: var(--cw-primary-soft);
+}
+
 /* ---------- Buttons ---------- */
 .cw-icon-btn {
   background: none; border: none; cursor: pointer; padding: 6px; border-radius: 6px;
