@@ -36,19 +36,60 @@ export async function fetchNodeChildren(parentId: string | null): Promise<NodeRo
   return [];
 }
 
+export type MeterSortField =
+  | 'devEui'
+  | 'meterId'
+  | 'consumerId'
+  | 'consumerName'
+  | 'totalizerM3'
+  | 'latestReadingAt'
+  | 'connectivityStatus';
+
+/** The totals of a whole node: the cards above its meter list. */
+export interface NodeSummaryTotals {
+  totalDevices: number;
+  connected: number;
+  disconnected: number;
+  neverSeen: number;
+  yesterdayFlowM3: number;
+  todayFlowM3: number;
+  monthToDateFlowM3: number;
+  dataLocalTime?: string; // when the scheduler last updated the numbers, clock time at the node's site
+}
+
+export interface MeterPage {
+  content: MeterRow[];
+  page: number;
+  size: number;
+  total: number;
+  totalPages: number;
+  summary: NodeSummaryTotals;
+}
+
+export const EMPTY_METER_PAGE: MeterPage = {
+  content: [],
+  page: 0,
+  size: 15,
+  total: 0,
+  totalPages: 0,
+  summary: { totalDevices: 0, connected: 0, disconnected: 0, neverSeen: 0, yesterdayFlowM3: 0, todayFlowM3: 0, monthToDateFlowM3: 0 },
+};
+
 /**
- * Fetches the meters directly attached to a node (only meaningful for a
- * node with no further children — i.e. a real leaf).
+ * One page of the meters attached to a node (only meaningful for a node with no further children — a real leaf).
+ * Sorting, search and the status filter happen on the server, so only `size` rows travel. Throws when it cannot be
+ * loaded, so the page can say so instead of showing an empty list as if it were the truth.
  */
-export async function fetchNodeMeters(nodeId: string): Promise<MeterRow[]> {
-  if (isSeedMode()) return [];
-  try {
-    const res = await apiRequest<MeterRow[]>(`/dashboard/nodes/${encodeURIComponent(nodeId)}/meters`);
-    if (Array.isArray(res)) return res;
-  } catch (err) {
-    console.warn('[dashboardDataService] Error fetching node meters from API:', err);
-  }
-  return [];
+export async function fetchNodeMeters(
+  nodeId: string,
+  opts: { page: number; size: number; sort: MeterSortField; dir: 'asc' | 'desc'; q?: string; status?: string },
+  signal?: AbortSignal
+): Promise<MeterPage> {
+  if (isSeedMode()) return EMPTY_METER_PAGE;
+  const query: Record<string, string | number> = { page: opts.page, size: opts.size, sort: opts.sort, dir: opts.dir };
+  if (opts.q && opts.q.trim()) query.q = opts.q.trim();
+  if (opts.status && opts.status !== 'ALL') query.status = opts.status;
+  return apiRequest<MeterPage>(`/dashboard/nodes/${encodeURIComponent(nodeId)}/meters`, { query, signal });
 }
 
 /**

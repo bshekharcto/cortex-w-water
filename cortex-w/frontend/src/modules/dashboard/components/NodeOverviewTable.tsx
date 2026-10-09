@@ -23,6 +23,8 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [page, setPage] = useState<number>(0);
   const pageSize = 10;
+  // when the scheduler last updated the numbers, on the clock of the site
+  const updatedAt = nodes.find((n) => n.dataLocalTime)?.dataLocalTime?.slice(11, 16) ?? null;
   // the area whose consumption chart / boundary map is open
   const [trendNode, setTrendNode] = useState<NodeRow | null>(null);
   const [mapNode, setMapNode] = useState<NodeRow | null>(null);
@@ -85,11 +87,12 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
         <h2 className="cw-section-title" style={{ margin: 0 }}>Area Overview</h2>
         <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
           Showing {sortedNodes.length} {sortedNodes.length === 1 ? 'area' : 'areas'}
+          {updatedAt && <> · Data updated {updatedAt} (refreshes every 15 minutes)</>}
         </span>
       </div>
 
       <div className="cw-surface cw-table-wrap">
-        <table className="cw-table">
+        <table className="cw-table cw-table--centered">
           <thead>
             <tr>
               <th style={{ cursor: 'pointer' }} onClick={() => handleSort('name')}>
@@ -116,7 +119,6 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
               <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('monthToDateFlowM3')}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Monthly Flow (m³) {renderSortIcon('monthToDateFlowM3')}</div>
               </th>
-              <th>Last Updated</th>
               <th style={{ textAlign: 'center' }}>Actions</th>
               <th style={{ width: 32 }} />
             </tr>
@@ -157,9 +159,6 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
                   </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                     {formatNumber(n.monthToDateFlowM3)}
-                  </td>
-                  <td style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-                    {n.dataLocalTime ? n.dataLocalTime.slice(11, 16) : n.dataTimestamp ? new Date(n.dataTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live'}
                   </td>
                   <td style={{ textAlign: 'center' }}>
                    <div style={{ display: 'inline-flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, whiteSpace: 'nowrap' }}>

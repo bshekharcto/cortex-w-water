@@ -5,6 +5,8 @@ import {
   getNodeAncestors,
   getNodeTrend,
   getNodeBoundaries,
+  METER_SORT_KEYS,
+  MeterSortKey,
   TrendMode,
   SessionExpiredError,
 } from '../services/dashboardService.js';
@@ -50,15 +52,36 @@ router.get('/nodes/:nodeId/ancestors', async (req, res) => {
   }
 });
 
+const intParam = (value: unknown, fallback: number, min: number, max: number) => {
+  const n = parseInt(String(value ?? ''), 10);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+};
+
 /**
- * GET /api/dashboard/nodes/:nodeId/meters
- * The meters in the subtree of this node.
+ * GET /api/dashboard/nodes/:nodeId/meters?page=0&size=15&sort=devEui&dir=asc&q=...&status=ALL|CONNECTED|DISCONNECTED|NEVER_SEEN
+ * One page of the meters of this node, sorted, searched and filtered by the database, with the totals of the whole node.
  */
 router.get('/nodes/:nodeId/meters', async (req, res) => {
   try {
-    const meters = await getNodeMeters(req.params.nodeId, req.headers.authorization);
-    return res.json(
-      meters.map((m) => ({
+    const sort = METER_SORT_KEYS.includes(req.query.sort as MeterSortKey) ? (req.query.sort as MeterSortKey) : 'devEui';
+    const status = ['CONNECTED', 'DISCONNECTED', 'NEVER_SEEN'].includes(String(req.query.status))
+      ? (String(req.query.status) as 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN')
+      : 'ALL';
+    const result = await getNodeMeters(
+      req.params.nodeId,
+      {
+        page: intParam(req.query.page, 0, 0, 100000),
+        size: intParam(req.query.size, 15, 1, 100),
+        sort,
+        dir: String(req.query.dir).toLowerCase() === 'desc' ? 'desc' : 'asc',
+        q: typeof req.query.q === 'string' ? req.query.q : undefined,
+        status,
+      },
+      req.headers.authorization
+    );
+    if (result === null) return res.status(403).json({ error: 'No access to this area' });
+    return res.json({
+      content: result.content.map((m) => ({
         assetId: m.assetId,
         devEui: m.devEui,
         meterId: m.meterId,
@@ -69,12 +92,17 @@ router.get('/nodes/:nodeId/meters', async (req, res) => {
         latestReadingAt: m.decodedAt ?? undefined,
         latestReadingLocal: m.decodedLocal ?? undefined,
         connectivityStatus: m.connectivity,
-      }))
-    );
+      })),
+      page: result.page,
+      size: result.size,
+      total: result.total,
+      totalPages: result.totalPages,
+      summary: result.summary,
+    });
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.warn('[dashboard] Error fetching node meters:', err?.message || err);
-    return res.json([]);
+    console.error('[dashboard] Error fetching node meters:', err);
+    return res.status(500).json({ error: 'Failed to load the meters' });
   }
 });
 
