@@ -1,4 +1,4 @@
-import { Activity, RefreshCw, Search } from 'lucide-react';
+import { Activity, Search } from 'lucide-react';
 import { TimeWindow } from '../types/commandCenter.types';
 import { SiteTreeSelect } from './SiteTreeSelect';
 
@@ -12,9 +12,6 @@ interface Props {
   onCustomRangeChange?: (range: { from: string; to: string }) => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
-  onRefresh: () => void;
-  lastUpdatedText: string;
-  isSyncing?: boolean;
   sites?: Array<{ id: string; name: string; parentId?: string | null }>;
   selectedSiteId?: string;
   onSiteChange?: (siteId: string) => void;
@@ -30,9 +27,6 @@ export function CommandCenterToolbar({
   onCustomRangeChange,
   searchQuery,
   onSearchChange,
-  onRefresh,
-  lastUpdatedText,
-  isSyncing,
   sites,
   selectedSiteId = 'ALL',
   onSiteChange,
@@ -113,23 +107,6 @@ export function CommandCenterToolbar({
               />
             </div>
           )}
-
-          <div
-            className={`cc-sync-pill ${isSyncing ? '' : 'cc-sync-pill--live'}`}
-            title={isSyncing ? 'Synchronizing upstream telemetry stream...' : 'Live stream active'}
-          >
-            <span className="cc-sync-pulse-dot" />
-            <span>{isSyncing ? 'Syncing stream...' : 'Live Feed'}</span>
-          </div>
-
-          <div className="cc-live-badge" title="Auto refresh active (every 30s)">
-            <span className="cc-live-dot" />
-            <span>Updated {lastUpdatedText}</span>
-          </div>
-
-          <button className="cc-icon-btn" onClick={onRefresh} title="Manual Refresh">
-            <RefreshCw size={14} />
-          </button>
         </div>
       </div>
     </div>

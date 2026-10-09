@@ -74,7 +74,7 @@ export function DashboardKpiRow({
         iconTone="green"
         label="Connected"
         value={formatNumber(kpis.connected)}
-        subtitle={`${kpis.connectedPct.toFixed(2)}% active telemetry`}
+        subtitle={`${kpis.connectedPct.toFixed(2)}% sent data in the last 25 h`}
         onClick={onStatusFilterChange ? () => handleStatusClick('CONNECTED') : undefined}
       />
 
@@ -84,7 +84,7 @@ export function DashboardKpiRow({
         iconTone="orange"
         label="Disconnected"
         value={formatNumber(kpis.disconnected)}
-        subtitle={`${kpis.disconnectedPct.toFixed(2)}% stale telemetry`}
+        subtitle={`${kpis.disconnectedPct.toFixed(2)}% no data for over 25 h`}
         onClick={onStatusFilterChange ? () => handleStatusClick('DISCONNECTED') : undefined}
       />
 

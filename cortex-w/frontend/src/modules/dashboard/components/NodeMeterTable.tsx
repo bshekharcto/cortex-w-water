@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, ChevronLeft, ChevronRight, Eye } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
 import { StatusBadge } from '@/components/status/StatusBadge';
@@ -17,6 +18,8 @@ interface NodeMeterTableProps {
   onPageChange: (page: number) => void;
   isLoading?: boolean;
   onSelectMeter: (meter: MeterRow) => void;
+  /** The search box and the status filter shown at the right of the heading. */
+  toolbar?: ReactNode;
 }
 
 type SortField = MeterSortField;
@@ -36,6 +39,7 @@ export function NodeMeterTable({
   onPageChange,
   isLoading,
   onSelectMeter,
+  toolbar,
 }: NodeMeterTableProps) {
   // Sorting, search and paging are done by the server (missing values always come last, whichever way it is sorted).
   const handleSort = (field: SortField) => onSort(field);
@@ -70,18 +74,25 @@ export function NodeMeterTable({
     );
   }
 
+  const heading = (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 12 }}>
+      <h2 className="cw-section-title" style={{ margin: 0 }}>Meter Records</h2>
+      {toolbar}
+    </div>
+  );
+
   if (meters.length === 0) {
-    return <EmptyState message="No meter devices matched your criteria for this area." />;
+    return (
+      <section className="cw-section">
+        {heading}
+        <EmptyState message="No meter devices matched your criteria for this area." />
+      </section>
+    );
   }
 
   return (
     <section className="cw-section">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <h2 className="cw-section-title" style={{ margin: 0 }}>Meter Records</h2>
-        <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-          Showing {total.toLocaleString()} {total === 1 ? 'meter' : 'meters'}
-        </span>
-      </div>
+      {heading}
 
       <div className="cw-surface cw-table-wrap" style={isLoading ? { opacity: 0.55, pointerEvents: 'none', transition: 'opacity 0.15s' } : undefined} aria-busy={isLoading}>
         <table className="cw-table cw-table--centered">
@@ -168,7 +179,7 @@ export function NodeMeterTable({
             <ChevronLeft size={16} /> Prev
           </button>
           <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-            Page {page + 1} of {totalPages}
+            Page {page + 1} of {totalPages} · {total.toLocaleString()} {total === 1 ? 'meter' : 'meters'}
           </span>
           <button
             className="cw-icon-btn"
