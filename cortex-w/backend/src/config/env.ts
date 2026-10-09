@@ -1,11 +1,22 @@
 import { z } from 'zod';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 
 if (existsSync('.env')) {
   try {
     process.loadEnvFile('.env');
   } catch {
-    // ignore
+    // process.loadEnvFile needs Node 20.12+; on older Node read the file by hand (KEY=value lines, # comments,
+    // optional quotes). Variables already set in the environment win, as with loadEnvFile.
+    try {
+      for (const line of readFileSync('.env', 'utf8').split(/\r?\n/)) {
+        const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+        if (!m || line.trim().startsWith('#')) continue;
+        const value = m[2].replace(/^(['"])(.*)\1$/, '$2');
+        if (process.env[m[1]] === undefined) process.env[m[1]] = value;
+      }
+    } catch {
+      // ignore
+    }
   }
 }
 
