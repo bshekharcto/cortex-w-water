@@ -6,7 +6,8 @@ import { proxyUpstream } from './upstreamProxy.js';
  *
  *   structure   site_metadata   (mirror of MySQL, filled by the cortex scheduler WaterMetaDataSyncScheduler)
  *   meters      meter_metadata  (same)
- *   readings    water_meter_readings_v2 (the days) and water_meter_latest (the newest frame of each meter)
+ *   readings    water_meter_daily (each meter's last reading and water used per day, kept current by the cortex history
+ *               scheduler) and water_meter_latest (the newest frame of each meter)
  *
  * What a user may see is still decided by the beta API (GET /api/site/ with the user's own token returns only the sites
  * that user can open). That one small call is the only upstream dependency; every number comes from Postgres.
@@ -14,16 +15,13 @@ import { proxyUpstream } from './upstreamProxy.js';
  *
  * The numbers follow the beta DMA report: a meter is CONNECTED when its last frame arrived today (site time zone),
  * DISCONNECTED when it arrived earlier, NEVER_SEEN when there is no frame. Flow of a day = the last reading of that
- * day minus the last reading of the previous day that has one, if that was at most MAX_GAP_DAYS days earlier (the window
- * looks back that far before the month starts); today / yesterday / month-to-date are sums of those. A day with no
- * usable earlier reading counts as zero.
+ * day minus the last reading of the previous day that has one, if that was at most 7 days earlier; the scheduler works that
+ * out once, when the readings arrive, and stores it as used_kl in water_meter_daily. today / yesterday / month-to-date are
+ * sums of those. A day with no usable earlier reading counts as zero.
  */
 
 // readings are stored in UTC; every day, month and clock time shown follows the time zone of the site (site_metadata.tz_sql)
 const DEFAULT_ZONE = 'UTC';
-// Consumption between two readings is counted only when they are at most this many days apart; after a longer silence the
-// days in between are unknown, so they count as 0 instead of putting the whole gap on the day the meter came back.
-const MAX_GAP_DAYS = 7;
 const SNAPSHOT_TTL_MS = 60 * 1000;
 const ALLOWED_TTL_MS = 5 * 60 * 1000;
 const ALLOWED_CACHE_MAX = 50;
@@ -85,32 +83,17 @@ const METERS_SQL = `
   mtd AS (
     SELECT meter_id, tz, (NOW() AT TIME ZONE tz)::date AS today FROM mt
   ),
-  daily AS (
-    SELECT DISTINCT ON (meter_id, day) meter_id, day, reading
-    FROM (
-      SELECT r.meter_id, (r.time AT TIME ZONE d.tz)::date AS day, r.time, r.forward_flow_kl AS reading
-      FROM water_meter_readings_v2 r
-      JOIN mtd d ON d.meter_id = r.meter_id
-      WHERE r.time >= NOW() - INTERVAL '45 days'
-        AND (r.time AT TIME ZONE d.tz)::date >= date_trunc('month', d.today)::date - 7
-    ) t
-    ORDER BY meter_id, day, time DESC
-  ),
-  deltas AS (
-    SELECT meter_id, day,
-           CASE WHEN day - LAG(day) OVER w <= ${MAX_GAP_DAYS}
-                THEN GREATEST(reading - LAG(reading) OVER w, 0) ELSE 0 END AS used
-    FROM daily
-    WINDOW w AS (PARTITION BY meter_id ORDER BY day)
-  ),
+  -- water_meter_daily (kept current by the cortex history scheduler) holds the water each meter used per day, so the
+  -- flows are a small sum, not a pass over the readings
   flows AS (
-    SELECT x.meter_id,
-           COALESCE(SUM(x.used) FILTER (WHERE x.day = d.today), 0)     AS today_kl,
-           COALESCE(SUM(x.used) FILTER (WHERE x.day = d.today - 1), 0) AS yesterday_kl,
-           COALESCE(SUM(x.used) FILTER (WHERE x.day >= date_trunc('month', d.today)::date), 0) AS month_kl
-    FROM deltas x
-    JOIN mtd d ON d.meter_id = x.meter_id
-    GROUP BY x.meter_id, d.today
+    SELECT w.meter_id,
+           COALESCE(SUM(w.used_kl) FILTER (WHERE w.day = d.today), 0)     AS today_kl,
+           COALESCE(SUM(w.used_kl) FILTER (WHERE w.day = d.today - 1), 0) AS yesterday_kl,
+           COALESCE(SUM(w.used_kl) FILTER (WHERE w.day >= date_trunc('month', d.today)::date), 0) AS month_kl
+    FROM water_meter_daily w
+    JOIN mtd d ON d.meter_id = w.meter_id
+    WHERE w.day >= LEAST(date_trunc('month', d.today)::date, d.today - 1)
+    GROUP BY w.meter_id, d.today
   )
   SELECT m.meter_id, m.asset_id, m.site_id, m.household_custom_id, m.consumer_name, m.address,
          l.dev_eui, l.decoded_at, COALESCE(l.forward_flow_kl, 0) AS totalizer_kl,
@@ -581,47 +564,38 @@ export async function getNodeTrend(
   if (siteIds.length === 0) return [];
   const zone = snap.sites.get(ref.id)?.timeZone ?? DEFAULT_ZONE; // the days of the chart are the days at the node's site
 
-  const startExpr =
+  // water_meter_daily holds each meter's last reading and the water it used, per day (the days at the meter's site)
+  const res =
     mode === 'MONTHLY'
-      ? `(date_trunc('month', (NOW() AT TIME ZONE $2)::date) - INTERVAL '11 months')::date`
-      : `((NOW() AT TIME ZONE $2)::date - ($3::int - 1))`;
-  const bucket = mode === 'MONTHLY' ? `date_trunc('month', day)::date` : 'day';
-
-  const res = await pool.query(
-    `WITH start AS (SELECT ${startExpr} AS d),
-     mine AS (
-       SELECT meter_id FROM meter_metadata
-       WHERE is_active AND site_id = ANY($1::bigint[])
-     ),
-     daily AS (
-       SELECT DISTINCT ON (meter_id, day) meter_id, day, reading
-       FROM (
-         SELECT r.meter_id, (r.time AT TIME ZONE $2)::date AS day, r.time, r.forward_flow_kl AS reading
-         FROM water_meter_readings_v2 r
-         JOIN mine USING (meter_id)
-         WHERE r.time >= (((SELECT d FROM start) - 7)::timestamp AT TIME ZONE $2)
-       ) t
-       ORDER BY meter_id, day, time DESC
-     ),
-     deltas AS (
-       SELECT meter_id, day, reading,
-              CASE WHEN day - LAG(day) OVER w <= ${MAX_GAP_DAYS}
-                   THEN GREATEST(reading - LAG(reading) OVER w, 0) ELSE 0 END AS used
-       FROM daily
-       WINDOW w AS (PARTITION BY meter_id ORDER BY day)
-     ),
-     per_meter AS (
-       SELECT meter_id, ${bucket} AS bucket, SUM(used) AS used, (ARRAY_AGG(reading ORDER BY day DESC))[1] AS reading
-       FROM deltas
-       WHERE day >= (SELECT d FROM start)
-       GROUP BY meter_id, ${bucket}
-     )
-     SELECT bucket, COALESCE(SUM(used), 0) AS consumption, COALESCE(SUM(reading), 0) AS reading
-     FROM per_meter
-     GROUP BY bucket
-     ORDER BY bucket`,
-    mode === 'MONTHLY' ? [siteIds, zone] : [siteIds, zone, span]
-  );
+      ? await pool.query(
+          `WITH mine AS (
+             SELECT meter_id FROM meter_metadata WHERE is_active AND site_id = ANY($1::bigint[])
+           ),
+           src AS (
+             SELECT w.meter_id, date_trunc('month', w.day)::date AS mon, w.used_kl, w.day
+             FROM water_meter_daily w
+             JOIN mine USING (meter_id)
+             WHERE w.day >= (date_trunc('month', (NOW() AT TIME ZONE $2)::date) - INTERVAL '11 months')::date
+           ),
+           per_month AS (
+             SELECT meter_id, mon, SUM(used_kl) AS used, MAX(day) AS last_day FROM src GROUP BY meter_id, mon
+           )
+           SELECT p.mon AS bucket, COALESCE(SUM(p.used), 0) AS consumption, COALESCE(SUM(w2.reading_kl), 0) AS reading
+           FROM per_month p
+           JOIN water_meter_daily w2 ON w2.meter_id = p.meter_id AND w2.day = p.last_day
+           GROUP BY p.mon
+           ORDER BY p.mon`,
+          [siteIds, zone]
+        )
+      : await pool.query(
+          `SELECT w.day AS bucket, COALESCE(SUM(w.used_kl), 0) AS consumption, COALESCE(SUM(w.reading_kl), 0) AS reading
+           FROM water_meter_daily w
+           WHERE w.day >= ((NOW() AT TIME ZONE $2)::date - ($3::int - 1))
+             AND w.meter_id IN (SELECT meter_id FROM meter_metadata WHERE is_active AND site_id = ANY($1::bigint[]))
+           GROUP BY w.day
+           ORDER BY w.day`,
+          [siteIds, zone, span]
+        );
 
   const points: TrendPoint[] = res.rows.map((r: any) => {
     const date = new Date(r.bucket);
