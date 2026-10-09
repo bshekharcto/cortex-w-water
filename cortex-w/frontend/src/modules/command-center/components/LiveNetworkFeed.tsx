@@ -1,3 +1,4 @@
+import { frameStatusLabel, FRAME_STATUS_HELP } from '../utils/frameStatusLabel';
 import { useState, useMemo } from 'react';
 import { Radio } from 'lucide-react';
 import { RawFrameItem } from '../types/commandCenter.types';
@@ -31,9 +32,9 @@ export function LiveNetworkFeed({ frames, metersReporting, onSelectMeter }: Prop
         <div className="cc-feed-filters">
           {[
             { key: 'ALL', label: 'All' },
-            { key: 'NORMAL', label: 'Normal' },
-            { key: 'WEAK', label: 'Weak Signal' },
-            { key: 'DEGRADED', label: 'Degraded' },
+            { key: 'NORMAL', label: 'Good' },
+            { key: 'WEAK', label: 'Weak signal' },
+            { key: 'DEGRADED', label: 'Noisy' },
             { key: 'MULTI_GW', label: 'Multi-Gateway' },
           ].map((f) => (
             <button
@@ -60,7 +61,7 @@ export function LiveNetworkFeed({ frames, metersReporting, onSelectMeter }: Prop
               <th>DR</th>
               <th>RSSI</th>
               <th>SNR</th>
-              <th>Event Status</th>
+              <th>Signal</th>
             </tr>
           </thead>
           <tbody>
@@ -89,8 +90,8 @@ export function LiveNetworkFeed({ frames, metersReporting, onSelectMeter }: Prop
                     {frame.snr} dB
                   </td>
                   <td>
-                    <span className={`cc-event-badge cc-event-badge--${frame.statusEvent.toLowerCase()}`}>
-                      {frame.statusEvent.replace('_', ' ')}
+                    <span className={`cc-event-badge cc-event-badge--${frame.statusEvent.toLowerCase()}`} title={FRAME_STATUS_HELP[frame.statusEvent]}>
+                      {frameStatusLabel(frame.statusEvent)}
                     </span>
                   </td>
                 </tr>

@@ -139,6 +139,43 @@ export function DashboardPage() {
     return meterRowToGisMeter(selectedMeter, currentLocality);
   }, [selectedMeter, currentLocality]);
 
+  const toolbar = (
+    <FilterBar
+      inline
+      searchValue={searchQuery}
+      onSearchChange={setSearchQuery}
+      searchPlaceholder={searchPlaceholder}
+      onReset={searchQuery || statusFilter !== 'ALL' ? handleResetFilters : undefined}
+    >
+      {isLeafView && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <label htmlFor="dashboard-status-filter" style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)', whiteSpace: 'nowrap' }}>
+            Status:
+          </label>
+          <select
+            id="dashboard-status-filter"
+            className="cw-filter-select"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as any)}
+            style={{
+              background: 'var(--cw-bg-input, #fff)',
+              border: '1px solid var(--cw-border, #cbd5e1)',
+              borderRadius: 'var(--cw-radius, 6px)',
+              padding: '6px 12px',
+              fontSize: '0.85rem',
+              color: 'var(--cw-text, #1e293b)',
+            }}
+          >
+            <option value="ALL">All Statuses</option>
+            <option value="CONNECTED">Connected</option>
+            <option value="DISCONNECTED">Disconnected</option>
+            <option value="NEVER_SEEN">Never Seen</option>
+          </select>
+        </div>
+      )}
+    </FilterBar>
+  );
+
   return (
     <div>
       {/* 1. Breadcrumb navigation */}
@@ -198,46 +235,10 @@ export function DashboardPage() {
             onStatusFilterChange={setStatusFilter}
           />
 
-          {/* 4. Filter Bar */}
-          <section className="cw-section" style={{ marginBottom: 16 }}>
-            <FilterBar
-              searchValue={searchQuery}
-              onSearchChange={setSearchQuery}
-              searchPlaceholder={searchPlaceholder}
-              onReset={searchQuery || statusFilter !== 'ALL' ? handleResetFilters : undefined}
-            >
-              {isLeafView && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <label htmlFor="dashboard-status-filter" style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)', whiteSpace: 'nowrap' }}>
-                    Status:
-                  </label>
-                  <select
-                    id="dashboard-status-filter"
-                    className="cw-filter-select"
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value as any)}
-                    style={{
-                      background: 'var(--cw-bg-input, #fff)',
-                      border: '1px solid var(--cw-border, #cbd5e1)',
-                      borderRadius: 'var(--cw-radius, 6px)',
-                      padding: '6px 12px',
-                      fontSize: '0.85rem',
-                      color: 'var(--cw-text, #1e293b)',
-                    }}
-                  >
-                    <option value="ALL">All Statuses</option>
-                    <option value="CONNECTED">Connected</option>
-                    <option value="DISCONNECTED">Disconnected</option>
-                    <option value="NEVER_SEEN">Never Seen</option>
-                  </select>
-                </div>
-              )}
-            </FilterBar>
-          </section>
-
-          {/* 5. Scope-specific Data Table */}
+          {/* 4. Scope-specific data table; the search and the filters sit at the right of its heading */}
           {isLeafView ? (
             <NodeMeterTable
+              toolbar={toolbar}
               meters={meters}
               total={metersTotal}
               page={metersPage}
@@ -251,6 +252,7 @@ export function DashboardPage() {
             />
           ) : (
             <NodeOverviewTable
+              toolbar={toolbar}
               nodes={childNodes}
               isLoading={childrenLoading}
               onSelectNode={handleSelectNode}

@@ -14,8 +14,11 @@ import { tidySiteName } from './siteNames.js';
  * that user can open). That one small call is the only upstream dependency; every number comes from Postgres.
  * Without a token, or when the beta does not answer, nothing is shown (fail closed).
  *
- * The numbers follow the beta DMA report: a meter is CONNECTED when its last frame arrived today (site time zone),
- * DISCONNECTED when it arrived earlier, NEVER_SEEN when there is no frame. Flow of a day = the last reading of that
+ * A meter is CONNECTED when its last frame arrived within the last 25 hours, DISCONNECTED when it arrived earlier,
+ * NEVER_SEEN when there is no frame. These meters report once a day, 23 to 24.5 hours apart in 82% of the cases and
+ * 47 hours or more apart after a missed day (almost nothing in between), so 25 hours tells "reported on schedule" from
+ * "missed a day" and, unlike "arrived today", does not call every meter disconnected between midnight and the morning
+ * report. (The beta DMA report uses the calendar day, so its counts differ at night.) Flow of a day = the last reading of that
  * day minus the last reading of the previous day that has one, if that was at most 7 days earlier; the scheduler works that
  * out once, when the readings arrive, and stores it as used_kl in water_meter_daily. today / yesterday / month-to-date are
  * sums of those. A day with no usable earlier reading counts as zero.
@@ -24,6 +27,8 @@ import { tidySiteName } from './siteNames.js';
 // readings are stored in UTC; every day, month and clock time shown follows the time zone of the site (site_metadata.tz_sql)
 const DEFAULT_ZONE = 'UTC';
 const SNAPSHOT_TTL_MS = 60 * 1000;
+/** A meter is connected when its newest frame is not older than this. */
+export const CONNECTED_WINDOW_HOURS = 25;
 const ALLOWED_TTL_MS = 5 * 60 * 1000;
 const ALLOWED_CACHE_MAX = 50;
 
@@ -89,7 +94,7 @@ const STATS_SQL = `
     SELECT d.site_id,
            COUNT(*)::int AS meters,
            COUNT(*) FILTER (WHERE l.decoded_at IS NULL)::int AS never_seen,
-           COUNT(*) FILTER (WHERE l.decoded_at IS NOT NULL AND (l.decoded_at AT TIME ZONE d.tz)::date = d.today)::int AS connected
+           COUNT(*) FILTER (WHERE l.decoded_at > NOW() - INTERVAL '${CONNECTED_WINDOW_HOURS} hours')::int AS connected
     FROM mtd d
     LEFT JOIN water_meter_latest l ON l.meter_id = d.meter_id
     GROUP BY d.site_id
@@ -542,7 +547,7 @@ export async function getNodeMeters(nodeRef: string, opts: MeterPageOptions, aut
               to_char(l.decoded_at AT TIME ZONE z.tz, 'YYYY-MM-DD HH24:MI:SS') AS decoded_local,
               CASE
                 WHEN l.decoded_at IS NULL THEN 'NEVER_SEEN'
-                WHEN (l.decoded_at AT TIME ZONE z.tz)::date = (NOW() AT TIME ZONE z.tz)::date THEN 'CONNECTED'
+                WHEN l.decoded_at > NOW() - INTERVAL '${CONNECTED_WINDOW_HOURS} hours' THEN 'CONNECTED'
                 ELSE 'DISCONNECTED'
               END AS connectivity
        FROM meter_metadata m

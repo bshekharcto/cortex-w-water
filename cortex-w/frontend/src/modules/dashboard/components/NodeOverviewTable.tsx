@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, type ReactNode } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, ChevronLeft, ChevronRight, ChevronRight as DrillIcon, LineChart, MapPinned } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
 import { formatNumber } from '@/utils/number';
@@ -7,6 +7,8 @@ import { ConsumptionTrendDialog } from './ConsumptionTrendDialog';
 import { BoundaryMapDialog } from './BoundaryMapDialog';
 
 interface NodeOverviewTableProps {
+  /** The search box (and filters) shown at the right of the heading. */
+  toolbar?: ReactNode;
   nodes: NodeRow[];
   isLoading?: boolean;
   onSelectNode: (node: NodeRow) => void;
@@ -18,7 +20,7 @@ type SortField = 'name' | 'totalDevices' | 'connected' | 'disconnected' | 'never
 // same component renders the root list, a zone's children, a DMA's
 // children, or whatever a future deeper level looks like, since a NodeRow
 // carries no level-specific fields.
-export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOverviewTableProps) {
+export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: NodeOverviewTableProps) {
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [page, setPage] = useState<number>(0);
@@ -75,18 +77,25 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode }: NodeOvervi
     );
   }
 
+  const heading = (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 12 }}>
+      <h2 className="cw-section-title" style={{ margin: 0 }}>Area Overview</h2>
+      {toolbar}
+    </div>
+  );
+
   if (nodes.length === 0) {
-    return <EmptyState message="No records found for this area." />;
+    return (
+      <section className="cw-section">
+        {heading}
+        <EmptyState message="No records found for this area." />
+      </section>
+    );
   }
 
   return (
     <section className="cw-section">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <h2 className="cw-section-title" style={{ margin: 0 }}>Area Overview</h2>
-        <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-          Showing {sortedNodes.length} {sortedNodes.length === 1 ? 'area' : 'areas'}
-        </span>
-      </div>
+      {heading}
 
       <div className="cw-surface cw-table-wrap">
         <table className="cw-table cw-table--centered">

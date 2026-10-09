@@ -1,3 +1,4 @@
+import { frameStatusLabel, FRAME_STATUS_HELP } from '../utils/frameStatusLabel';
 import { RawFrameItem } from '../types/commandCenter.types';
 import { fmt, formatFrequency, formatLocalTime, localTzLabel, utcTitle, yesNo } from '../utils/format';
 import { useThresholds, isWeakRssi, isPoorSnr } from '../utils/thresholds';
@@ -101,8 +102,8 @@ export function GatewayFramesTable({
                     <span className={frame.checksumStatus === 'OK' ? 'cc-tag-ok' : 'cc-text-danger'}>{fmt(frame.checksumStatus)}</span>
                   </td>
                   <td>
-                    <span className={`cc-event-badge cc-event-badge--${frame.statusEvent.toLowerCase()}`}>
-                      {frame.statusEvent.replace('_', ' ')}
+                    <span className={`cc-event-badge cc-event-badge--${frame.statusEvent.toLowerCase()}`} title={FRAME_STATUS_HELP[frame.statusEvent]}>
+                      {frameStatusLabel(frame.statusEvent)}
                     </span>
                   </td>
                   {onInspectFrame && (

@@ -229,6 +229,7 @@
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 10px 0; margin-bottom: 12px;
 }
+.cw-filter-bar--inline { padding: 0; margin: 0; flex-wrap: nowrap; justify-content: flex-end; }
 .cw-filter-search { position: relative; }
 .cw-filter-search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--cw-text-faint); }
 .cw-filter-search-input {
@@ -295,14 +296,8 @@
 .cw-table--centered th,
 .cw-table--centered td { text-align: center !important; }
 .cw-table--centered th > div { justify-content: center !important; }
-.cw-kpi-grid--balanced[data-cards="8"] { grid-template-columns: repeat(8, minmax(0, 1fr)); }
-.cw-kpi-grid--balanced[data-cards="7"] { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-@container (max-width: 1610px) {
-  .cw-kpi-grid--balanced[data-cards="8"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-}
-@container (max-width: 1410px) {
-  .cw-kpi-grid--balanced[data-cards="7"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-}
+/* two balanced rows of four (4 + 3 when there are 7 cards), never one card alone on a second row */
+.cw-kpi-grid--balanced { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 @container (max-width: 780px) {
   .cw-kpi-grid--balanced { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
 }

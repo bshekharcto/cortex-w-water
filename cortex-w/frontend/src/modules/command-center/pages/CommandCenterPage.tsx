@@ -79,7 +79,6 @@ export function CommandCenterPage() {
   // the frame whose details are open, and the meter whose whole frame history replaces the workspace
   const [inspectedFrame, setInspectedFrame] = useState<RawFrameItem | null>(null);
   const [framesMeter, setFramesMeter] = useState<MeterTelemetryItem | null>(null);
-  const [secondsAgo, setSecondsAgo] = useState(0);
 
   // Dynamic Site Selector State
   const [selectedSiteId, setSelectedSiteId] = useState<string>('ALL');
@@ -113,7 +112,6 @@ export function CommandCenterPage() {
         timeRange === 'CUSTOM' ? customRange : undefined
       );
       setSummaryData(live);
-      setSecondsAgo(0);
       setLoadError(null);
     } catch (err) {
       console.warn('[CommandCenter] Live summary could not be loaded:', err);
@@ -128,25 +126,16 @@ export function CommandCenterPage() {
     loadSummary(false);
   }, [loadSummary]);
 
-  // Periodic background refresh (every 45s) and elapsed timer ticker
+  // Periodic background refresh (every 45s)
   useEffect(() => {
-    const ticker = setInterval(() => {
-      setSecondsAgo((prev) => prev + 1);
-    }, 1000);
-
     const autoSync = setInterval(() => {
       loadSummary(false);
     }, 45000);
 
     return () => {
-      clearInterval(ticker);
       clearInterval(autoSync);
     };
   }, [loadSummary]);
-
-  const handleManualRefresh = () => {
-    loadSummary(true);
-  };
 
   // Derived Gateways list
   const currentGateways = useMemo(() => summaryData?.gateways ?? NO_GATEWAYS, [summaryData]);
@@ -337,9 +326,6 @@ export function CommandCenterPage() {
         onCustomRangeChange={setCustomRange}
         searchQuery={searchQuery}
         onSearchChange={handleSearch}
-        onRefresh={handleManualRefresh}
-        lastUpdatedText={`${secondsAgo}s ago`}
-        isSyncing={isSyncing}
         sites={sites}
         selectedSiteId={selectedSiteId}
         onSiteChange={setSelectedSiteId}

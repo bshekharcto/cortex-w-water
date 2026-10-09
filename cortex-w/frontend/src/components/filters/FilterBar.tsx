@@ -7,6 +7,8 @@ interface FilterBarProps {
   searchValue?: string;
   onSearchChange?: (v: string) => void;
   searchPlaceholder?: string;
+  /** Drawn without its own spacing, to sit in the heading row of a table. */
+  inline?: boolean;
 }
 
 /**
@@ -14,9 +16,9 @@ interface FilterBarProps {
  * controls as children; this provides the search + reset chrome.
  * Don't render irrelevant controls — pages decide what goes here.
  */
-export function FilterBar({ children, onReset, searchValue, onSearchChange, searchPlaceholder }: FilterBarProps) {
+export function FilterBar({ children, onReset, searchValue, onSearchChange, searchPlaceholder, inline }: FilterBarProps) {
   return (
-    <div className="cw-filter-bar">
+    <div className={inline ? 'cw-filter-bar cw-filter-bar--inline' : 'cw-filter-bar'}>
       {onSearchChange && (
         <div className="cw-filter-search">
           <Search size={15} className="cw-filter-search-icon" />
