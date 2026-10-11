@@ -20,6 +20,7 @@ import billingRoutes from "./routes/billing.js";
 import alarmsRoutes from "./routes/alarms.js";
 import sitesRoutes from "./routes/sites.js";
 import gisRoutes from "./routes/gis.js";
+import networkRoutes from "./routes/network.js";
 import dashboardRoutes from "./routes/dashboard.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -141,6 +142,9 @@ app.use("/api/sites", sitesRoutes);
 
 // GIS
 app.use("/api/gis", gisRoutes);
+
+// Network Explorer (Postgres-backed)
+app.use("/api/network", networkRoutes);
 
 // Dashboard
 app.use("/api/dashboard", dashboardRoutes);
