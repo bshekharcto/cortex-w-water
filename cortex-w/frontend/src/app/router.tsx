@@ -57,7 +57,6 @@ export function AppRouter() {
 
             {/* GIS */}
             <Route path="/app/gis/network" element={<NetworkExplorerPage />} />
-            <Route path="/app/gis/network/meters/:assetId" element={<NetworkExplorerPage />} />
             <Route path="/app/gis/gateway-placement" element={<GatewayPlacementPage />} />
 
             {/* CONSUMER */}

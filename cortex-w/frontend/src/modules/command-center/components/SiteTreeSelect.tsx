@@ -11,6 +11,7 @@ import {
   valueFromChecked,
 } from './siteTreeLogic';
 import type { SiteOption } from './siteTreeLogic';
+import './siteTree.css';
 
 interface Props {
   sites: SiteOption[];

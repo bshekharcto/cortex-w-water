@@ -184,6 +184,23 @@ try {
   check('non-numeric asset id -> 404', (await get('/api/gis/meter-detail/abc', A.token)).status === 404);
   check('no token -> 401', (await get(`/api/gis/meter-detail/${liveRow[1]}`)).status === 401);
 
+  // --- the older /api/gis routes now share the same data (Gateway Placement and the household / billing / alarm lookups) ---
+  const gm = await get('/api/gis/meters?limit=all', A.token);
+  check('/api/gis/meters 200', gm.status === 200, `${gm.ms} ms`);
+  check('gis meters = the meters of the map that have a position', gm.body.meters.length === map.rows.length && gm.body.summary.totalMeters >= gm.body.meters.length, `${gm.body.meters.length}`);
+  check('gis meters carry real values only (no guessed city, no made-up consumer text)', gm.body.meters.every((m: any) => !('city' in m) && (m.householdName === null || !/^Consumer \(/.test(m.householdName))));
+  check('gis meter status uses the shared scale', gm.body.meters.every((m: any) => ['live', 'stale', 'silent', 'never'].includes(m.status)));
+  const hh = gm.body.meters.find((m: any) => m.householdId);
+  check('household lookup fields are filled from the mirror', !!hh && !!hh.householdShortId && hh.assetId === Number(hh.assetId));
+  const withUse = gm.body.meters.filter((m: any) => m.yesterdayConsumptionL != null).length;
+  check('daily figures come through for meters that have them', withUse > 0, `${withUse} meters`);
+  const gg = await get('/api/gis/gateways?siteId=ALL', A.token);
+  check('/api/gis/gateways 200 with the old field names', gg.status === 200 && gg.body.length === placed.length && gg.body.every((x: any) => x.gatewayId && x.alias && x.metersObserved != null), `${gg.body?.length}`);
+  check("A asking /api/gis/meters for B's site -> 404", (await get(`/api/gis/meters?siteId=${bOnly?.id}`, A.token)).status === 404);
+  const gmB = await get('/api/gis/meters?limit=all', B.token);
+  const aMeterIds = new Set(gm.body.meters.map((m: any) => m.meterId));
+  check('B /api/gis/meters shares no meter with A', gmB.status === 200 && gmB.body.meters.every((m: any) => !aMeterIds.has(m.meterId)), `${gmB.body?.meters?.length} meters`);
+
   console.log(`\n${pass} passed, ${fail} failed`);
 } catch (err) {
   console.error('Test crashed:', err);

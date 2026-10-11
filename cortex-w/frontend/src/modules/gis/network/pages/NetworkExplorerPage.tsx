@@ -29,6 +29,7 @@ import { SpatialGridIndex, type BoundingBox } from '../../shared/spatialIndex';
 import { MarkerClusterer, SuperClusterAlgorithm } from '@googlemaps/markerclusterer';
 import { getDecibelBorder } from '../../shared/meterColorUtils';
 import { getGatewayMapMarkerIcon, getGatewaySvg } from '../../shared/gatewayIconUtils';
+import { SiteTreeSelect } from '@/modules/command-center/components/SiteTreeSelect';
 import { useNetworkData } from '../hooks/useNetworkData';
 import {
   GATEWAY_STATUS_LABEL,
@@ -570,14 +571,7 @@ export function NetworkExplorerPage() {
             />
           </div>
 
-          <select className="gis-select" value={siteId} onChange={(e) => setSiteId(e.target.value)} title="Area">
-            <option value="ALL">All my sites</option>
-            {sites.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.label}
-              </option>
-            ))}
-          </select>
+          <SiteTreeSelect sites={sites} value={siteId} onChange={setSiteId} />
 
           <select className="gis-select" value={selectedGatewayId} onChange={(e) => placeGateway(e.target.value)} title="Gateway">
             <option value="ALL">All gateways ({gateways.length})</option>

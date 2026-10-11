@@ -138,7 +138,7 @@ router.get('/:id/detail', async (req, res) => {
       (m) =>
         m.householdId === customId ||
         m.householdShortId === customId ||
-        customId.includes(m.householdShortId) ||
+        (m.householdShortId != null && customId.includes(m.householdShortId)) ||
         (hmdData.meters && hmdData.meters.some((hm: any) => hm.meterNumber === m.meterId))
     );
 

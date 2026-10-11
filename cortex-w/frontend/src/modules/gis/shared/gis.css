@@ -1374,3 +1374,26 @@
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+/* the shared site tree filter, in this page's light palette */
+.gis-toolbar .cc-sitetree {
+  --st-panel-bg: #FFFFFF;
+  --st-border: #CBD5E1;
+  --st-text: #1E293B;
+  --st-title: #475569;
+  --st-link: #2563EB;
+  --st-chip-bg: #E2E8F0;
+  --st-chip-text: #1E293B;
+  --st-muted: #64748B;
+  --st-hover: #F1F5F9;
+  --st-checked: rgba(37, 99, 235, 0.12);
+  --st-btn-border: #CBD5E1;
+  --st-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  --st-button-bg: #FFFFFF;
+  --st-button-text: #1E293B;
+}
+.gis-toolbar .cc-sitetree-button {
+  min-width: 150px;
+  padding: 5px 10px;
+  height: 30px;
+}

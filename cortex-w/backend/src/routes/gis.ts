@@ -4,28 +4,10 @@ import { config } from '../config/env.js';
 import { pool } from '../db/pool.js';
 import { localDate } from '../services/localDate.js';
 import { requireClient, scopeSiteIds, rootSites } from '../services/clientContext.js';
+import { getLegacyGisData, resolveSiteScope } from '../services/networkService.js';
 import { clientTenantIds } from '../services/tenantScope.js';
 
 const router = Router();
-
-// In-memory cache for live GIS meters to avoid re-fetching ~5.5MB payloads on every view change
-interface CachedGisData {
-  timestamp: number;
-  siteId: string;
-  gateways: any[];
-  meters: any[];
-  summary: {
-    totalMeters: number;
-    activeCount: number;
-    warningCount: number;
-    problemCount: number;
-    gatewayCount: number;
-  };
-}
-
-// Keyed by client AND site: one client's payload must never be served to another.
-const gisCache = new Map<string, CachedGisData>();
-const CACHE_TTL_MS = 60 * 1000; // 60 seconds cache
 
 /**
  * The token to call upstream with: always the signed-in client's own, so
@@ -44,270 +26,24 @@ function defaultSiteId(): string {
   return first ? String(first.id) : 'ALL';
 }
 
-export async function getLiveGisData(authHeader?: string, siteId: string = 'ALL') {
-  const now = Date.now();
-  const cacheKey = `${requireClient().key}|${siteId}`;
-  const cachedGis = gisCache.get(cacheKey);
-  if (cachedGis && now - cachedGis.timestamp < CACHE_TTL_MS) {
-    return cachedGis;
-  }
-
-  const today = localDate(0);
-  const lastWeek = localDate(-7);
-
-  const headers: Record<string, string> = {};
-  const token = await getAuthToken(authHeader);
-  if (token) {
-    headers['Authorization'] = token;
-  }
-
-  // If siteId is 'ALL', omit siteIds so Cognecto returns all cities (Bhubaneswar, Puri, Cuttack)
-  const isAll = !siteId || siteId.toUpperCase() === 'ALL';
-  const siteQuery: Record<string, string> = isAll ? {} : { siteIds: siteId };
-
-  // Fetch in parallel
-  const [geoRes, perfRes, locRes, healthRes, dbTelemetryRes] = await Promise.all([
-    proxyUpstream('GET', '/api/map/geofence', {
-      query: siteQuery,
-      headers,
-    }).catch(() => ({ status: 500, data: null })),
-    proxyUpstream('GET', '/api/water/gateway-performance', {
-      query: { ...siteQuery, fromDate: lastWeek, toDate: today },
-      headers,
-    }).catch(() => ({ status: 500, data: null })),
-    proxyUpstream('GET', '/api/map/asset-locations', {
-      query: siteQuery,
-      headers,
-    }).catch(() => ({ status: 500, data: null })),
-    proxyUpstream('GET', '/api/water/meter-health', {
-      query: siteQuery,
-      headers,
-    }).catch(() => ({ status: 500, data: null })),
-    pool.query(`
-      WITH latest_reading AS (
-        -- Same intra-day retry-packet corruption as the per-day readings
-        -- queries: pick the most recent CALENDAR DAY per meter, then the
-        -- highest (correct) reading within that day, rather than whichever
-        -- packet happened to arrive last — a lower-valued same-day retry
-        -- would otherwise silently show as a too-low "current reading".
-        SELECT DISTINCT ON (meter_id)
-          meter_id, decoded_at, forward_flow_kl AS current_reading_kl, dev_eui
-        FROM water_meter_readings_v2
-        ORDER BY meter_id, date_key DESC, forward_flow_kl DESC, time DESC
-      ),
-      yesterday AS (
-        SELECT meter_id, total_consumption_kl AS yesterday_kl
-        FROM water_daily_summary
-        WHERE summary_date = ($1::date - INTERVAL '1 day')::date
-      ),
-      last10d AS (
-        SELECT meter_id, SUM(total_consumption_kl) AS last10d_kl
-        FROM water_daily_summary
-        WHERE summary_date >= ($1::date - INTERVAL '10 days')::date
-        GROUP BY meter_id
-      ),
-      month_total AS (
-        SELECT meter_id, total_consumption_kl AS month_kl
-        FROM water_monthly_summary
-        WHERE summary_month = DATE_TRUNC('month', $1::date)::date
-      )
-      SELECT
-        lr.meter_id, lr.decoded_at AS last_seen, lr.current_reading_kl, lr.dev_eui,
-        COALESCE(y.yesterday_kl, 0) AS yesterday_kl,
-        COALESCE(l10.last10d_kl, 0) AS last10d_kl,
-        COALESCE(m.month_kl, 0) AS month_kl
-      FROM latest_reading lr
-      LEFT JOIN yesterday y ON y.meter_id = lr.meter_id
-      LEFT JOIN last10d l10 ON l10.meter_id = lr.meter_id
-      LEFT JOIN month_total m ON m.meter_id = lr.meter_id
-    `, [localDate(0)]).catch((err) => {
-      console.warn('[gis] DB telemetry query notice:', err.message);
-      return { rows: [] };
-    }),
-  ]);
-
-  const geofences = Array.isArray(geoRes.data) ? geoRes.data : [];
-  const perfList = Array.isArray(perfRes.data) ? perfRes.data : [];
-  const locations = typeof locRes.data === 'object' && locRes.data !== null ? (locRes.data as Record<string, any>) : {};
-  const healthList = Array.isArray(healthRes.data) ? healthRes.data : [];
-
-  // Build lookup map for real meter telemetry (readings, consumption) from PostgreSQL
-  const dbMeterDataMap = new Map<string, any>();
-  if (dbTelemetryRes && Array.isArray(dbTelemetryRes.rows)) {
-    dbTelemetryRes.rows.forEach((r: any) => {
-      if (!r.meter_id) return;
-      const iso = r.last_seen ? new Date(r.last_seen).toISOString() : null;
-      const entry = {
-        lastSeen: iso,
-        currentReadingKl: r.current_reading_kl !== null ? Number(r.current_reading_kl) : null,
-        devEui: r.dev_eui || null,
-        yesterdayKl: Number(r.yesterday_kl) || 0,
-        last10dKl: Number(r.last10d_kl) || 0,
-        monthKl: Number(r.month_kl) || 0,
-      };
-      const raw = String(r.meter_id);
-      dbMeterDataMap.set(raw, entry);
-      const clean = raw.replace(/^0+/, '');
-      dbMeterDataMap.set(clean, entry);
-      dbMeterDataMap.set(clean.padStart(10, '0'), entry);
-    });
-  }
-
-  console.log(`[gis] Upstream fetch for site ${siteId}: geofences=${geofences.length}, locations=${Object.keys(locations).length}, health=${healthList.length}, dbMetersWithTelemetry=${dbMeterDataMap.size}`);
-
-  // 1. Process Gateways
-  const gateways = geofences.map((g: any) => {
-    const coords = g.geofenceCoordinates?.[0] || {};
-    const match = g.name.match(/gw[- ]?([0-9a-fA-F]+)/i);
-    const hex = match ? match[1].toLowerCase() : '';
-    const gwPerf = perfList.filter((p: any) => p.gatewayId && (p.gatewayId.endsWith(hex) || p.gatewayId.includes(hex)));
-    const latestPerf = gwPerf[gwPerf.length - 1];
-    const activeCount = latestPerf?.activeMeterCount || 0;
-
-    const radiusMeters = g.radius || 1000;
-    const avgRssi = activeCount > 0 ? -82 : -98;
-    const avgSnr = activeCount > 0 ? 9 : 4;
-    return {
-      id: String(g.id),
-      alias: (g.name || 'Gateway').trim(),
-      gatewayId: latestPerf?.gatewayId || (hex ? '506f98000000' + hex.padStart(4, '0') : String(g.id)),
-      lat: coords.latitude || 20.2961,
-      lng: coords.longitude || 85.8245,
-      radius: radiusMeters,
-      radiusMeters,
-      address: g.address || '',
-      status: activeCount > 0 ? 'reporting' : 'degraded',
-      activeMeters: activeCount,
-      metersObserved: activeCount,
-      avgRssi,
-      avgSnr,
-    };
-  });
-
-  // Map gateways for fast lookup
-  const gwMap = new Map<string, any>();
-  gateways.forEach((gw: any) => {
-    gwMap.set(gw.gatewayId, gw);
-  });
-
-  // 2. Process Meters with GPS join across all cities (Bhubaneswar, Puri, Cuttack)
-  let activeCount = 0;
-  let warningCount = 0;
-  let problemCount = 0;
-
-  const meters = healthList.map((h: any) => {
-    const loc = locations[String(h.assetId)] || locations[h.assetId];
-    const rssi = typeof h.rssi === 'number' ? h.rssi : -100;
-    const gw = gwMap.get(h.gatewayId);
-
-    let status: 'active' | 'weak' | 'silent' = 'active';
-    if (rssi < -105) {
-      status = 'silent';
-      problemCount++;
-    } else if (rssi < -95) {
-      status = 'weak';
-      warningCount++;
-    } else {
-      activeCount++;
-    }
-
-    const shortId = (h.householdId || `${h.assetId}`).split('/').pop() || `${h.assetId}`;
-    const hhId = h.householdId || '';
-    const locSiteId = loc?.siteId;
-
-    // Detect city accurately
-    const isPuri = hhId.includes('/PRI/') || hhId.includes('PRI') || locSiteId === 6908;
-    const isCuttack = hhId.includes('/CTC/') || hhId.includes('CTC') || locSiteId === 6916;
-    const city = isPuri ? 'Puri' : isCuttack ? 'Cuttack' : 'Bhubaneswar';
-
-    let defaultLocality = 'Bhubaneswar Zone';
-    let defaultGatewayAlias = 'Bhubaneswar Base';
-    if (isPuri) {
-      defaultLocality = 'Puri Coastal Zone';
-      defaultGatewayAlias = 'Puri LoRa Link';
-    } else if (isCuttack) {
-      defaultLocality = 'Cuttack CDA / Sector 11';
-      defaultGatewayAlias = 'GW-2a0 (sector 11)';
-    }
-
-    const rawMeterId = String(h.meterId || h.assetId || '');
-    const cleanId = rawMeterId.replace(/^0+/, '');
-    const paddedId = cleanId.padStart(10, '0');
-    const dbData = dbMeterDataMap.get(rawMeterId) || dbMeterDataMap.get(paddedId) || dbMeterDataMap.get(cleanId);
-    const finalLastSeen = dbData?.lastSeen || h.lastSeenDate || h.decodedAt || 'Never';
-
-    let recencyBucket: 'last72h' | 'last10d' | 'last30d' | 'never' = 'never';
-    if (finalLastSeen && finalLastSeen !== 'Never') {
-      const ts = new Date(finalLastSeen).getTime();
-      if (!isNaN(ts)) {
-        const ageHours = Math.max(0, now - ts) / (1000 * 3600);
-        if (ageHours <= 72) recencyBucket = 'last72h';
-        else if (ageHours <= 240) recencyBucket = 'last10d';
-        else if (ageHours <= 720) recencyBucket = 'last30d';
-        else recencyBucket = 'never';
-      }
-    }
-
-    return {
-      id: h.meterId || String(h.assetId),
-      assetId: h.assetId,
-      meterId: h.meterId || `M-${h.assetId}`,
-      devEui: h.devEui || dbData?.devEui || null,
-      householdId: h.householdId || `WS/${isPuri ? 'PRI' : isCuttack ? 'CTC' : 'BMC'}/${h.assetId}`,
-      householdShortId: shortId,
-      householdName: h.householdName || `Consumer (${shortId})`,
-      city,
-      locality: gw?.alias ? gw.alias.replace(/^Gw-[^ ]+ /i, '').replace(/[()]/g, '') : defaultLocality,
-      gatewayId: h.gatewayId || (isCuttack ? '506f9800000002a0' : ''),
-      gatewayAlias: gw?.alias || defaultGatewayAlias,
-      // No real distance-to-gateway calculation exists yet (needs real lat/lng
-      // math against the gateway's own coordinates) — null, not a fake number.
-      distanceMeters: null,
-      lat: loc?.latitude ?? null,
-      lng: loc?.longitude ?? null,
-      status,
-      rssi,
-      snr: Math.round((rssi + 120) / 4),
-      lastSeen: finalLastSeen,
-      recencyBucket,
-      // No real pipe-diameter/connection-type/install-date source exists in
-      // this codebase — null rather than a fabricated constant.
-      pipeDiameter: null,
-      connectionType: null,
-      installDate: null,
-      currentReadingM3: dbData?.currentReadingKl ?? null,
-      yesterdayConsumptionL: dbData ? Math.round(dbData.yesterdayKl * 1000) : null,
-      monthConsumptionM3: dbData ? Number(dbData.monthKl.toFixed(3)) : null,
-      last10DaysTotalL: dbData ? Math.round(dbData.last10dKl * 1000) : null,
-      lastSeenDate: finalLastSeen !== 'Never' ? finalLastSeen : '',
-      decodedAt: finalLastSeen !== 'Never' ? finalLastSeen : '',
-    };
-  }).filter((m: any) => m.lat !== null && m.lng !== null);
-
-  const fresh: CachedGisData = {
-    timestamp: now,
-    siteId,
-    gateways,
-    meters,
-    summary: {
-      totalMeters: meters.length,
-      activeCount,
-      warningCount,
-      problemCount,
-      gatewayCount: gateways.length,
-    },
-  };
-  gisCache.set(cacheKey, fresh);
-  return fresh;
+/**
+ * Gateways and meters of the signed-in client for the pages that look a meter up (households, billing, alarms) and for
+ * Gateway Placement. Served from Postgres by the same service as the Network Explorer (services/networkService.ts):
+ * every value is real or null. The old version called five upstream reports and filled the gaps with guesses (city from
+ * the household id text, default positions, fixed signal values).
+ */
+export async function getLiveGisData(_authHeader?: string, siteId: string = 'ALL') {
+  const scope = resolveSiteScope(siteId);
+  if (scope === undefined) throw new Error('Unknown site');
+  return getLegacyGisData(scope);
 }
 
 // GET /api/gis/gateways
 router.get('/gateways', async (req, res) => {
   try {
     const siteId = (req.query.siteId as string) || 'ALL';
-    if (scopeSiteIds(requireClient(), siteId) === null) return res.status(404).json({ error: 'Unknown site' });
-    const authHeader = req.headers.authorization;
-    const data = await getLiveGisData(authHeader, siteId);
+    if (resolveSiteScope(siteId) === undefined) return res.status(404).json({ error: 'Unknown site' });
+    const data = await getLiveGisData(req.headers.authorization, siteId);
     res.json(data.gateways);
   } catch (err: any) {
     console.error('[gis] Error fetching gateways:', err.message);
@@ -315,51 +51,31 @@ router.get('/gateways', async (req, res) => {
   }
 });
 
-// GET /api/gis/meters
+// GET /api/gis/meters   (meters that have a position, as Gateway Placement needs them)
 router.get('/meters', async (req, res) => {
   try {
     const siteId = (req.query.siteId as string) || 'ALL';
-    if (scopeSiteIds(requireClient(), siteId) === null) return res.status(404).json({ error: 'Unknown site' });
-    const city = req.query.city as string | undefined;
-    const gatewayId = req.query.gatewayId as string | undefined;
+    if (resolveSiteScope(siteId) === undefined) return res.status(404).json({ error: 'Unknown site' });
+    const gatewayId = (req.query.gatewayId as string | undefined)?.toLowerCase();
     const problemsOnly = req.query.problemsOnly === 'true';
     const search = (req.query.search as string | undefined)?.toLowerCase();
     const limitQuery = req.query.limit as string | undefined;
     const limit = limitQuery && limitQuery !== 'all' ? parseInt(limitQuery, 10) : 0;
 
-    const authHeader = req.headers.authorization;
-    const data = await getLiveGisData(authHeader, siteId);
-
-    let filtered = data.meters;
-
-    if (city && city !== 'ALL') {
-      filtered = filtered.filter((m) => m.city?.toLowerCase() === city.toLowerCase());
-    }
-
-    if (gatewayId && gatewayId !== 'all') {
-      filtered = filtered.filter((m) => m.gatewayId === gatewayId || m.gatewayId.includes(gatewayId));
-    }
-
-    if (problemsOnly) {
-      filtered = filtered.filter((m) => m.status === 'problem' || m.status === 'weak' || m.status === 'silent');
-    }
-
+    const data = await getLiveGisData(req.headers.authorization, siteId);
+    let filtered = data.meters.filter((m) => m.lat != null && m.lng != null);
+    if (gatewayId && gatewayId !== 'all') filtered = filtered.filter((m) => m.gatewayId === gatewayId);
+    if (problemsOnly) filtered = filtered.filter((m) => m.status !== 'live');
     if (search) {
-      filtered = filtered.filter((m) =>
-        m.meterId.toLowerCase().includes(search) ||
-        m.householdId.toLowerCase().includes(search) ||
-        m.gatewayId.toLowerCase().includes(search)
+      filtered = filtered.filter(
+        (m) =>
+          m.meterId.toLowerCase().includes(search) ||
+          (m.householdId ?? '').toLowerCase().includes(search) ||
+          (m.gatewayId ?? '').includes(search)
       );
     }
-
     const resultMeters = limit > 0 ? filtered.slice(0, limit) : filtered;
-
-    res.json({
-      summary: data.summary,
-      totalMatching: filtered.length,
-      returnedCount: resultMeters.length,
-      meters: resultMeters,
-    });
+    res.json({ summary: data.summary, totalMatching: filtered.length, returnedCount: resultMeters.length, meters: resultMeters });
   } catch (err: any) {
     console.error('[gis] Error fetching meters:', err.message);
     res.status(500).json({ error: 'Failed to fetch meters' });

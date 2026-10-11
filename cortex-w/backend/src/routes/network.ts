@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
-import { requireClient, scopeSiteIds } from '../services/clientContext.js';
-import { getGateways, getMeterMap, listMeters, type SiteScope } from '../services/networkService.js';
-import { withDescendants, type MeterStatus } from '../services/networkLogic.js';
+import { requireClient } from '../services/clientContext.js';
+import { getGateways, getMeterMap, listMeters, resolveSiteScope, type SiteScope } from '../services/networkService.js';
+import type { MeterStatus } from '../services/networkLogic.js';
 
 const router = Router();
 
@@ -11,29 +11,19 @@ const router = Router();
 const STATUSES = new Set<string>(['live', 'stale', 'silent', 'never']);
 const EUI = /^[0-9a-f]{16}$/i;
 
-/** The sites a request is limited to (the ones named plus everything below them), or null for "unknown site". */
-function resolveScope(req: Request): SiteScope | null {
-  const ctx = requireClient();
-  const raw = req.query.siteId ?? req.query.siteIds ?? '';
-  if (typeof raw !== 'string') return null;
-  const ids = scopeSiteIds(ctx, raw);
-  if (ids === null) return null;
-  if (ctx.unscoped) return ids.length ? ids : null;
-  return withDescendants(ctx.sites, ids);
-}
-
 /** Validates the query; answers the 4xx itself and returns null when it is not acceptable. */
 function scopeOrReject(req: Request, res: Response): { scope: SiteScope } | null {
   if (typeof (req.query.siteId ?? req.query.siteIds ?? '') !== 'string') {
     res.status(400).json({ error: 'siteId must be a single value' });
     return null;
   }
-  const scope = resolveScope(req);
-  if (scope === null && !requireClient().unscoped) {
+  const raw = req.query.siteId ?? req.query.siteIds ?? '';
+  const scope = resolveSiteScope(typeof raw === 'string' ? raw : '');
+  if (scope === undefined) {
     res.status(404).json({ error: 'Unknown site' });
     return null;
   }
-  return { scope };
+  return { scope: scope as SiteScope };
 }
 
 function fail(res: Response, what: string, err: any) {

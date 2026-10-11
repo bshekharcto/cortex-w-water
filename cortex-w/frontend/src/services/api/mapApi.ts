@@ -1,7 +1,6 @@
 import { apiRequest } from './httpClient';
 import type { SensorRawDataDTO, GeofenceDTO, GatewayPlacementResult } from '@/modules/gis/shared/mapTypes';
-import type { MeterWiseConsumptionDTO } from '@/modules/dashboard/types/dashboard.types';
-import type { GisGateway, GisMeter } from '@/modules/gis/shared/gisData';
+import type { GisMeter } from '@/modules/gis/shared/gisData';
 
 export interface LiveMetersResponse {
   summary: {
@@ -78,9 +77,6 @@ export interface LiveMeterDetailResponse {
 }
 
 export const mapApi = {
-  getGateways: (siteId?: string) =>
-    apiRequest<GisGateway[]>('/gis/gateways', { query: { siteId } }),
-
   getMeters: (params?: { siteId?: string; gatewayId?: string; problemsOnly?: boolean; search?: string; limit?: number }) =>
     apiRequest<LiveMetersResponse>('/gis/meters', { query: params }),
 
@@ -88,20 +84,11 @@ export const mapApi = {
   getMeterDetail: (assetId: number | string, meterId?: string, opts?: { core?: boolean }) =>
     apiRequest<LiveMeterDetailResponse>(`/gis/meter-detail/${assetId}`, { query: { meterId, core: opts?.core ? '1' : undefined } }),
 
-  getGatewayPerformance: (params?: { siteId?: string; fromDate?: string; toDate?: string }) =>
-    apiRequest<Array<{ gatewayId: string; date: string; activeMeterCount: number }>>('/gis/performance', { query: params }),
-
   getAssetLocations: (siteId: number = 6394) =>
     apiRequest<Record<string, SensorRawDataDTO>>('/gis/asset-locations', { query: { siteIds: siteId } }),
 
   getGeofences: (siteId: number = 6394) =>
     apiRequest<GeofenceDTO[]>('/gis/geofences', { query: { siteIds: siteId } }),
-
-  getLatestMeterTelemetry: (assetId: string) =>
-    apiRequest<MeterWiseConsumptionDTO>(`/gis/meters/${assetId}/latest`),
-
-  getAssetDetail: (assetId: string) =>
-    apiRequest<{ assetId: string; name: string; householdId?: string }>(`/gis/assets/${assetId}`),
 
   computeGatewayPlacement: (siteId: number, gatewayCount: number, coverageRadiusM: number) =>
     apiRequest<GatewayPlacementResult>('/gis/gateway-placement/compute', {

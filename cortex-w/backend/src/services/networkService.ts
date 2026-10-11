@@ -1,6 +1,6 @@
 import { pool } from '../db/pool.js';
 import { networkHealthThresholds as T } from '../config/networkHealth.js';
-import { requireClient, type ClientCtx } from './clientContext.js';
+import { requireClient, scopeSiteIds, type ClientCtx } from './clientContext.js';
 import { clientTenantIds } from './tenantScope.js';
 import { fetchUpstreamOrThrow } from './upstreamProxy.js';
 import { singleFlight } from './inflight.js';
@@ -12,6 +12,7 @@ import {
   meterStatus,
   round,
   validCoord,
+  withDescendants,
   type GatewayStatus,
   type MeterStatus,
 } from './networkLogic.js';
@@ -58,6 +59,18 @@ const scopeKey = (ctx: ClientCtx, siteIds: number[] | null) => `${ctx.key}|${sit
 
 /** Null means "no site limit" (demo mode only); otherwise the ids a query is limited to. */
 export type SiteScope = number[] | null;
+
+/**
+ * The sites a browser-supplied selection ("ALL", one id or "a,b") is limited to: what the client owns, plus everything
+ * below the named sites. Returns undefined when the selection names a site the client does not own (callers answer 404).
+ */
+export function resolveSiteScope(raw: string | undefined | null): SiteScope | undefined {
+  const ctx = requireClient();
+  const ids = scopeSiteIds(ctx, raw ?? '');
+  if (ids === null) return undefined;
+  if (ctx.unscoped) return ids.length ? ids : null;
+  return withDescendants(ctx.sites, ids);
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Meter positions (from the beta API, cached per client)
@@ -482,5 +495,152 @@ export async function listMeters(
     offset: opts.offset,
     coordinates: { status: pos.status, fetchedAt: pos.fetchedAt },
     items,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Every meter of the client with the fields the household, billing and alarm pages look meters up by
+// ---------------------------------------------------------------------------------------------------------------------
+
+export interface LookupMeter {
+  id: string;
+  assetId: number;
+  meterId: string;
+  devEui: string | null;
+  householdId: string | null;
+  householdShortId: string | null;
+  householdName: string | null;
+  locality: string | null;
+  ward: string | null;
+  siteId: number | null;
+  lat: number | null;
+  lng: number | null;
+  gatewayId: string | null;
+  gatewayAlias: string | null;
+  distanceMeters: number | null;
+  status: MeterStatus;
+  rssi: number | null;
+  snr: number | null;
+  lastSeen: string | null;
+  lastSeenDate: string | null;
+  decodedAt: string | null;
+  currentReadingM3: number | null;
+  yesterdayConsumptionL: number | null;
+  monthConsumptionM3: number | null;
+  last10DaysTotalL: number | null;
+}
+
+const lookupStore: Store<LookupMeter[]> = new Map();
+const lookupFlights = new Map<string, Promise<LookupMeter[]>>();
+
+/** Meters (with or without a position), their newest frame and the water used yesterday / this month / in 10 days. */
+export function getMeterLookup(siteIds: SiteScope): Promise<LookupMeter[]> {
+  const ctx = requireClient();
+  return cached(lookupStore, lookupFlights, scopeKey(ctx, siteIds), 60_000, async () => {
+    const [res, pos, gateways] = await Promise.all([
+      pool.query(
+        `SELECT m.meter_id, m.asset_id, m.site_id, m.consumer_name, m.household_custom_id, m.locality, m.ward,
+                l.dev_eui, l.decoded_at, l.gateway_id, l.rssi, l.snr, l.forward_flow_kl,
+                d.yesterday_kl, d.month_kl, d.last10_kl
+           FROM meter_metadata m
+           LEFT JOIN water_meter_latest l ON l.meter_id = m.meter_id
+           LEFT JOIN (
+             -- the days at each meter's own site, same table and rules as the Dashboard
+             SELECT w.meter_id,
+                    SUM(w.used_kl) FILTER (WHERE w.day = t.today - 1)                                AS yesterday_kl,
+                    SUM(w.used_kl) FILTER (WHERE w.day >= date_trunc('month', t.today)::date)        AS month_kl,
+                    SUM(w.used_kl) FILTER (WHERE w.day >= t.today - 9)                               AS last10_kl
+               FROM water_meter_daily w
+               JOIN meter_metadata mm ON mm.meter_id = w.meter_id
+               LEFT JOIN site_metadata ss ON ss.site_id = mm.site_id
+               CROSS JOIN LATERAL (SELECT (NOW() AT TIME ZONE COALESCE(ss.tz_sql, 'UTC'))::date AS today) t
+              WHERE mm.is_active
+                AND ($1::bigint[] IS NULL OR mm.tenant_id = ANY($1::bigint[]))
+                AND ($2::bigint[] IS NULL OR mm.site_id = ANY($2::bigint[]))
+                AND w.day >= CURRENT_DATE - 42   -- a constant bound lets the day index prune; the exact days follow below
+                AND w.day >= t.today - 40
+              GROUP BY w.meter_id
+           ) d ON d.meter_id = m.meter_id
+          WHERE m.is_active
+            AND ($1::bigint[] IS NULL OR m.tenant_id = ANY($1::bigint[]))
+            AND ($2::bigint[] IS NULL OR m.site_id = ANY($2::bigint[]))
+          ORDER BY m.meter_id`,
+        [clientTenantIds(), siteIds]
+      ),
+      getCoords(ctx),
+      loadGatewayRows(ctx),
+    ]);
+    const gwById = new Map(gateways.map((g) => [g.gatewayId, g]));
+    const now = Date.now();
+    const num = (v: unknown) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+
+    return res.rows.map((r: any): LookupMeter => {
+      const assetId = Number(r.asset_id);
+      const xy = pos.coords?.get(assetId) ?? null;
+      const gwId = r.gateway_id ? String(r.gateway_id).toLowerCase() : null;
+      const gw = gwId ? gwById.get(gwId) : undefined;
+      const seen = r.decoded_at ? new Date(r.decoded_at).toISOString() : null;
+      const yesterdayKl = num(r.yesterday_kl);
+      const monthKl = num(r.month_kl);
+      const last10Kl = num(r.last10_kl);
+      return {
+        id: r.meter_id,
+        assetId,
+        meterId: r.meter_id,
+        devEui: r.dev_eui ?? null,
+        householdId: r.household_custom_id ?? null,
+        householdShortId: r.household_custom_id ? String(r.household_custom_id).split('/').pop() ?? null : null,
+        householdName: r.consumer_name ?? null,
+        locality: r.locality ?? null,
+        ward: r.ward ?? null,
+        siteId: r.site_id == null ? null : Number(r.site_id),
+        lat: xy ? xy[0] : null,
+        lng: xy ? xy[1] : null,
+        gatewayId: gwId,
+        gatewayAlias: gw ? gw.name || gw.address || gwId : gwId,
+        distanceMeters: xy && gw && gw.lat != null && gw.lng != null ? Math.round(haversineM(xy[0], xy[1], gw.lat, gw.lng)) : null,
+        status: meterStatus(r.decoded_at, now),
+        rssi: round(r.rssi, 1),
+        snr: round(r.snr, 1),
+        lastSeen: seen,
+        lastSeenDate: seen,
+        decodedAt: seen,
+        currentReadingM3: num(r.forward_flow_kl),
+        yesterdayConsumptionL: yesterdayKl == null ? null : Math.round(yesterdayKl * 1000),
+        monthConsumptionM3: monthKl == null ? null : Number(monthKl.toFixed(3)),
+        last10DaysTotalL: last10Kl == null ? null : Math.round(last10Kl * 1000),
+      };
+    });
+  });
+}
+
+/** What getGateways + getMeterLookup add up to, for the pages that look a meter up (see routes/gis.ts getLiveGisData). */
+export async function getLegacyGisData(siteIds: SiteScope) {
+  const [meters, gw] = await Promise.all([getMeterLookup(siteIds), getGateways(siteIds)]);
+  const count = (s: MeterStatus) => meters.filter((m) => m.status === s).length;
+  return {
+    gateways: gw.gateways.map((g) => ({
+      id: g.gatewayId,
+      alias: g.name || g.address || g.gatewayId,
+      gatewayId: g.gatewayId,
+      lat: g.lat,
+      lng: g.lng,
+      radius: g.radiusM,
+      radiusMeters: g.radiusM,
+      address: g.address ?? '',
+      status: g.status,
+      activeMeters: g.liveMeters,
+      metersObserved: g.metersHeard,
+      avgRssi: g.avgRssi,
+      avgSnr: g.avgSnr,
+    })),
+    meters,
+    summary: {
+      totalMeters: meters.length,
+      activeCount: count('live'),
+      warningCount: count('stale'),
+      problemCount: count('silent') + count('never'),
+      gatewayCount: gw.gateways.length,
+    },
   };
 }

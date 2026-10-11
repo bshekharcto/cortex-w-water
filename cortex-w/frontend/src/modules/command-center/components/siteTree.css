@@ -1,0 +1,201 @@
+/* The site filter (a tree with check boxes), used by the Command Center and the Network Explorer.
+   The colours are variables: the defaults are the Command Center's dark palette; a light page overrides them
+   (see .gis-toolbar in modules/gis/shared/gis.css). */
+.cc-sitetree {
+  position: relative;
+  --st-panel-bg: #0E1626;
+  --st-border: #1E293B;
+  --st-text: #CBD5E1;
+  --st-title: #94A3B8;
+  --st-link: #60A5FA;
+  --st-chip-bg: #1E293B;
+  --st-chip-text: #E2E8F0;
+  --st-muted: #64748B;
+  --st-hover: #121C30;
+  --st-checked: rgba(37, 99, 235, 0.18);
+  --st-btn-border: #334155;
+  --st-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --st-button-bg: #0E1626;
+  --st-button-text: #CBD5E1;
+}
+
+
+.cc-sitetree-button {
+  background: var(--st-button-bg);
+  border: 1px solid var(--st-border);
+  border-radius: 6px;
+  color: var(--st-button-text);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 140px;
+  justify-content: space-between;
+}
+
+.cc-sitetree-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  width: 320px;
+  background: var(--st-panel-bg);
+  border: 1px solid var(--st-border);
+  border-radius: 8px;
+  box-shadow: var(--st-shadow);
+  padding: 12px;
+  color: var(--st-text);
+  font-size: 12px;
+}
+
+.cc-sitetree-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.cc-sitetree-title {
+  font-weight: 700;
+  color: var(--st-title);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.cc-sitetree-link {
+  background: none;
+  border: none;
+  color: var(--st-link);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.cc-sitetree-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  max-height: 64px;
+  overflow-y: auto;
+}
+
+.cc-sitetree-chip {
+  background: var(--st-chip-bg);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--st-chip-text);
+}
+
+.cc-sitetree-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--st-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  color: var(--st-muted);
+}
+
+.cc-sitetree-search input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--st-chip-text);
+  font-size: 12px;
+}
+
+.cc-sitetree-clear {
+  background: none;
+  border: none;
+  color: var(--st-muted);
+  cursor: pointer;
+  display: inline-flex;
+}
+
+.cc-sitetree-list {
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid var(--st-border);
+  border-radius: 6px;
+  padding: 4px 0;
+}
+
+.cc-sitetree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  padding-right: 8px;
+}
+
+.cc-sitetree-row:hover {
+  background: var(--st-hover);
+}
+
+.cc-sitetree-row--checked {
+  background: var(--st-checked);
+}
+
+.cc-sitetree-arrow {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--st-title);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.cc-sitetree-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  cursor: pointer;
+}
+
+.cc-sitetree-empty {
+  padding: 12px;
+  color: var(--st-muted);
+  text-align: center;
+}
+
+.cc-sitetree-foot {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.cc-sitetree-reset {
+  background: transparent;
+  border: 1px solid var(--st-btn-border);
+  color: var(--st-text);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.cc-sitetree-apply {
+  background: #2563EB;
+  border: none;
+  color: #fff;
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
