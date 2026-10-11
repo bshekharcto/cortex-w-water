@@ -31,6 +31,13 @@ export function clearAuthState(): void {
   // Cached data belongs to the account that fetched it; never let the next
   // login on this browser see it.
   try {
+    // Saved Network Explorer data (IndexedDB), and the unscoped cache older versions left behind.
+    indexedDB.deleteDatabase('cortex_w_network_cache');
+    indexedDB.deleteDatabase('cortex_w_gis_db');
+  } catch {
+    // storage unavailable
+  }
+  try {
     Object.keys(localStorage)
       .filter((k) => k.startsWith(USER_DATA_PREFIX))
       .forEach((k) => localStorage.removeItem(k));

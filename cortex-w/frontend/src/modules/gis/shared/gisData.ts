@@ -49,7 +49,8 @@ export interface GisMeter {
   distanceMeters: number;
   rssi: number;
   snr: number;
-  status: 'active' | 'weak' | 'silent';
+  // 'active' | 'weak' | 'silent' from the older endpoints; the Network Explorer uses live / stale / silent / never
+  status: 'active' | 'weak' | 'silent' | 'live' | 'stale' | 'never';
   lastSeen: string;
   pipeDiameter: string;
   connectionType: string;
