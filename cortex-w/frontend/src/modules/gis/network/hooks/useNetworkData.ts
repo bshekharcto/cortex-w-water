@@ -17,6 +17,9 @@ export interface NetworkData {
   points: MeterPoint[];
   summary: NetMeterMapResponse['summary'] | null;
   coordinates: { status: CoordinatesStatus; fetchedAt: string | null } | null;
+  /** The gateways / the meter map of the current selection have arrived (or were restored from the saved copy). */
+  gatewaysReady: boolean;
+  metersReady: boolean;
   /** Which selection the data on screen belongs to (null until something is loaded or restored). */
   loadedSiteId: string | null;
   /** The newest frame among the meters in view: "data as of". */
@@ -98,7 +101,9 @@ export function useNetworkData(siteId: string): NetworkData {
       setIsLoading(false);
     });
     load(siteId, ctl.signal, true).finally(() => {
-      if (!restored) setIsLoading(false);
+      // a request that was cancelled (new selection, or React re-running the effect) must not end the loading state
+      // of the one that replaced it
+      if (!restored && !ctl.signal.aborted && siteRef.current === siteId) setIsLoading(false);
     });
     return () => ctl.abort();
   }, [siteId, load, tick]);
@@ -123,6 +128,8 @@ export function useNetworkData(siteId: string): NetworkData {
     summary: map?.summary ?? null,
     coordinates: map?.coordinates ?? null,
     latestFrameAt: map?.latestFrameAt ?? null,
+    gatewaysReady: gw !== null,
+    metersReady: map !== null,
     loadedSiteId,
     isLoading,
     isShowingSavedCopy,

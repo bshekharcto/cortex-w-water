@@ -67,6 +67,57 @@ function meterBadgeClass(s: NetMeterStatus): string {
   return s === 'live' ? 'cw-badge--green' : s === 'stale' ? 'cw-badge--orange' : s === 'silent' ? 'cw-badge--red' : 'cw-badge--muted';
 }
 
+/** What the map is waiting for, step by step, so a slow load never looks like a frozen page. */
+function MapLoadingOverlay({ steps }: { steps: Array<{ label: string; done: boolean }> }) {
+  return (
+    <div className="gis-loading-overlay" role="status" aria-live="polite">
+      <div className="gis-loading-card">
+        <div className="cw-spinner" />
+        <div className="gis-loading-title">Loading network data…</div>
+        <div className="gis-loading-steps">
+          {steps.map((st) => (
+            <div key={st.label} className={`gis-loading-step ${st.done ? 'gis-loading-step--done' : ''}`}>
+              <span className="gis-loading-dot" />
+              <span>{st.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SkeletonRows({ rows, cols }: { rows: number; cols: number }) {
+  return (
+    <>
+      {Array.from({ length: rows }, (_, r) => (
+        <tr key={r} aria-hidden="true">
+          {Array.from({ length: cols }, (_, c) => (
+            <td key={c}>
+              <span className="gis-skeleton" style={{ width: c === 1 ? 110 : c === 2 ? 130 : 60, height: 12 }} />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
+  );
+}
+
+function GatewayCardSkeletons({ count }: { count: number }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }} aria-hidden="true">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="gis-card-skeleton">
+          <span className="gis-skeleton" style={{ width: '55%', height: 16 }} />
+          {[70, 60, 80, 50].map((w, j) => (
+            <span key={j} className="gis-skeleton" style={{ width: `${w}%`, height: 11 }} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function NetworkExplorerPage() {
   const navigate = useNavigate();
   const apiKey = runtimeConfig.GOOGLE_MAPS_API_KEY;
@@ -634,6 +685,20 @@ export function NetworkExplorerPage() {
       <div className="gis-map-viewport" style={{ display: activeView === 'map' ? 'block' : 'none' }}>
         <div ref={mapContainerRef} className="gis-google-map-canvas" />
 
+        {/* Nothing to draw yet: say what is being waited for. Quiet background refreshes only show the thin bar. */}
+        {!loadError && !data.metersReady && !data.gatewaysReady && (data.isLoading || !isLoaded) && (
+          <MapLoadingOverlay
+            steps={[
+              { label: 'Map', done: isLoaded },
+              { label: 'Gateways', done: data.gatewaysReady },
+              { label: 'Meters and their status', done: data.metersReady },
+            ]}
+          />
+        )}
+        {!loadError && (data.metersReady || data.gatewaysReady) && (data.isLoading || data.isShowingSavedCopy) && !data.metersError && !data.gatewaysError && (
+          <div className="gis-loading-bar" role="progressbar" aria-label="Refreshing" />
+        )}
+
         <div className="gis-map-notices">
           {data.isShowingSavedCopy && !data.metersError && !data.gatewaysError && (
             <div className="gis-map-notice">Showing the copy saved on your last visit, refreshing…</div>
@@ -868,8 +933,8 @@ export function NetworkExplorerPage() {
               {tableTab === 'gateways'
                 ? `${filteredGateways.length} on the map, ${unplaced.length} not placed`
                 : totalMeters === 0
-                ? tableLoading ? 'Loading…' : 'No meters match'
-                : `Showing ${((tablePage - 1) * tablePageSize + 1).toLocaleString()}–${Math.min(tablePage * tablePageSize, totalMeters).toLocaleString()} of ${totalMeters.toLocaleString()} meters`}
+                ? tableLoading ? 'Loading meters…' : 'No meters match'
+                : `${tableLoading ? 'Updating… ' : ''}Showing ${((tablePage - 1) * tablePageSize + 1).toLocaleString()}–${Math.min(tablePage * tablePageSize, totalMeters).toLocaleString()} of ${totalMeters.toLocaleString()} meters`}
             </div>
           </div>
 
@@ -896,6 +961,7 @@ export function NetworkExplorerPage() {
                 </tr>
               </thead>
               <tbody>
+                {tableTab !== 'meters' && data.isLoading && gateways.length === 0 && <SkeletonRows rows={5} cols={10} />}
                 {tableTab !== 'meters' &&
                   filteredGateways.map((gw) => (
                     <tr
@@ -938,6 +1004,7 @@ export function NetworkExplorerPage() {
                     </tr>
                   ))}
 
+                {tableTab !== 'gateways' && tableLoading && !tableData && <SkeletonRows rows={10} cols={10} />}
                 {tableTab !== 'gateways' &&
                   tableData?.items.map((m) => {
                     const gw = m.gatewayId ? gatewayById.get(m.gatewayId) ?? null : null;
@@ -1008,8 +1075,9 @@ export function NetworkExplorerPage() {
             )}
           </div>
 
-          {gateways.length === 0 && unplaced.length === 0 && (
-            <div style={{ color: '#64748B', fontSize: 13 }}>{data.isLoading ? 'Loading…' : 'No gateways found for this selection.'}</div>
+          {gateways.length === 0 && unplaced.length === 0 && data.isLoading && <GatewayCardSkeletons count={6} />}
+          {gateways.length === 0 && unplaced.length === 0 && !data.isLoading && (
+            <div style={{ color: '#64748B', fontSize: 13 }}>No gateways found for this selection.</div>
           )}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
