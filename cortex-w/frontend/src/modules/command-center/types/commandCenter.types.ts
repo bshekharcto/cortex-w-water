@@ -1,5 +1,6 @@
 export type GatewayState = 'reporting' | 'degraded' | 'stale' | 'no-traffic' | 'never-observed';
-export type MeterState = 'live' | 'stale' | 'silent' | 'weak-rssi' | 'poor-snr' | 'multi-gw' | 'fcnt-gap' | 'gw-changed';
+/** How recently a meter reported: live (< 24 h), stale (< 48 h) or silent. */
+export type MeterState = 'live' | 'stale' | 'silent';
 export type GatewayTabType = 'METERS' | 'FRAMES' | 'TRAFFIC' | 'RADIO';
 export type TimeWindow = '1H' | '6H' | '24H' | '7D' | '30D' | 'CUSTOM';
 
@@ -80,10 +81,7 @@ export interface RawFrameItem {
   confirmed: boolean;
   adr: boolean;
   checksumStatus: string;
-  statusEvent: 'FRAME_RECEIVED' | 'WEAK_RSSI' | 'POOR_LINK' | 'MULTI_GW' | 'DEGRADED';
   statusByte?: number | null;
-  /** True when more than one gateway heard this frame. */
-  multiGateway?: boolean;
 }
 
 export interface NetworkKpiData {
@@ -94,7 +92,6 @@ export interface NetworkKpiData {
   framesReceived: number;
   framesTrend: string;
   lastFrameAge: string;
-  multiGatewayMeters: number;
   avgRssi: number;
   avgSnr: number;
 }

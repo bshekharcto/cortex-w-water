@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { pool } from '../db/pool.js';
+import { networkHealthThresholds as T } from '../config/networkHealth.js';
 
 export interface TelemetrySummary {
   dateRange: { fromDate: string; toDate: string; days: number };
@@ -13,7 +14,6 @@ export interface TelemetrySummary {
     framesReceived: number;
     framesTrend: string;
     lastFrameAge: string;
-    multiGatewayMeters: number;
     avgRssi: number;
     avgSnr: number;
     reverseFlowCount: number;
@@ -90,7 +90,7 @@ export const inWindow = (zone: string, from: string, to: string) =>
   `time >= (${from}::date)::timestamp AT TIME ZONE '${zone}' AND time < ((${to}::date + 1)::timestamp AT TIME ZONE '${zone}')`;
 
 const KNOWN_GATEWAY_DAYS = 30;                  // a gateway that sent a frame in this many days is "known"
-const STALE_GATEWAY_AFTER_MS = 6 * 60 * 60 * 1000;
+const STALE_GATEWAY_AFTER_MS = T.gatewayStaleMinutes * 60 * 1000; // 24 h: these meters report once a day (config/networkHealth.ts)
 const DEGRADED_AVG_RSSI = -105;
 const DEGRADED_AVG_SNR = -15;
 
@@ -118,32 +118,28 @@ export function dateRange(days: number, referenceDate?: string, custom?: DateWin
   return { fromDate: shiftDate(toDate, -(days - 1)), toDate };
 }
 
-export type MeterFilter = 'ALL' | 'LIVE' | 'STALE' | 'WEAK_RSSI' | 'POOR_SNR' | 'MULTI_GW';
+export type MeterFilter = 'ALL' | 'LIVE' | 'STALE';
 
-// The same limits the status chips use, so a filter and the chip on the row always agree.
+// The status of a meter is only how recently it reported: live (within 24 h) or stale. The filter below uses the same limit,
+// so a filter and the chip on the row always agree.
 const STALE_AFTER_MS = DAY_MS;
 export const WEAK_RSSI_DBM = -95;
 export const POOR_SNR_DB = -10;
 
-function meterStatusChips(m: { decoded_at: string; rssi: number; snr: number; gateway_count: number }): string[] {
-  const chips: string[] = [];
+function meterStatusChips(m: { decoded_at: string }): string[] {
   const stale = Date.now() - new Date(m.decoded_at).getTime() > STALE_AFTER_MS;
-  chips.push(stale ? 'stale' : 'live');
-  if (m.rssi < WEAK_RSSI_DBM) chips.push('weak-rssi');
-  if (m.snr < POOR_SNR_DB) chips.push('poor-snr');
-  if (m.gateway_count > 1) chips.push('multi-gw');
-  return chips;
+  return [stale ? 'stale' : 'live'];
 }
 
-// What a frame's link looks like: the same limits as the meter chips.
-function frameStatus(r: { rssi: number | null; snr: number | null; gateway_count: number | null }): string {
-  const weak = r.rssi != null && r.rssi < WEAK_RSSI_DBM;
-  const poorSnr = r.snr != null && r.snr < POOR_SNR_DB;
-  if (weak && poorSnr) return 'POOR_LINK';
-  if (weak) return 'WEAK_RSSI';
-  if (poorSnr) return 'DEGRADED';
-  if ((r.gateway_count ?? 1) > 1) return 'MULTI_GW';
-  return 'FRAME_RECEIVED';
+/** The status of a gateway from its newest frame and how it is doing: the labels the rail shows. */
+export function gatewayFreshnessStatus(
+  g: { frameCount: number; latestDecodedAt: string | Date | null; avgRssi: number | null; avgSnr: number | null },
+  now: number = Date.now()
+): 'reporting' | 'degraded' | 'stale' | 'no-traffic' {
+  if (g.frameCount === 0 || g.latestDecodedAt == null) return 'no-traffic';
+  if (now - new Date(g.latestDecodedAt).getTime() > STALE_GATEWAY_AFTER_MS) return 'stale';
+  if ((g.avgRssi != null && g.avgRssi < DEGRADED_AVG_RSSI) || (g.avgSnr != null && g.avgSnr < DEGRADED_AVG_SNR)) return 'degraded';
+  return 'reporting';
 }
 
 /** A stored row as the Command Center frame item (recent frames, live feed). */
@@ -165,7 +161,6 @@ export function toFrameItem(r: any, id: string) {
     confirmed: r.confirmed,
     adr: r.adr,
     checksumStatus: r.checksum_status,
-    statusEvent: frameStatus(r),
     localTime: r.local_time ?? null, // decodedAt as clock time at the site: "2026-10-08 17:38:01"
   };
 }
@@ -204,14 +199,11 @@ function toMeterItem(m: any, gatewayId: string) {
   };
 }
 
-// Each filter as a SQL condition on the per-meter row built in getGatewayMeters (same limits as meterStatusChips).
+// Each filter as a SQL condition on the per-meter row built in getGatewayMeters (same limit as meterStatusChips).
 const FILTER_SQL: Record<MeterFilter, string> = {
   ALL: 'TRUE',
   LIVE: `decoded_at >= NOW() - INTERVAL '24 hours'`,
   STALE: `decoded_at < NOW() - INTERVAL '24 hours'`,
-  WEAK_RSSI: `rssi < ${WEAK_RSSI_DBM}`,
-  POOR_SNR: `snr < ${POOR_SNR_DB}`,
-  MULTI_GW: 'gateway_count > 1',
 };
 
 // Limits a query to the meters of some sites; `param` is the placeholder holding the site ids (a bigint[]).
@@ -397,16 +389,6 @@ export async function getPostgresAggregatedSummary(
   );
   const configuredMeters = configuredRes.rows[0]?.count || (kpiRow.unique_meters_seen ?? 0);
 
-  // 4. Multi-Gateway Meters
-  const multiGwRes = await pool.query(`
-    SELECT COUNT(*)::int as count FROM (
-      SELECT meter_id FROM water_meter_readings_v2
-      WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${SITE}
-      GROUP BY meter_id HAVING COUNT(DISTINCT gateway_id) > 1
-    ) sub
-  `, RANGE_ARGS);
-  const multiGatewayMeters = multiGwRes.rows[0]?.count ?? 0;
-
   // 5. Gateways: every gateway heard in the last KNOWN_GATEWAY_DAYS days, with its frames in the window and in the
   //    window just before it (for the trend). One that sent nothing in the window shows as "no traffic".
   const prevToDate = shiftDate(fromDate, -1);
@@ -430,10 +412,7 @@ export async function getPostgresAggregatedSummary(
   `, [fromDate, toDate, prevFromDate, prevToDate, knownFromDate, ...(siteIds ? [siteIds] : [])]);
 
   const gateways = gwRes.rows.map((r: any) => {
-    let status: 'reporting' | 'degraded' | 'stale' | 'no-traffic' = 'reporting';
-    if (r.frame_count === 0) status = 'no-traffic';
-    else if (Date.now() - new Date(r.latest_decoded_at).getTime() > STALE_GATEWAY_AFTER_MS) status = 'stale';
-    else if (r.avg_rssi < DEGRADED_AVG_RSSI || r.avg_snr < DEGRADED_AVG_SNR) status = 'degraded';
+    const status = gatewayFreshnessStatus({ frameCount: r.frame_count, latestDecodedAt: r.latest_decoded_at, avgRssi: r.avg_rssi, avgSnr: r.avg_snr });
 
     return {
       gatewayId: r.gateway_id,
@@ -512,7 +491,6 @@ export async function getPostgresAggregatedSummary(
       framesReceived: kpiRow.frames_received ?? 0,
       framesTrend: trendText(kpiRow.frames_received ?? 0, previousFrames, days),
       lastFrameAge: formatRelativeTime(kpiRow.latest_frame_at),
-      multiGatewayMeters,
       avgRssi: kpiRow.avg_rssi ?? -90,
       avgSnr: kpiRow.avg_snr ?? -10,
       reverseFlowCount: kpiRow.reverse_flow_count ?? 0,

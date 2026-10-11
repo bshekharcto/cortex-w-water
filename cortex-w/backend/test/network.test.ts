@@ -21,6 +21,7 @@ for (const v of ['TEST_CLIENT_A_USER', 'TEST_CLIENT_A_PASS', 'TEST_CLIENT_B_USER
 
 const { authMiddleware, requireAuth } = await import('../src/middleware/auth.js');
 const { default: networkRoutes } = await import('../src/routes/network.js');
+const { default: gisRoutes } = await import('../src/routes/gis.js');
 const { pool } = await import('../src/db/pool.js');
 const { config } = await import('../src/config/env.js');
 
@@ -29,6 +30,7 @@ app.use(compression());
 app.use(authMiddleware);
 app.use(requireAuth);
 app.use('/api/network', networkRoutes);
+app.use('/api/gis', gisRoutes);
 const server = app.listen(0);
 const BASE = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
@@ -156,6 +158,31 @@ try {
   check("B's gateway stats count only B's meters", bTotalHeard <= mb.body.summary.total - mb.body.summary.never, `${bTotalHeard} <= ${mb.body.summary.total - mb.body.summary.never}`);
   const pb = await get('/api/network/meters?siteId=ALL&limit=200', B.token);
   check('B table contains none of A meters', pb.body.items.every((i: any) => !aIds.has(i.meterId)));
+
+  // --- meter detail (the Meter 360 drawer) ---
+  const liveRow = map.rows.find((r: any[]) => r[4] === 0) ?? map.rows.find((r: any[]) => r[4] === 1);
+  const d = await get(`/api/gis/meter-detail/${liveRow[1]}?meterId=${liveRow[0]}`, A.token);
+  check('meter detail 200', d.status === 200, `${d.ms} ms`);
+  const det = d.body;
+  check('detail is for the asked meter', det?.meterId === liveRow[0] && det?.assetId === liveRow[1]);
+  const days = det?.dailyReadings ?? [];
+  check('days are real: at most 10, oldest first, nothing padded', days.length <= 10 && days.every((x: any, i: number) => x.date && (i === 0 || days[i - 1].date < x.date)), `${days.length} days`);
+  check('no placeholder days (no zero rows without a date)', days.every((x: any) => /^\d{4}-\d{2}-\d{2}$/.test(x.date)));
+  check('days carry only known fields (no invented flow, packets or flags)', days.every((x: any) => !('minFlowLph' in x) && !('uplinksReceived' in x) && !('flag' in x)));
+  check('latest reading and time come from the database', det.latestReading != null && !!det.lastSeen, `reading ${det.latestReading}`);
+  check('unknown values are null, not stand-ins', det.consumer.status === null || typeof det.consumer.status === 'string');
+  check('upstream parts that failed are named, not hidden', Array.isArray(det.unavailable));
+  const direct = await pool.query(`SELECT day::text AS day, used_kl FROM water_meter_daily WHERE meter_id = $1 ORDER BY day DESC LIMIT 10`, [liveRow[0]]);
+  check('daily rows equal water_meter_daily (what the Dashboard reads)', days.length === direct.rows.length && days.every((x: any) => direct.rows.some((r: any) => r.day === x.date && Math.round(Number(r.used_kl) * 1000) === x.consumptionL)));
+  const core = await get(`/api/gis/meter-detail/${liveRow[1]}?meterId=${liveRow[0]}&core=1`, A.token);
+  check('core detail is database-only, flagged partial and fast (<1.5 s)', core.status === 200 && core.body.partial === true && core.body.photos.length === 0 && core.body.dailyReadings.length === days.length && core.ms < 1500, `${core.ms} ms`);
+  const noMeter = await get(`/api/gis/meter-detail/${liveRow[1]}`, A.token);
+  check('detail without meterId resolves from the database', noMeter.status === 200 && noMeter.body.meterId === liveRow[0]);
+  const bRow = mb.body.rows[0];
+  check("A asking for B's meter detail -> 404", (await get(`/api/gis/meter-detail/${bRow[1]}`, A.token)).status === 404);
+  check("A's asset with B's meter id -> 404", (await get(`/api/gis/meter-detail/${liveRow[1]}?meterId=${bRow[0]}`, A.token)).status === 404);
+  check('non-numeric asset id -> 404', (await get('/api/gis/meter-detail/abc', A.token)).status === 404);
+  check('no token -> 401', (await get(`/api/gis/meter-detail/${liveRow[1]}`)).status === 401);
 
   console.log(`\n${pass} passed, ${fail} failed`);
 } catch (err) {

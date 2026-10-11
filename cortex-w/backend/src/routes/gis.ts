@@ -390,220 +390,153 @@ router.get('/performance', async (req, res) => {
 });
 
 // GET /api/gis/meter-detail/:assetId
-// Fetches composite meter details across Cognecto APIs:
-// 1. GET /api/asset/:assetId (Consumer profile, phone, address, ward)
-// 2. GET /api/water/latest-meter-data/:assetId (Latest reading, date, consumption)
-// 3. GET /api/household/imei-history?assetId=:assetId (Old meter swap history & readings)
-// 4. GET /api/water/meter-image/:assetId (Installation proof photos on AWS S3)
-// 5. GET /api/billing/latest-bill/:assetId (Latest generated water bill)
-// 6. POST /api/water/household-meter-details (Consumer & meter replacement drilldown)
+// One meter for the Meter 360 drawer. Everything about the meter's readings comes from Postgres, the same tables and rules
+// as the Dashboard (water_meter_daily for the days, water_meter_latest for the newest frame, the site's own time zone for
+// "yesterday" and "this month"). The beta API is asked only for what Postgres does not hold: contact details, photos, the
+// replacement history and the latest bill. If one of those calls fails the rest is still returned and the part is named in
+// `unavailable`; a value nobody knows is null, never a stand-in. With ?core=1 the beta API is not called at all: the answer
+// comes from Postgres alone (fast), and `partial: true` says the beta parts are still to be asked for.
 router.get('/meter-detail/:assetId', async (req, res) => {
   try {
-    const assetId = req.params.assetId;
-    const meterId = (req.query.meterId as string) || '';
-    // The asset must be one of this client's own meters, and so must any meterId
-    // passed with it: cog-core-api's household-meter-details lookup is not
-    // scoped to the caller, so an own assetId with someone else's meterId
-    // would otherwise return their consumer details. 404, not 403, so ids
-    // can't be probed.
-    if (!requireClient().unscoped) {
-      const owns = Number.isInteger(Number(assetId))
-        ? await pool.query(
-            `SELECT 1 FROM meter_metadata WHERE tenant_id = ANY($1::bigint[]) AND asset_id = $2 AND ($3 = '' OR meter_id = $3)`,
-            [clientTenantIds(), Number(assetId), meterId]
-          )
-        : { rowCount: 0 };
-      if (owns.rowCount === 0) return res.status(404).json({ error: 'Meter not found' });
-    }
-    const authHeader = req.headers.authorization;
-    const headers: Record<string, string> = {};
-    const token = await getAuthToken(authHeader);
-    if (token) headers['Authorization'] = token;
+    const assetId = Number(req.params.assetId);
+    const meterIdParam = (req.query.meterId as string) || '';
+    if (!Number.isInteger(assetId)) return res.status(404).json({ error: 'Meter not found' });
 
+    // The meter must be one of this client's own, and so must any meterId passed with it: the beta lookups below are not
+    // scoped to the caller, so an own assetId with someone else's meterId would otherwise return their consumer details.
+    // 404, not 403, so ids can't be probed.
+    const metaRes = await pool.query(
+      `SELECT m.meter_id, m.asset_id, m.site_id, m.consumer_name, m.household_custom_id, m.address, m.ward,
+              COALESCE(s.tz_sql, 'UTC') AS tz,
+              l.decoded_at, l.forward_flow_kl, l.rssi, l.snr, l.gateway_id, l.dev_eui
+         FROM meter_metadata m
+         LEFT JOIN site_metadata s ON s.site_id = m.site_id
+         LEFT JOIN water_meter_latest l ON l.meter_id = m.meter_id
+        WHERE m.asset_id = $1
+          AND ($2::bigint[] IS NULL OR m.tenant_id = ANY($2::bigint[]))
+          AND ($3 = '' OR m.meter_id = $3)
+        LIMIT 1`,
+      [assetId, clientTenantIds(), meterIdParam]
+    );
+    const meta = metaRes.rows[0];
+    if (!meta) return res.status(404).json({ error: 'Meter not found' });
+    const meterId: string = meta.meter_id;
+
+    const token = await getAuthToken(req.headers.authorization);
+    const headers: Record<string, string> = token ? { Authorization: token } : {};
     const today = localDate(0);
     const last30Days = localDate(-30);
 
-    // Fetch live data from upstream Cognecto endpoints in parallel
-    const [assetRes, latestRes, imeiRes, imagesRes, billRes, householdDetailRes] = await Promise.all([
-      proxyUpstream('GET', `/api/asset/${assetId}`, { headers }).catch(() => ({ status: 404, data: null })),
-      proxyUpstream('GET', `/api/water/latest-meter-data/${assetId}`, { headers }).catch(() => ({ status: 404, data: null })),
-      proxyUpstream('GET', `/api/household/imei-history`, { query: { assetId }, headers }).catch(() => ({ status: 404, data: null })),
-      proxyUpstream('GET', `/api/water/meter-image/${assetId}`, { headers }).catch(() => ({ status: 404, data: null })),
-      proxyUpstream('GET', `/api/billing/latest-bill/${assetId}`, { headers }).catch(() => ({ status: 404, data: null })),
-      meterId
-        ? proxyUpstream('POST', `/api/water/household-meter-details`, {
-            body: { searchType: 'METER_NUMBER', value: meterId, fromDate: last30Days, toDate: today },
-            headers,
-          }).catch(() => ({ status: 404, data: null }))
-        : Promise.resolve({ status: 404, data: null }),
+    // A call that threw or got a server error is "unavailable"; a 404/204 just means there is nothing to show.
+    const unavailable: string[] = [];
+    const coreOnly = req.query.core === '1';
+    const call = async (name: string, run: () => Promise<{ status: number; data: unknown }>) => {
+      if (coreOnly) return null;
+      try {
+        const r = await run();
+        if (r.status >= 500) unavailable.push(name);
+        return r.status >= 200 && r.status < 300 ? r.data : null;
+      } catch {
+        unavailable.push(name);
+        return null;
+      }
+    };
+
+    const [asset, imeiData, imagesData, latestBill, hhDetail, daily, summary, frame] = await Promise.all([
+      call('consumer', () => proxyUpstream('GET', `/api/asset/${assetId}`, { headers })) as Promise<any>,
+      call('replacement history', () => proxyUpstream('GET', `/api/household/imei-history`, { query: { assetId: String(assetId) }, headers })),
+      call('photos', () => proxyUpstream('GET', `/api/water/meter-image/${assetId}`, { headers })),
+      call('bill', () => proxyUpstream('GET', `/api/billing/latest-bill/${assetId}`, { headers })) as Promise<any>,
+      call('consumer', () =>
+        proxyUpstream('POST', `/api/water/household-meter-details`, {
+          body: { searchType: 'METER_NUMBER', value: meterId, fromDate: last30Days, toDate: today },
+          headers,
+        })
+      ) as Promise<any>,
+      // the last 10 days that have a reading (day as text: a DATE read through a JS Date shifts a day in time zones east of UTC)
+      pool.query(
+        `SELECT day::text AS day, reading_kl, used_kl FROM water_meter_daily WHERE meter_id = $1 ORDER BY day DESC LIMIT 10`,
+        [meterId]
+      ),
+      // yesterday and this month at the meter's own site, same rules as the Dashboard
+      pool.query(
+        `WITH t AS (SELECT (NOW() AT TIME ZONE $2)::date AS today)
+         SELECT (SELECT w.used_kl FROM water_meter_daily w, t WHERE w.meter_id = $1 AND w.day = t.today - 1)           AS yesterday_kl,
+                (SELECT SUM(w.used_kl) FROM water_meter_daily w, t WHERE w.meter_id = $1 AND w.day >= date_trunc('month', t.today)::date) AS month_kl`,
+        [meterId, meta.tz]
+      ),
+      // the newest live frame's radio settings (the one thing water_meter_latest does not keep)
+      pool.query(
+        `SELECT time, frequency, dr, adr, f_cnt FROM water_meter_readings_v2 WHERE meter_id = $1 AND is_history = false ORDER BY time DESC LIMIT 1`,
+        [meterId]
+      ),
     ]);
 
-    const asset: any = assetRes.data;
-    const latest: any = latestRes.data;
-    const imeiHistories: any[] = Array.isArray(imeiRes.data) ? imeiRes.data : [];
-    const images: any[] = Array.isArray(imagesRes.data) ? imagesRes.data : [];
-    const latestBill: any = billRes.data;
-    const hhDetail: any = householdDetailRes.data;
+    const asNum = (v: unknown): number | null => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+    const imeiHistories: any[] = Array.isArray(imeiData) ? imeiData : [];
+    const images: any[] = Array.isArray(imagesData) ? imagesData : [];
 
-    // Collate S3 photo attachments from installation records and meter-swap history
+    // Photo attachments from installation records and meter-swap history
     const photos: Array<{ documentId?: number; name: string; category: string; url: string; uploadDate?: string }> = [];
     images.forEach((img: any) => {
       if (img.s3BucketURL) {
-        photos.push({
-          documentId: img.documentId,
-          name: img.name,
-          category: img.category || 'NEW_METER_DOCUMENT',
-          url: img.s3BucketURL,
-          uploadDate: img.uploadDateTime,
-        });
+        photos.push({ documentId: img.documentId, name: img.name, category: img.category || 'NEW_METER_DOCUMENT', url: img.s3BucketURL, uploadDate: img.uploadDateTime });
       }
     });
-
     imeiHistories.forEach((ih: any) => {
       if (Array.isArray(ih.attachments)) {
         ih.attachments.forEach((att: any) => {
           if (att.s3BucketURL && !photos.some((p) => p.url === att.s3BucketURL)) {
-            photos.push({
-              documentId: att.documentId,
-              name: att.name,
-              category: att.category || 'OLD_METER_DOCUMENT',
-              url: att.s3BucketURL,
-              uploadDate: att.uploadDateTime,
-            });
+            photos.push({ documentId: att.documentId, name: att.name, category: att.category || 'OLD_METER_DOCUMENT', url: att.s3BucketURL, uploadDate: att.uploadDateTime });
           }
         });
       }
     });
-
-    // Extract meter swap / replacement history
     const replacement = imeiHistories.find((ih: any) => ih.oldImeiNumber && ih.oldImeiNumber !== ih.newImeiNumber);
 
-    // Real last-10-unique-days readings from our own telemetry store (same
-    // proven pattern as households.ts/billing.ts) — never fabricated.
-    let dailyReadings: any[] = [];
-    const meterIdForReadings = latest?.meterId || meterId;
-    if (meterIdForReadings) {
-      try {
-        // The device sends several retry packets per day under the same
-        // date_key with an incrementing fcnt, and some of those retries
-        // decode to a garbled, lower reading than earlier packets the same
-        // day (confirmed: a cumulative totalizer can't legitimately drop
-        // mid-day). Ordering by forward_flow_kl DESC before time DESC
-        // picks the highest (correct) reading per day instead of whichever
-        // packet happened to arrive last — verified against a known-correct
-        // reference for meter 0024005170 across 10 days.
-        const readingsRes = await pool.query(
-          `SELECT DISTINCT ON (date_key) date_key, time, forward_flow_kl
-           FROM water_meter_readings_v2
-           WHERE meter_id = $1
-           ORDER BY date_key DESC, forward_flow_kl DESC, time DESC
-           LIMIT 10`,
-          [meterIdForReadings]
-        );
-        const realRows = readingsRes.rows.reverse();
-        dailyReadings = realRows.map((r: any, idx: number) => {
-          const readingKl = Number(r.forward_flow_kl) || 0;
-          const prevReadingKl = idx > 0 ? Number(realRows[idx - 1].forward_flow_kl) || 0 : readingKl;
-          const consKl = Math.max(0, readingKl - prevReadingKl);
-          const consL = Math.round(consKl * 1000);
-          const dateStr = new Date(r.time).toISOString();
-          return {
-            date: dateStr.split('T')[0],
-            shortDate: dateStr.slice(5, 10),
-            readingM3: Number(readingKl.toFixed(3)),
-            consumptionL: consL,
-            consumptionM3: Number(consKl.toFixed(3)),
-            minFlowLph: null,
-            maxFlowLph: null,
-            uplinksReceived: null,
-            uplinksExpected: null,
-            flag: 'Normal',
-          };
-        });
-      } catch (err: any) {
-        console.warn('[gis] Failed to fetch real meter readings:', err.message);
-      }
-    }
-    while (dailyReadings.length < 10) {
-      dailyReadings.unshift({
-        date: null,
-        shortDate: '--',
-        readingM3: 0,
-        consumptionL: 0,
-        consumptionM3: 0,
-        minFlowLph: null,
-        maxFlowLph: null,
-        uplinksReceived: null,
-        uplinksExpected: null,
-        flag: 'No Data',
-      });
-    }
+    // Oldest first, only days that exist: nothing is padded to ten
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const dailyReadings = [...daily.rows].reverse().map((r: any) => {
+      const [, mm, dd] = String(r.day).split('-');
+      const usedKl = Number(r.used_kl) || 0;
+      return {
+        date: String(r.day),
+        shortDate: `${MONTHS[Number(mm) - 1] ?? mm} ${dd}`,
+        readingM3: Number((Number(r.reading_kl) || 0).toFixed(3)),
+        consumptionL: Math.round(usedKl * 1000),
+        consumptionM3: Number(usedKl.toFixed(3)),
+      };
+    });
 
-    // "Yesterday's usage" from the SAME real per-day data as the chart above,
-    // not the separate upstream `/latest-meter-data` endpoint — that endpoint's
-    // `consumption` field doesn't reliably line up with calendar-day boundaries
-    // and disagreed with the real daily readings in practice. If our own
-    // telemetry store has a reading dated yesterday, that's authoritative;
-    // otherwise fall back to the upstream field rather than fabricating one.
-    const yesterdayIso = localDate(-1);
-    const yesterdayRow = dailyReadings.find((r) => r.date === yesterdayIso);
-    const yesterdayConsumptionM3 = yesterdayRow ? yesterdayRow.consumptionM3 : (latest?.consumption ?? null);
-
-    // Real month-to-date consumption, computed directly from water_meter_readings_v2
-    // (the daily/monthly rollup tables exist but nothing populates them yet —
-    // see [[production-telemetry-schema-and-ingestion]] — so this sums actual
-    // day-to-day deltas instead of reading from an always-empty summary table).
-    let monthToDateM3: number | null = null;
-    if (meterIdForReadings) {
-      try {
-        const monthRes = await pool.query(
-          `WITH readings AS (
-             SELECT DISTINCT ON (date_key) date_key, date_key AS day, forward_flow_kl
-             FROM water_meter_readings_v2
-             WHERE meter_id = $1
-               AND date_key::date >= (date_trunc('month', $2::date)::date - INTERVAL '1 day')
-             -- same-day retry packets can decode to a garbled lower reading
-             -- than an earlier packet that day; take the highest (correct)
-             -- reading per day, not just whichever arrived last.
-             ORDER BY date_key, forward_flow_kl DESC, time DESC
-           ),
-           deltas AS (
-             SELECT day, forward_flow_kl - LAG(forward_flow_kl) OVER (ORDER BY day) AS delta_kl
-             FROM readings
-           )
-           SELECT COALESCE(SUM(GREATEST(delta_kl, 0)), 0)::numeric AS month_kl
-           FROM deltas
-           WHERE day >= date_trunc('month', $2::date)::date`,
-          [meterIdForReadings, localDate(0)]
-        );
-        monthToDateM3 = monthRes.rows[0] ? Number(Number(monthRes.rows[0].month_kl).toFixed(3)) : null;
-      } catch (err: any) {
-        console.warn('[gis] Failed to compute month-to-date consumption:', err.message);
-      }
-    }
+    const yesterdayKl = asNum(summary.rows[0]?.yesterday_kl);
+    const monthKl = asNum(summary.rows[0]?.month_kl);
+    const f = frame.rows[0];
 
     res.json({
-      assetId: Number(assetId),
-      meterId: latest?.meterId || asset?.imeiNumber || meterId,
-      assetName: asset?.name || meterId,
-      status: asset?.status || 'ACTIVE',
-      latestReading: latest?.currentReading ?? null,
-      readingDate: latest?.date || null,
-      consumption: yesterdayConsumptionM3 ?? 0,
-      monthToDateM3,
-      signalRssi: latest?.rssi ?? null,
-      signalSnr: latest?.snr ?? null,
-      lastSeen: latest?.lastSeen || asset?.createdDate || null,
+      assetId,
+      meterId,
+      assetName: asset?.name ?? null,
+      status: asset?.status ?? null,
+      latestReading: asNum(meta.forward_flow_kl),
+      readingDate: meta.decoded_at ? new Date(meta.decoded_at).toISOString() : null,
+      consumption: yesterdayKl == null ? null : Number(yesterdayKl.toFixed(3)),
+      monthToDateM3: monthKl == null ? null : Number(monthKl.toFixed(3)),
+      signalRssi: asNum(meta.rssi),
+      signalSnr: asNum(meta.snr),
+      lastSeen: meta.decoded_at ? new Date(meta.decoded_at).toISOString() : null,
+      gatewayId: meta.gateway_id ? String(meta.gateway_id).toLowerCase() : null,
+      devEui: meta.dev_eui ?? null,
+      lastFrame: f ? { time: new Date(f.time).toISOString(), frequencyHz: asNum(f.frequency), dataRate: asNum(f.dr), adr: f.adr ?? null, fCnt: asNum(f.f_cnt) } : null,
       consumer: {
-        id: asset?.household?.id || null,
-        customId: asset?.household?.customId || hhDetail?.consumerId || null,
-        name: asset?.household?.name || hhDetail?.consumerName || 'Registered Consumer',
-        mobile: asset?.household?.mobile || null,
-        location: asset?.household?.location || hhDetail?.address || null,
-        ward: asset?.household?.ward || null,
-        status: asset?.household?.status || 'ACTIVE',
-        registrationDate: asset?.household?.registrationDate || asset?.createdDate || null,
-        siteName: asset?.siteName || hhDetail?.siteName || null,
+        id: asset?.household?.id ?? null,
+        customId: asset?.household?.customId ?? hhDetail?.consumerId ?? meta.household_custom_id ?? null,
+        name: asset?.household?.name ?? hhDetail?.consumerName ?? meta.consumer_name ?? null,
+        mobile: asset?.household?.mobile ?? null,
+        location: asset?.household?.location ?? hhDetail?.address ?? meta.address ?? null,
+        ward: asset?.household?.ward ?? meta.ward ?? null,
+        status: asset?.household?.status ?? null,
+        registrationDate: asset?.household?.registrationDate ?? asset?.createdDate ?? null,
+        siteName: asset?.siteName ?? hhDetail?.siteName ?? null,
       },
       replacement: replacement
         ? {
@@ -611,13 +544,15 @@ router.get('/meter-detail/:assetId', async (req, res) => {
             oldMeterReading: replacement.oldMeterReading,
             newMeterNumber: replacement.newImeiNumber,
             newMeterReading: replacement.newMeterReading,
-            date: replacement.uninstalledDate,
-            status: replacement.status || 'SUCCESSFUL',
+            date: replacement.uninstalledDate ?? null,
+            status: replacement.status ?? null,
           }
         : null,
       photos,
-      latestBill,
+      latestBill: latestBill ?? null,
       dailyReadings,
+      partial: coreOnly,
+      unavailable: [...new Set(unavailable)],
     });
   } catch (err: any) {
     console.error('[gis] Error fetching meter detail:', err.message);

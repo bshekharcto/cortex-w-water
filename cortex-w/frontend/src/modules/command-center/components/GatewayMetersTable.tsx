@@ -39,9 +39,6 @@ export function GatewayMetersTable({
           { key: 'ALL', label: 'All' },
           { key: 'LIVE', label: 'Live' },
           { key: 'STALE', label: 'Stale' },
-          { key: 'WEAK_RSSI', label: 'Weak signal' },
-          { key: 'POOR_SNR', label: 'Noisy' },
-          { key: 'MULTI_GW', label: 'Multi-Gateway' },
         ].map((f) => (
           <button
             key={f.key}

@@ -131,31 +131,6 @@ export function MeterInspector({ meter, onClose, onViewFrames }: Props) {
         </div>
       </div>
 
-      {/* Diagnostics */}
-      <div className="cc-inspector-card">
-        <div className="cc-inspector-card-title">RF & FLOW DIAGNOSTICS</div>
-        <div className="cc-diag-chips">
-          {meter.otherGatewaysCount > 0 ? (
-            <span className="cc-diag-chip cc-diag-chip--info">
-              Multi-Gateway Reception (+{meter.otherGatewaysCount})
-            </span>
-          ) : (
-            <span className="cc-diag-chip cc-diag-chip--mute">Single Gateway Reach</span>
-          )}
-          {meter.lastRssi >= -95 ? (
-            <span className="cc-diag-chip cc-diag-chip--good">Strong Signal Link</span>
-          ) : (
-            <span className="cc-diag-chip cc-diag-chip--warn">Weak RSSI Alert</span>
-          )}
-          {meter.lastSnr >= 0 ? (
-            <span className="cc-diag-chip cc-diag-chip--good">Clean RF SNR</span>
-          ) : (
-            <span className="cc-diag-chip cc-diag-chip--warn">Marginal RF Noise</span>
-          )}
-          <span className="cc-diag-chip cc-diag-chip--good">Normal FCnt Progression</span>
-        </div>
-      </div>
-
       {onViewFrames && (
         <button className="cw-button-secondary cc-inspector-wide-btn" onClick={() => onViewFrames(meter)}>
           View all frames from this meter

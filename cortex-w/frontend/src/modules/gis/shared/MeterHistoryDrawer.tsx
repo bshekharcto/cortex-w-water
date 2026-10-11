@@ -19,8 +19,9 @@ import {
   RefreshCw,
   ShieldCheck,
 } from 'lucide-react';
-import { GisMeter, MeterDailyReading, MeterAlert } from './gisData';
-import { mapApi, LiveMeterDetailResponse } from '@/services/api/mapApi';
+import { GisMeter, MeterAlert } from './gisData';
+import { mapApi, LiveMeterDetailResponse, MeterDayRow } from '@/services/api/mapApi';
+import { consumerHeadline, csvCell, formatMHz, statusBadge, summarizeDays } from './meterDetailModel';
 
 interface DrawerErrorBoundaryProps {
   children: ReactNode;
@@ -92,17 +93,21 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'readings' | 'alerts' | 'telemetry' | 'consumer'>('readings');
   const [isWide, setIsWide] = useState<boolean>(false);
-  const [hoveredDay, setHoveredDay] = useState<MeterDailyReading | null>(null);
+  const [hoveredDay, setHoveredDay] = useState<MeterDayRow | null>(null);
 
   // Live Cognecto API binding state
   const [liveDetail, setLiveDetail] = useState<LiveMeterDetailResponse | null>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState<boolean>(true);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [previewPhoto, setPreviewPhoto] = useState<{ url: string; name: string; category: string } | null>(null);
 
-  // Fetch composite meter details on mount or meter selection change
+  // Two steps: the database part (readings, signal, radio) arrives first and fills the drawer; the beta API parts
+  // (contact, photos, bill, replacement) follow and are merged in.
   useEffect(() => {
     let isCancelled = false;
     setIsLoadingDetail(true);
+    setDetailError(null);
+    setLiveDetail(null);
 
     const assetId = meter.assetId || (meter as any).id;
     if (!assetId) {
@@ -111,14 +116,23 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
     }
 
     mapApi
+      .getMeterDetail(assetId, meter.meterId, { core: true })
+      .then((res) => {
+        if (!isCancelled && res) setLiveDetail((cur) => cur ?? res);
+      })
+      .catch((err) => {
+        if (!isCancelled) setDetailError((err as { operatorMessage?: string })?.operatorMessage || 'Could not load the details of this meter.');
+      });
+    mapApi
       .getMeterDetail(assetId, meter.meterId)
       .then((res) => {
         if (!isCancelled && res) {
           setLiveDetail(res);
+          setDetailError(null);
         }
       })
       .catch((err) => {
-        console.warn('[gis] Failed to fetch live meter detail, falling back to local dataset:', err);
+        console.warn('[gis] Failed to fetch meter detail:', err);
       })
       .finally(() => {
         if (!isCancelled) setIsLoadingDetail(false);
@@ -129,122 +143,49 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
     };
   }, [meter.assetId, meter.meterId]);
 
-  // Derived display fields prioritizing live Cognecto backend data.
-  // Every fallback below is an honest "unknown" (null/0/'—'), never a
-  // fabricated plausible-looking number.
-  const consumerName = liveDetail?.consumer?.name || meter.householdName || 'Consumer';
+  // What is shown: the server's answer first, then what the page that opened the drawer already knew. Anything
+  // nobody knows stays null and is shown as a dash, never a stand-in value.
+  const consumerName = liveDetail?.consumer?.name || meter.householdName || null;
   const consumerId = liveDetail?.consumer?.customId || meter.householdId || null;
   const consumerMobile = liveDetail?.consumer?.mobile || null;
   const consumerAddress = liveDetail?.consumer?.location || meter.locality || null;
   const consumerWard = liveDetail?.consumer?.ward || null;
-  const currentReadingM3 =
-    liveDetail?.latestReading !== null && liveDetail?.latestReading !== undefined
-      ? liveDetail.latestReading
-      : meter.currentReadingM3 ?? null;
-  const lastSeenDate = liveDetail?.readingDate || liveDetail?.lastSeen || meter.lastSeen || null;
+  const currentReadingM3 = liveDetail?.latestReading ?? meter.currentReadingM3 ?? null;
+  const lastSeenDate = liveDetail?.lastSeen || liveDetail?.readingDate || meter.lastSeen || null;
+  const fmtDateTime = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : '—');
 
-  const yesterdayL =
-    liveDetail?.consumption !== undefined && liveDetail?.consumption !== null
-      ? Math.round(liveDetail.consumption * 1000)
-      : (meter.yesterdayConsumptionL ?? 0);
-  const yesterdayM3 = Number((yesterdayL / 1000).toFixed(3));
-  // Real month-to-date total from the backend (summed from actual telemetry
-  // deltas) — never the old hardcoded per-meter constant.
+  const yesterdayL: number | null = liveDetail
+    ? liveDetail.consumption == null
+      ? null
+      : Math.round(liveDetail.consumption * 1000)
+    : meter.yesterdayConsumptionL ?? null;
+  const yesterdayM3 = yesterdayL == null ? null : Number((yesterdayL / 1000).toFixed(3));
   const monthM3 = liveDetail?.monthToDateM3 ?? meter.monthConsumptionM3 ?? null;
-  // Use the REAL fetched bill (from /api/billing/latest-bill/:assetId) —
-  // never fabricate an estimate from a made-up rate.
+  // The latest bill is the real one from the beta API; nothing is estimated from an assumed rate.
   const realLatestBill = liveDetail?.latestBill;
   const estimatedBill = realLatestBill?.totalAmount ?? realLatestBill?.amount ?? null;
 
-  // Real last-10-unique-days readings, from our own telemetry store via the
-  // backend (never generated client-side).
-  const readingsList: MeterDailyReading[] = useMemo(() => {
-    if (liveDetail?.dailyReadings && Array.isArray(liveDetail.dailyReadings) && liveDetail.dailyReadings.length > 0) {
-      return liveDetail.dailyReadings as unknown as MeterDailyReading[];
-    }
-    if (meter.last10DaysReadings && Array.isArray(meter.last10DaysReadings) && meter.last10DaysReadings.length > 0) {
-      return meter.last10DaysReadings;
-    }
-    return [];
-  }, [liveDetail, meter]);
+  const readingsList: MeterDayRow[] = useMemo(() => liveDetail?.dailyReadings ?? [], [liveDetail]);
+  // The only alerts shown are ones the opener supplies from a real source; none are made up from the status.
+  const alertsList: MeterAlert[] = useMemo(() => (Array.isArray(meter.alerts) ? meter.alerts : []), [meter]);
 
-  // Safe Alerts List
-  const alertsList: MeterAlert[] = useMemo(() => {
-    if (meter.alerts && Array.isArray(meter.alerts)) {
-      return meter.alerts;
-    }
-    if (meter.status === 'silent') {
-      return [
-        {
-          id: `ALT-${meter.meterId}-1`,
-          severity: 'high',
-          category: 'RF Link',
-          title: 'Prolonged Silence / No Uplinks',
-          description: 'No telemetry packet received from this endpoint in the last 36 hours.',
-          timestamp: lastSeenDate || '',
-          status: 'Active',
-        },
-      ];
-    }
-    if (meter.status === 'weak') {
-      return [
-        {
-          id: `ALT-${meter.meterId}-2`,
-          severity: 'medium',
-          category: 'RF Link',
-          title: 'Marginal Signal Link (Low RSSI)',
-          description: `Signal strength at ${meter.rssi || -102} dBm is near threshold.`,
-          timestamp: lastSeenDate || '',
-          status: 'Active',
-        },
-      ];
-    }
-    return [];
-  }, [meter, lastSeenDate]);
-
-  // Stats calculations
-  const total10DayL = readingsList.reduce((acc, r) => acc + (r.consumptionL || 0), 0);
-  const avg10DayL = Math.round(total10DayL / (readingsList.length || 1));
-  const maxDayL = Math.max(...readingsList.map((r) => r.consumptionL || 1), 1);
-  const minDayL = Math.min(...readingsList.map((r) => r.consumptionL || 0));
+  const sum = summarizeDays(readingsList);
   const activeAlerts = alertsList.filter((a) => a.status === 'Active');
-  const totalUplinks = readingsList.reduce((acc, r) => acc + (r.uplinksReceived || 0), 0);
-  const expectedUplinks = readingsList.reduce((acc, r) => acc + (r.uplinksExpected || 0), 0);
-  const uplinkSlaPercent = expectedUplinks > 0 ? ((totalUplinks / expectedUplinks) * 100).toFixed(1) : '100.0';
 
   const downloadCsv = () => {
-    const headers = [
-      'Date',
-      'Consumption_Liters',
-      'Consumption_m3',
-      'Meter_Index_m3',
-      'Min_Flow_Lph',
-      'Max_Flow_Lph',
-      'Uplinks_Received',
-      'Flag',
-    ];
-    const rows = readingsList.map((r) => [
-      r.date,
-      r.consumptionL,
-      r.consumptionM3,
-      r.readingM3,
-      r.minFlowLph,
-      r.maxFlowLph,
-      `${r.uplinksReceived}/${r.uplinksExpected}`,
-      r.flag,
-    ]);
-    const csvContent =
-      'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
+    const headers = ['Date', 'Consumption_Liters', 'Consumption_m3', 'Meter_Index_m3'];
+    const rows = readingsList.map((r) => [r.date, r.consumptionL, r.consumptionM3, r.readingM3]);
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.map(csvCell).join(','))].join('\n');
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `meter_${meter.meterId}_10day_history.csv`);
+    link.setAttribute('href', encodeURI(csvContent));
+    link.setAttribute('download', `meter_${meter.meterId}_daily_history.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
-  const statusStr = (meter.status || 'active').toLowerCase();
+  const badge = statusBadge(meter.status);
+  const unavailableNote = liveDetail?.unavailable?.length ? `Could not load: ${liveDetail.unavailable.join(', ')}.` : null;
 
   return (
     <div className={`gis-meter-drawer ${isWide ? 'gis-meter-drawer--wide' : ''}`}>
@@ -253,19 +194,20 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
         <div className="gis-meter-header-info">
           <div className="gis-meter-header-topline">
             <span className="gis-meter-chip">METER 360</span>
-            <span className={`gis-status-badge gis-status-badge--${statusStr}`}>
-              {statusStr.toUpperCase()}
-            </span>
+            <span className={`gis-status-badge gis-status-badge--${badge.cssKey}`}>{badge.label}</span>
             {isLoadingDetail && (
               <span className="gis-drawer-loading">
-                <RefreshCw size={11} className="gis-spin" /> Live Telemetry Synced
+                <RefreshCw size={11} className="gis-spin" /> Loading details…
               </span>
             )}
           </div>
           <h2 className="gis-meter-id-title">Meter {meter.meterId}</h2>
           <p className="gis-meter-consumer-sub">
-            <strong>{consumerName}</strong> · Ward {consumerWard} ({consumerId})
+            {consumerHeadline({ name: consumerName, ward: consumerWard, id: consumerId })}
           </p>
+          {(detailError || unavailableNote) && (
+            <p style={{ margin: '4px 0 0 0', fontSize: 11, color: '#B45309' }}>{detailError || unavailableNote}</p>
+          )}
         </div>
 
         <div className="gis-meter-header-actions">
@@ -290,21 +232,22 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             <Droplet size={13} color="#2563EB" />
           </div>
           <div className="gis-kpi-val-group">
-            <span className="gis-kpi-big">{yesterdayL} L</span>
-            <span className="gis-kpi-small">({yesterdayM3} m³)</span>
+            <span className="gis-kpi-big">{yesterdayL == null ? '—' : `${yesterdayL} L`}</span>
+            <span className="gis-kpi-small">{yesterdayM3 == null ? '' : `(${yesterdayM3} m³)`}</span>
           </div>
           <div className="gis-kpi-footer">
-            {/* Compared against the real 10-day average computed below — not a
-                per-meter constant — and only when that average is meaningful. */}
-            {yesterdayL === 0 ? (
-              <span className="gis-trend-zero">No Uplink Flow</span>
-            ) : avg10DayL > 0 && yesterdayL > avg10DayL ? (
+            {/* Compared with the average of the days shown below, and only when there is one. */}
+            {yesterdayL == null ? (
+              <span className="gis-trend-zero">No figure for yesterday</span>
+            ) : yesterdayL === 0 ? (
+              <span className="gis-trend-zero">No flow recorded</span>
+            ) : sum.avgL > 0 && yesterdayL > sum.avgL ? (
               <span className="gis-trend-up">
-                +{Math.round(((yesterdayL - avg10DayL) / avg10DayL) * 100)}% vs 10-day avg
+                +{Math.round(((yesterdayL - sum.avgL) / sum.avgL) * 100)}% vs {sum.days}-day avg
               </span>
-            ) : avg10DayL > 0 ? (
+            ) : sum.avgL > 0 ? (
               <span className="gis-trend-down">
-                -{Math.round(((avg10DayL - yesterdayL) / avg10DayL) * 100)}% vs 10-day avg
+                -{Math.round(((sum.avgL - yesterdayL) / sum.avgL) * 100)}% vs {sum.days}-day avg
               </span>
             ) : (
               <span className="gis-trend-zero">No baseline yet</span>
@@ -333,12 +276,12 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
           </div>
           <div className="gis-kpi-val-group">
             <span className="gis-kpi-big">
-              {typeof currentReadingM3 === 'number' ? currentReadingM3.toFixed(3) : currentReadingM3}
+              {typeof currentReadingM3 === 'number' ? currentReadingM3.toFixed(3) : '—'}
             </span>
-            <span className="gis-kpi-small">m³ total</span>
+            <span className="gis-kpi-small">{typeof currentReadingM3 === 'number' ? 'm³ total' : ''}</span>
           </div>
           <div className="gis-kpi-footer">
-            <span className="gis-meta-seen">Last: {lastSeenDate}</span>
+            <span className="gis-meta-seen">Last: {fmtDateTime(lastSeenDate)}</span>
           </div>
         </div>
 
@@ -402,15 +345,20 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
           {/* 10-Day Bar Histogram */}
           <div className="gis-chart-box">
             <div className="gis-chart-header">
-              <span className="gis-chart-title">Last 10 Days Daily Consumption (Liters)</span>
-              <span className="gis-chart-avg">Daily Avg: {avg10DayL} L</span>
+              <span className="gis-chart-title">Last {sum.days || 10} Days Daily Consumption (Liters)</span>
+              <span className="gis-chart-avg">{sum.days ? `Daily Avg: ${sum.avgL} L` : ''}</span>
             </div>
 
             <div className="gis-bar-chart-container">
+              {readingsList.length === 0 && (
+                <div style={{ margin: 'auto', color: '#94A3B8', fontSize: 12 }}>
+                  {isLoadingDetail ? 'Loading readings…' : 'No daily readings recorded for this meter yet.'}
+                </div>
+              )}
               {readingsList.map((day, idx) => {
-                const heightPercent = Math.max(Math.round(((day.consumptionL || 0) / (maxDayL || 1)) * 100), 6);
+                const heightPercent = Math.max(Math.round(((day.consumptionL || 0) / (sum.maxL || 1)) * 100), 6);
                 const isHovered = hoveredDay?.date === day.date;
-                const isPeak = day.consumptionL === maxDayL;
+                const isPeak = sum.maxL != null && sum.maxL > 0 && day.consumptionL === sum.maxL;
                 const dayNumber = (day.shortDate.split(' ')[1] || day.shortDate).replace(/\D/g, '') || String(idx + 1);
 
                 return (
@@ -440,40 +388,35 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
 
             <div className="gis-chart-tooltip-bar">
               {hoveredDay
-                ? `${hoveredDay.date}: ${hoveredDay.consumptionL} L (${hoveredDay.consumptionM3} m³) • Min: ${hoveredDay.minFlowLph} L/h, Max: ${hoveredDay.maxFlowLph} L/h`
-                : 'Hover over any bar to inspect daily flow and cumulative index'}
+                ? `${hoveredDay.date}: ${hoveredDay.consumptionL} L (${hoveredDay.consumptionM3} m³) • Meter index ${hoveredDay.readingM3.toFixed(3)} m³`
+                : 'Hover over any bar to inspect daily use and the meter index'}
             </div>
           </div>
 
           {/* 10-Day Summary Strip */}
           <div className="gis-readings-stats-strip">
             <div className="gis-strip-item">
-              <span className="gis-strip-k">10-Day Total</span>
-              <span className="gis-strip-v">{total10DayL.toLocaleString()} L</span>
+              <span className="gis-strip-k">{sum.days}-Day Total</span>
+              <span className="gis-strip-v">{sum.totalL.toLocaleString()} L</span>
             </div>
             <div className="gis-strip-item">
               <span className="gis-strip-k">Min Day</span>
-              <span className="gis-strip-v">{minDayL} L</span>
+              <span className="gis-strip-v">{sum.minL == null ? '—' : `${sum.minL} L`}</span>
             </div>
             <div className="gis-strip-item">
               <span className="gis-strip-k">Peak Day</span>
-              <span className="gis-strip-v">{maxDayL} L</span>
+              <span className="gis-strip-v">{sum.maxL == null ? '—' : `${sum.maxL} L`}</span>
             </div>
             <div className="gis-strip-item">
-              <span className="gis-strip-k">Packet SLA</span>
-              <span
-                className="gis-strip-v"
-                style={{ color: Number(uplinkSlaPercent) >= 95 ? '#059669' : '#DC2626' }}
-              >
-                {uplinkSlaPercent}% ({totalUplinks}/{expectedUplinks})
-              </span>
+              <span className="gis-strip-k">Days with a reading</span>
+              <span className="gis-strip-v">{sum.days}</span>
             </div>
           </div>
 
           {/* Detailed 10-Day Reading Table */}
           <div className="gis-drawer-table-wrap">
             <div className="gis-table-action-row">
-              <span className="gis-table-title">Daily Meter Logs (10 Days)</span>
+              <span className="gis-table-title">Daily Meter Logs ({sum.days} Days)</span>
               <button className="gis-csv-btn" onClick={downloadCsv}>
                 <Download size={12} /> Export CSV
               </button>
@@ -485,9 +428,6 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
                   <th>Date</th>
                   <th style={{ textAlign: 'right' }}>Daily (L)</th>
                   <th style={{ textAlign: 'right' }}>Index (m³)</th>
-                  <th style={{ textAlign: 'right' }}>Max (L/h)</th>
-                  <th style={{ textAlign: 'center' }}>Packets</th>
-                  <th>Flag</th>
                 </tr>
               </thead>
               <tbody>
@@ -498,26 +438,7 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
                     </td>
                     <td style={{ textAlign: 'right', fontWeight: 600 }}>{reading.consumptionL} L</td>
                     <td style={{ textAlign: 'right', color: '#475569' }}>
-                      {Number(reading.readingM3 || 0).toFixed(3)}
-                    </td>
-                    <td style={{ textAlign: 'right', color: '#64748B' }}>{reading.maxFlowLph || 0}</td>
-                    <td style={{ textAlign: 'center' }}>
-                      <span
-                        className={`gis-packet-pill ${
-                          (reading.uplinksReceived || 0) >= 23 ? 'gis-packet-pill--good' : 'gis-packet-pill--warn'
-                        }`}
-                      >
-                        {reading.uplinksReceived}/{reading.uplinksExpected}
-                      </span>
-                    </td>
-                    <td>
-                      <span
-                        className={`gis-flag-badge gis-flag-badge--${(reading.flag || 'Normal')
-                          .toLowerCase()
-                          .replace(/\s+/g, '-')}`}
-                      >
-                        {reading.flag}
-                      </span>
+                      {Number(reading.readingM3).toFixed(3)}
                     </td>
                   </tr>
                 ))}
@@ -536,9 +457,11 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                 <ShieldCheck size={16} color="#059669" />
                 <strong style={{ fontSize: 13, color: '#065F46' }}>Verified Meter Replacement Record</strong>
-                <span className="gis-packet-pill gis-packet-pill--good" style={{ marginLeft: 'auto' }}>
-                  {liveDetail.replacement.status}
-                </span>
+                {liveDetail.replacement.status && (
+                  <span className="gis-packet-pill gis-packet-pill--good" style={{ marginLeft: 'auto' }}>
+                    {liveDetail.replacement.status}
+                  </span>
+                )}
               </div>
               <div className="gis-kv-row">
                 <span className="gis-k">Replaced Old Meter</span>
@@ -552,7 +475,7 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
               </div>
               <div className="gis-kv-row">
                 <span className="gis-k">Handover Date</span>
-                <span className="gis-v">{liveDetail.replacement.date || '2026-02-11'}</span>
+                <span className="gis-v">{liveDetail.replacement.date ? liveDetail.replacement.date.split('T')[0] : '—'}</span>
               </div>
             </div>
           )}
@@ -567,11 +490,8 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
           {alertsList.length === 0 ? (
             <div className="gis-empty-alerts">
               <CheckCircle2 size={32} color="#10B981" />
-              <strong>No Active or Historical Alerts</strong>
-              <p>
-                This meter has operated with nominal link parameters and flow rates over the
-                last 30 days.
-              </p>
+              <strong>No alerts are linked to this meter here</strong>
+              <p>Network and leakage alerts are listed on the Alarms page.</p>
             </div>
           ) : (
             <div className="gis-alerts-list">
@@ -613,7 +533,7 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             <div className="gis-kv-row">
               <span className="gis-k">Connected Gateway</span>
               <span className="gis-v">
-                {meter.gatewayAlias || 'Gateway'} ({String(meter.gatewayId || '').slice(-6) || 'Main'})
+                {meter.gatewayId ? `${meter.gatewayAlias || meter.gatewayId}${meter.gatewayAlias && meter.gatewayAlias !== meter.gatewayId ? ` (${String(meter.gatewayId).slice(-6)})` : ''}` : '—'}
               </span>
             </div>
             <div className="gis-kv-row">
@@ -640,24 +560,24 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             <div className="gis-kv-row">
               <span className="gis-k">Device EUI</span>
               <span className="gis-v" style={{ fontFamily: 'monospace' }}>
-                {meter.devEui || '—'}
+                {liveDetail?.devEui || meter.devEui || '—'}
               </span>
             </div>
             <div className="gis-kv-row">
-              <span className="gis-k">Modulation & Channel</span>
-              <span className="gis-v">LoRa EU868 / IN865 (SF7BW125)</span>
+              <span className="gis-k">Frequency · Data rate</span>
+              <span className="gis-v">
+                {liveDetail?.lastFrame
+                  ? `${formatMHz(liveDetail.lastFrame.frequencyHz)} · ${liveDetail.lastFrame.dataRate == null ? '—' : `DR${liveDetail.lastFrame.dataRate}`}`
+                  : '—'}
+              </span>
             </div>
           </div>
 
           <div className="gis-card">
             <span className="gis-card-title">Hardware & Metrology</span>
             <div className="gis-kv-row">
-              <span className="gis-k">Nominal Pipe Diameter</span>
-              <span className="gis-v">{meter.pipeDiameter || '15mm (1/2")'}</span>
-            </div>
-            <div className="gis-kv-row">
               <span className="gis-k">Last Decoded Telemetry</span>
-              <span className="gis-v">{lastSeenDate}</span>
+              <span className="gis-v">{fmtDateTime(lastSeenDate)}</span>
             </div>
           </div>
         </div>
@@ -671,39 +591,35 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             <div className="gis-kv-row">
               <span className="gis-k">Consumer Name</span>
               <span className="gis-v" style={{ color: '#2563EB', fontWeight: 700 }}>
-                {consumerName}
+                {consumerName || '—'}
               </span>
             </div>
             <div className="gis-kv-row">
               <span className="gis-k">Consumer ID</span>
               <span className="gis-v" style={{ fontFamily: 'monospace' }}>
-                {consumerId}
+                {consumerId || '—'}
               </span>
             </div>
             <div className="gis-kv-row">
               <span className="gis-k">Contact Mobile</span>
               <span className="gis-v" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Phone size={12} color="#64748B" /> {consumerMobile}
+                <Phone size={12} color="#64748B" /> {consumerMobile || '—'}
               </span>
             </div>
             <div className="gis-kv-row">
               <span className="gis-k">Address / Street</span>
               <span className="gis-v" style={{ textAlign: 'right', maxWidth: 220 }}>
-                {consumerAddress}
+                {consumerAddress || '—'}
               </span>
             </div>
             <div className="gis-kv-row">
               <span className="gis-k">Ward</span>
-              <span className="gis-v">Ward {consumerWard}</span>
-            </div>
-            <div className="gis-kv-row">
-              <span className="gis-k">Connection Category</span>
-              <span className="gis-v">{meter.connectionType || 'Domestic Metered'}</span>
+              <span className="gis-v">{consumerWard || '—'}</span>
             </div>
             <div className="gis-kv-row">
               <span className="gis-k">Account Status</span>
-              <span className="gis-v" style={{ color: '#059669', fontWeight: 600 }}>
-                {liveDetail?.consumer?.status || 'ACTIVE'}
+              <span className="gis-v" style={{ fontWeight: 600 }}>
+                {liveDetail?.consumer?.status || '—'}
               </span>
             </div>
           </div>
@@ -808,15 +724,15 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
       <div className="gis-meter-drawer-footer">
         <button
           className="gis-drawer-btn gis-drawer-btn--primary"
+          disabled={!(meter.householdShortId || meter.householdId)}
+          title={meter.householdShortId || meter.householdId ? undefined : 'No household is linked to this meter'}
           onClick={() => navigate(`/app/consumer/households/${meter.householdShortId || meter.householdId}`)}
         >
           <User size={14} /> View Household 360 & Billing
         </button>
         <button
           className="gis-drawer-btn gis-drawer-btn--secondary"
-          onClick={() =>
-            navigate(`/app/command-center?gateway=${meter.gatewayId}&meter=${meter.meterId}`)
-          }
+          onClick={() => navigate(`/app/command-center/meters/${meter.meterId}`)}
         >
           <ExternalLink size={14} /> Packet Availability in Command Center
         </button>

@@ -733,10 +733,6 @@
 .cc-chip--live { background: rgba(16, 185, 129, 0.15); color: #34D399; }
 .cc-chip--stale { background: rgba(249, 115, 22, 0.15); color: #FB923C; }
 .cc-chip--silent { background: rgba(239, 68, 68, 0.15); color: #F87171; }
-.cc-chip--weak-rssi { background: rgba(245, 158, 11, 0.15); color: #FBBF24; }
-.cc-chip--poor-snr { background: rgba(239, 68, 68, 0.15); color: #F87171; }
-.cc-chip--multi-gw { background: rgba(168, 85, 247, 0.18); color: #C084FC; }
-.cc-chip--fcnt-gap { background: rgba(59, 130, 246, 0.18); color: #60A5FA; }
 
 .cc-event-badge {
   font-size: 10.5px;
@@ -745,9 +741,6 @@
   border-radius: 4px;
 }
 .cc-event-badge--frame_received { background: rgba(16, 185, 129, 0.15); color: #34D399; }
-.cc-event-badge--weak_rssi { background: rgba(245, 158, 11, 0.15); color: #FBBF24; }
-.cc-event-badge--poor_link { background: rgba(239, 68, 68, 0.15); color: #F87171; }
-.cc-event-badge--multi_gw { background: rgba(168, 85, 247, 0.18); color: #C084FC; }
 
 /* ---------- Charts & Horizontal Load Bars ---------- */
 .cc-card {

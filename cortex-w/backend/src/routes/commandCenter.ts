@@ -77,7 +77,7 @@ router.get('/summary', async (req, res) => {
   }
 });
 
-const METER_FILTERS: MeterFilter[] = ['ALL', 'LIVE', 'STALE', 'WEAK_RSSI', 'POOR_SNR', 'MULTI_GW'];
+const METER_FILTERS: MeterFilter[] = ['ALL', 'LIVE', 'STALE'];
 
 function intParam(value: unknown, fallback: number, min: number, max: number): number {
   const n = parseInt(String(value ?? ''), 10);
