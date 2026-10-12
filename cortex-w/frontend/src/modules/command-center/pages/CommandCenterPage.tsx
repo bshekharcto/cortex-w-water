@@ -1,3 +1,4 @@
+import { WindowLabelProvider } from '../utils/thresholds';
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import '../styles/commandCenter.css';
 import '../styles/commandCenterExtras.css';
@@ -59,7 +60,7 @@ const METERS_PAGE_SIZE = 100;
 const EMPTY_METERS_PAGE: GatewayMetersPage = { content: [], page: 0, size: METERS_PAGE_SIZE, total: 0, totalPages: 0 };
 
 function daysFor(range: TimeWindow): number {
-  return range === '30D' ? 30 : range === '7D' ? 7 : 1;
+  return range === '30D' ? 30 : range === '7D' ? 7 : 1; // Today: one day, the day it is now at the site
 }
 
 // a day as YYYY-MM-DD on the clock of this browser; only the first guess of the custom range, the server cuts the real days
@@ -98,13 +99,17 @@ export function CommandCenterPage() {
   });
   const [isSyncing, setIsSyncing] = useState<boolean>(!summaryData);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // true while the numbers for a newly chosen filter (window, site, custom range) are loading: the old ones are dimmed
+  // under a progress bar. The 45 s background refresh does not set it.
+  const [isFiltering, setIsFiltering] = useState(false);
 
-  // Background fetch routine (supports 1H, 6H, 24H, 7D, 30D and site filtering)
+  // Background fetch routine (supports Today, 7D, 30D, a custom range and site filtering)
   // only the newest request may set the state: a slow answer for an earlier window or site must not overwrite it
   const summaryRequestId = useRef(0);
-  const loadSummary = useCallback(async (forceRefresh = false) => {
+  const loadSummary = useCallback(async (forceRefresh = false, filterChanged = false) => {
     const requestId = ++summaryRequestId.current;
     setIsSyncing(true);
+    if (filterChanged) setIsFiltering(true);
     try {
       const live = await fetchCommandCenterSummary(
         daysFor(timeRange),
@@ -121,13 +126,16 @@ export function CommandCenterPage() {
       console.warn('[CommandCenter] Live summary could not be loaded:', err);
       setLoadError(err instanceof Error ? err.message : 'Live data could not be loaded');
     } finally {
-      if (requestId === summaryRequestId.current) setIsSyncing(false);
+      if (requestId === summaryRequestId.current) {
+        setIsSyncing(false);
+        setIsFiltering(false);
+      }
     }
   }, [timeRange, customRange, selectedSiteId]);
 
   // Sync on mount or when timeRange or selectedSiteId changes
   useEffect(() => {
-    loadSummary(false);
+    loadSummary(false, true);
   }, [loadSummary]);
 
   // Periodic background refresh (every 45s)
@@ -150,7 +158,7 @@ export function CommandCenterPage() {
     custom: timeRange === 'CUSTOM' ? customRange : undefined,
     siteId: selectedSiteId,
   };
-  const windowText = timeRange === 'CUSTOM' ? `${customRange.from} → ${customRange.to}` : timeRange;
+  const windowText = timeRange === 'CUSTOM' ? `${customRange.from} → ${customRange.to}` : timeRange === 'TODAY' ? 'Today' : timeRange;
 
   // Ensure an active gateway is selected once gateways are known
   useEffect(() => {
@@ -241,40 +249,9 @@ export function CommandCenterPage() {
         return;
       }
     } catch (err) {
-      console.warn('[CommandCenter] Meter lookup failed, using the frame instead:', err);
+      console.warn('[CommandCenter] Meter lookup failed:', err);
     }
-    // Fallback: construct synthesized item from frame
-    const frame = allFrames.find((f) => f.meterId === meterId);
-    if (frame) {
-      setSelectedMeter({
-        meterId: frame.meterId,
-        devEui: frame.devEui,
-        lastSeenDate: frame.decodedAt,
-        frameAge: 'just now',
-        frames1H: 1,
-        frames24H: 1,
-        lastRssi: frame.rssi,
-        lastSnr: frame.snr,
-        fCnt: frame.fCnt,
-        fPort: frame.fPort,
-        frequency: frame.frequency,
-        dr: frame.dr,
-        adr: frame.adr,
-        confirmed: frame.confirmed,
-        otherGatewaysCount: 0,
-        statusChips: ['live'],
-        gatewaysHeard: [
-          {
-            gatewayId: frame.gatewayId,
-            alias: frame.gatewayAlias,
-            rssi: frame.rssi,
-            snr: frame.snr,
-            lastSeenText: 'just now',
-            isLatest: true,
-          },
-        ],
-      });
-    }
+    // no meter record, no inspector: a made-up one (live, 1 frame, "just now") would show values that were never read
   };
 
   const findGatewayByQuery = useCallback(
@@ -318,7 +295,8 @@ export function CommandCenterPage() {
   }, [searchQuery, timeRange, customRange, selectedSiteId, findGatewayByQuery]);
 
   return (
-    <div className="cc-container">
+    <WindowLabelProvider value={windowText}>
+    <div className={`cc-container ${isFiltering ? 'cc-container--busy' : ''}`} aria-busy={isFiltering}>
       {/* Top Command Bar with Live Stream Sync Status */}
       <CommandCenterToolbar
         activeTab={activeMode}
@@ -334,6 +312,13 @@ export function CommandCenterPage() {
         selectedSiteId={selectedSiteId}
         onSiteChange={setSelectedSiteId}
       />
+
+      {isFiltering && (
+        <div className="cc-progress" role="status" aria-live="polite">
+          <span className="cc-progress-bar" />
+          <span className="cc-sr-only">Loading data for the selected filter</span>
+        </div>
+      )}
 
       {/* Network Health 8-KPI Strip with Skeleton Loaders */}
       {loadError && (
@@ -480,6 +465,7 @@ export function CommandCenterPage() {
         onSelectMeter={handleSelectMeterById}
       />
     </div>
+    </WindowLabelProvider>
   );
 }
 

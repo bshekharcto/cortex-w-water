@@ -1,4 +1,5 @@
 import { apiRequest } from './httpClient';
+import { getAuthToken } from '@/modules/auth/repository/authTokenStore';
 import {
   GatewayItem,
   MeterTelemetryItem,
@@ -36,12 +37,23 @@ export interface TelemetrySummaryResponse {
 
 const LOCAL_STORAGE_CACHE_KEY_PREFIX = 'cortex_w_cc_summary_cache';
 
+// The saved summary belongs to the login that fetched it: the key carries a short hash of the token, so a different
+// login on this browser (an expired session signed in again as someone else) never starts from the previous one's data.
+function cacheKey(days: number, siteId: string): string | null {
+  const token = getAuthToken();
+  if (!token) return null;
+  let h = 0;
+  for (let i = 0; i < token.length; i++) h = (Math.imul(31, h) + token.charCodeAt(i)) | 0;
+  return `${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${(h >>> 0).toString(36)}_${days}_${siteId}`;
+}
+
 /**
  * Retrieves cached summary from localStorage for 0ms initial render
  */
 export function getLocalCachedSummary(days: number = 7, date?: string, siteId: string = 'ALL'): TelemetrySummaryResponse | null {
   try {
-    const key = `${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${days}_${siteId}`;
+    const key = cacheKey(days, siteId);
+    if (!key) return null;
     const raw = localStorage.getItem(key);
     if (!raw) return null;
     const parsed: TelemetrySummaryResponse = JSON.parse(raw);
@@ -57,8 +69,8 @@ export function getLocalCachedSummary(days: number = 7, date?: string, siteId: s
  */
 export function setLocalCachedSummary(summary: TelemetrySummaryResponse, days: number = 7, siteId: string = 'ALL'): void {
   try {
-    const key = `${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${days}_${siteId}`;
-    localStorage.setItem(key, JSON.stringify(summary));
+    const key = cacheKey(days, siteId);
+    if (key) localStorage.setItem(key, JSON.stringify(summary));
   } catch (err) {
     // In case localStorage is full or restricted, gracefully ignore
     console.warn('[commandCenterApi] LocalStorage cache write failed:', err);

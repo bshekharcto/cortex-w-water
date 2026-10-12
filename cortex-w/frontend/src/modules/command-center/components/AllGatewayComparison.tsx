@@ -1,4 +1,5 @@
 import { GatewayItem } from '../types/commandCenter.types';
+import { useWindowLabel } from '../utils/thresholds';
 
 interface Props {
   gateways: GatewayItem[];
@@ -6,6 +7,7 @@ interface Props {
 }
 
 export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
+  const windowLabel = useWindowLabel();
   const activeGateways = gateways.filter((g) => g.uniqueMeters > 0);
   const maxMeters = activeGateways[0]?.uniqueMeters || 1;
 
@@ -14,7 +16,7 @@ export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
       <div className="cc-card cc-chart-card">
         <div className="cc-card-header">
           <span className="cc-card-title">GATEWAY LOAD DISTRIBUTION</span>
-          <span className="cc-card-meta">Unique Meters Heard by Gateway (24H)</span>
+          <span className="cc-card-meta">Unique Meters Heard by Gateway ({windowLabel})</span>
         </div>
         <div className="cc-bars-container">
           {activeGateways.map((gw) => {
@@ -52,7 +54,7 @@ export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
                 <th>Gateway ID</th>
                 <th>Status</th>
                 <th>Unique Meters</th>
-                <th>Frames (24H)</th>
+                <th>Frames ({windowLabel})</th>
                 <th>Last Frame</th>
                 <th>Avg RSSI</th>
                 <th>Avg SNR</th>
@@ -92,7 +94,7 @@ export function AllGatewayComparison({ gateways, onSelectGateway }: Props) {
                           : 'cc-cell-mute'
                       }
                     >
-                      {gw.trendText}
+                      {gw.trendText || '—'}
                     </span>
                   </td>
                 </tr>

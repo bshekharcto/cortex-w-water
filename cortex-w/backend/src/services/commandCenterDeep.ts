@@ -404,12 +404,17 @@ export async function getTraffic(opts: WindowOpts & { gatewayId?: string }) {
   const prevFrom = shiftDay(fromDate, -span);
   const prevTo = shiftDay(fromDate, -1);
 
+  const earliestParams: unknown[] = opts.siteIds ? [opts.siteIds] : [];
   const [current, previousRaw, cur, prev, earliest] = await Promise.all([
     series(bucket, zone, fromDate, toDate, opts.gatewayId, opts.siteIds),
     series(bucket, zone, prevFrom, prevTo, opts.gatewayId, opts.siteIds),
     totals(zone, fromDate, toDate, opts.gatewayId, opts.siteIds),
     totals(zone, prevFrom, prevTo, opts.gatewayId, opts.siteIds),
-    pool.query(`SELECT (MIN(time) AT TIME ZONE '${zone}')::date::text AS d FROM ${TABLE} WHERE is_history = false`),
+    // the first day of data of what is shown (the chosen sites), not of the whole table
+    pool.query(
+      `SELECT (MIN(time) AT TIME ZONE '${zone}')::date::text AS d FROM ${TABLE} WHERE is_history = false${opts.siteIds ? siteClause('$1') : ''}`,
+      earliestParams
+    ),
   ]);
   const previous = current.map((_, i) => previousRaw[i] ?? { t: '', frames: 0, meters: 0 });
   const earliestDate: string | null = earliest.rows[0]?.d ?? null;

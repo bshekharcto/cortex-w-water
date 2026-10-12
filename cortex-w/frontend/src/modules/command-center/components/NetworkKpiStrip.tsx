@@ -6,7 +6,7 @@ interface Props {
   windowText?: string;
 }
 
-export function NetworkKpiStrip({ kpis, loading, windowText = '24H' }: Props) {
+export function NetworkKpiStrip({ kpis, loading, windowText = 'Today' }: Props) {
   if (loading && !kpis) {
     return (
       <div className="cc-kpi-grid">

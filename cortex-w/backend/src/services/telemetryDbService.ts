@@ -99,8 +99,10 @@ function shiftDate(date: string, days: number): string {
 }
 
 /** "+6.5% vs prev 7d"; "no earlier data" when the window before had no frames. */
+// "" = no trend to show: they are switched off (config/networkHealth.ts trendsEnabled) and a window before this one with
+// too few frames would read as a huge swing.
 function trendText(current: number, previous: number, days: number): string {
-  if (!previous) return 'no earlier data';
+  if (!T.trendsEnabled || previous < T.trendMinPrevFrames) return '';
   const pct = ((current - previous) / previous) * 100;
   return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% vs prev ${days}d`;
 }
@@ -429,6 +431,8 @@ export async function getPostgresAggregatedSummary(
     };
   });
   const previousFrames = gwRes.rows.reduce((sum: number, r: any) => sum + r.prev_frame_count, 0);
+  // the same frames on both sides of the comparison: the gateways' (frames without a gateway are in neither)
+  const currentGatewayFrames = gwRes.rows.reduce((sum: number, r: any) => sum + r.frame_count, 0);
 
   // 7. Hourly Activity distribution across the 7 days (or 24 hours aggregated)
   const hourlyRes = await pool.query(`
@@ -490,7 +494,7 @@ export async function getPostgresAggregatedSummary(
       uniqueMetersSeen: kpiRow.unique_meters_seen ?? 0,
       configuredMeters,
       framesReceived: kpiRow.frames_received ?? 0,
-      framesTrend: trendText(kpiRow.frames_received ?? 0, previousFrames, days),
+      framesTrend: trendText(currentGatewayFrames, previousFrames, days),
       lastFrameAge: formatRelativeTime(kpiRow.latest_frame_at),
       avgRssi: kpiRow.avg_rssi ?? null,
       avgSnr: kpiRow.avg_snr ?? null,

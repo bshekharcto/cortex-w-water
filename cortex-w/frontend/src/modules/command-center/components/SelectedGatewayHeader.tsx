@@ -4,7 +4,7 @@ interface Props {
   gateway: GatewayItem;
   activeTab: GatewayTabType;
   onTabChange: (tab: GatewayTabType) => void;
-  windowText: string; // the window the numbers cover: 1H, 7D, 2026-10-01 → 2026-10-08 ...
+  windowText: string; // the window the numbers cover: Today, 7D, 2026-10-01 → 2026-10-08 ...
 }
 
 export function SelectedGatewayHeader({
