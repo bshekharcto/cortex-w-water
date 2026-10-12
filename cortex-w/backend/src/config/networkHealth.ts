@@ -14,6 +14,11 @@ export const networkHealthThresholds = {
   rssiCriticalDbm: -105,
   snrWeakDb: -10,
   snrCriticalDb: -18,
+  // A gateway whose average over the window is this bad is "degraded" (looser than the per-frame weak limits above).
+  avgRssiDegradedDbm: -105,
+  avgSnrDegradedDb: -15,
+  // A gateway that sent a frame within this many days is "known": it is listed, as "no traffic" when it is silent.
+  knownGatewayDays: 30,
   // A trend needs at least this many frames in the previous period, or tiny samples read as huge swings.
   trendMinPrevFrames: 20,
   // Frame-count trends compare a window with the one before it. Right now that is not trustworthy: the stored
@@ -33,3 +38,9 @@ export type NetworkHealthThresholds = typeof networkHealthThresholds;
  * mean the same thing to everyone looking at the page (India has no daylight saving).
  */
 export const OPERATIONAL_TZ = 'Asia/Kolkata';
+
+/**
+ * The 12 hex characters the gateway EUIs of this fleet share: the ingestion keeps only the last 4 in gateway_list.
+ * Set GATEWAY_EUI_PREFIX for another vendor or tenant.
+ */
+export const GATEWAY_EUI_PREFIX = (process.env.GATEWAY_EUI_PREFIX ?? '506f98000000').toLowerCase();

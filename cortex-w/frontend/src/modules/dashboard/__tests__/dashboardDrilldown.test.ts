@@ -6,7 +6,7 @@ import {
   aggregateNodeKpis,
   validateDeviceInvariant,
 } from '../services/dashboardAggregation';
-import { dashboardDrilldownSeed } from '@/data/seed/dashboard/dashboardDrilldownSeed';
+import { dashboardDrilldownSeed } from './dashboardDrilldownSeed';
 import type { NodeRow } from '../models/dashboardRows';
 
 describe('Dashboard Drill-down Aggregations & Invariants', () => {

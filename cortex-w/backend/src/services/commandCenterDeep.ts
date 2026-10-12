@@ -1,5 +1,5 @@
 import { pool } from '../db/pool.js';
-import { networkHealthThresholds as T } from '../config/networkHealth.js';
+import { networkHealthThresholds as T, GATEWAY_EUI_PREFIX } from '../config/networkHealth.js';
 import {
   dateRange,
   formatRelativeTime,
@@ -25,7 +25,6 @@ export interface WindowOpts {
 }
 
 const TABLE = 'water_meter_readings_v2';
-const EUI_PREFIX = '506f98000000'; // the 12 hex characters every gateway EUI shares; gateway_list keeps the last 4
 
 /** Placeholders $1/$2 = the window's first and last day, $3 = the site ids when the view is limited to sites. */
 function scope(opts: WindowOpts) {
@@ -107,7 +106,7 @@ export function gatewaysFromList(list: string | null): Array<{ gatewayId: string
     .map((part) => {
       const [id, snr] = part.split(':');
       const snrNum = snr === undefined || snr === '' ? NaN : Number(snr);
-      return { gatewayId: id.length === 16 ? id : EUI_PREFIX + id, snr: Number.isFinite(snrNum) ? snrNum : null };
+      return { gatewayId: id.length === 16 ? id : GATEWAY_EUI_PREFIX + id, snr: Number.isFinite(snrNum) ? snrNum : null };
     });
 }
 
@@ -148,7 +147,7 @@ function meterItem(m: any, heard: Array<{ gatewayId: string; rssi: number | null
       lastSeenText: formatRelativeTime(m.decoded_at),
       isLatest: h.gatewayId === m.gateway_id,
     })),
-    forwardFlowL: m.forward_flow_kl,
+    forwardFlowKl: m.forward_flow_kl,
     reverseFlow: m.reverse_flow_m3,
   };
 }

@@ -89,10 +89,7 @@ export function localDateIn(zone: string, instant: Date = new Date()): string {
 export const inWindow = (zone: string, from: string, to: string) =>
   `time >= (${from}::date)::timestamp AT TIME ZONE '${zone}' AND time < ((${to}::date + 1)::timestamp AT TIME ZONE '${zone}')`;
 
-const KNOWN_GATEWAY_DAYS = 30;                  // a gateway that sent a frame in this many days is "known"
 const STALE_GATEWAY_AFTER_MS = T.gatewayStaleMinutes * 60 * 1000; // 24 h: these meters report once a day (config/networkHealth.ts)
-const DEGRADED_AVG_RSSI = -105;
-const DEGRADED_AVG_SNR = -15;
 
 function shiftDate(date: string, days: number): string {
   return new Date(Date.parse(date) + days * DAY_MS).toISOString().slice(0, 10);
@@ -138,7 +135,7 @@ export function gatewayFreshnessStatus(
 ): 'reporting' | 'degraded' | 'stale' | 'no-traffic' {
   if (g.frameCount === 0 || g.latestDecodedAt == null) return 'no-traffic';
   if (now - new Date(g.latestDecodedAt).getTime() > STALE_GATEWAY_AFTER_MS) return 'stale';
-  if ((g.avgRssi != null && g.avgRssi < DEGRADED_AVG_RSSI) || (g.avgSnr != null && g.avgSnr < DEGRADED_AVG_SNR)) return 'degraded';
+  if ((g.avgRssi != null && g.avgRssi < T.avgRssiDegradedDbm) || (g.avgSnr != null && g.avgSnr < T.avgSnrDegradedDb)) return 'degraded';
   return 'reporting';
 }
 
@@ -194,7 +191,7 @@ function toMeterItem(m: any, gatewayId: string) {
         isLatest: true,
       },
     ],
-    forwardFlowL: m.forward_flow_kl,
+    forwardFlowKl: m.forward_flow_kl,
     reverseFlow: m.reverse_flow_m3,
   };
 }
@@ -390,11 +387,11 @@ export async function getPostgresAggregatedSummary(
   );
   const configuredMeters = configuredRes.rows[0]?.count || (kpiRow.unique_meters_seen ?? 0);
 
-  // 5. Gateways: every gateway heard in the last KNOWN_GATEWAY_DAYS days, with its frames in the window and in the
+  // 5. Gateways: every gateway heard in the last T.knownGatewayDays days, with its frames in the window and in the
   //    window just before it (for the trend). One that sent nothing in the window shows as "no traffic".
   const prevToDate = shiftDate(fromDate, -1);
   const prevFromDate = shiftDate(prevToDate, -(days - 1));
-  const knownFromDate = shiftDate(toDate, -(KNOWN_GATEWAY_DAYS - 1));
+  const knownFromDate = shiftDate(toDate, -(T.knownGatewayDays - 1));
   const gwRes = await pool.query(`
     SELECT
       gateway_id,

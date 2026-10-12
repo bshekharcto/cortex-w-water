@@ -22,9 +22,6 @@ export function meterStatus(lastFrame: Date | string | null | undefined, now: nu
   return ageMin > T.meterStaleMinutes ? 'stale' : 'live';
 }
 
-// The gateway rail in the Command Center calls a gateway degraded when its averages are this bad.
-const DEGRADED_AVG_RSSI = -105;
-const DEGRADED_AVG_SNR = -15;
 
 /** Same labels as the Command Center gateway rail, judged from the newest frames of the meters the gateway hears. */
 export function gatewayStatus(
@@ -35,7 +32,7 @@ export function gatewayStatus(
   const ts = new Date(g.lastFrame).getTime();
   if (!Number.isFinite(ts)) return 'no-traffic';
   if ((now - ts) / 60000 > T.gatewayStaleMinutes) return 'stale';
-  if ((g.avgRssi != null && g.avgRssi < DEGRADED_AVG_RSSI) || (g.avgSnr != null && g.avgSnr < DEGRADED_AVG_SNR)) return 'degraded';
+  if ((g.avgRssi != null && g.avgRssi < T.avgRssiDegradedDbm) || (g.avgSnr != null && g.avgSnr < T.avgSnrDegradedDb)) return 'degraded';
   return 'reporting';
 }
 

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import '../styles/commandCenter.css';
 import '../styles/commandCenterExtras.css';
 
@@ -100,7 +100,10 @@ export function CommandCenterPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // Background fetch routine (supports 1H, 6H, 24H, 7D, 30D and site filtering)
+  // only the newest request may set the state: a slow answer for an earlier window or site must not overwrite it
+  const summaryRequestId = useRef(0);
   const loadSummary = useCallback(async (forceRefresh = false) => {
+    const requestId = ++summaryRequestId.current;
     setIsSyncing(true);
     try {
       const live = await fetchCommandCenterSummary(
@@ -110,13 +113,15 @@ export function CommandCenterPage() {
         selectedSiteId,
         timeRange === 'CUSTOM' ? customRange : undefined
       );
+      if (requestId !== summaryRequestId.current) return;
       setSummaryData(live);
       setLoadError(null);
     } catch (err) {
+      if (requestId !== summaryRequestId.current) return;
       console.warn('[CommandCenter] Live summary could not be loaded:', err);
       setLoadError(err instanceof Error ? err.message : 'Live data could not be loaded');
     } finally {
-      setIsSyncing(false);
+      if (requestId === summaryRequestId.current) setIsSyncing(false);
     }
   }, [timeRange, customRange, selectedSiteId]);
 
@@ -128,7 +133,7 @@ export function CommandCenterPage() {
   // Periodic background refresh (every 45s)
   useEffect(() => {
     const autoSync = setInterval(() => {
-      loadSummary(false);
+      if (!document.hidden) loadSummary(false); // no polling from a background tab
     }, 45000);
 
     return () => {

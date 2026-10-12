@@ -1,5 +1,6 @@
 import { Radio } from 'lucide-react';
 import { RawFrameItem } from '../types/commandCenter.types';
+import { isPoorSnr, isWeakRssi, useThresholds } from '../utils/thresholds';
 
 interface Props {
   frames: RawFrameItem[];
@@ -8,6 +9,7 @@ interface Props {
 }
 
 export function LiveNetworkFeed({ frames, metersReporting, onSelectMeter }: Props) {
+  const thresholds = useThresholds();
   return (
     <div className="cc-live-feed-panel">
       <div className="cc-feed-header-bar">
@@ -35,8 +37,8 @@ export function LiveNetworkFeed({ frames, metersReporting, onSelectMeter }: Prop
           </thead>
           <tbody>
             {frames.map((frame) => {
-              const isWeak = frame.rssi < -95;
-              const isPoor = frame.snr < -10;
+              const isWeak = isWeakRssi(thresholds, frame.rssi);
+              const isPoor = isPoorSnr(thresholds, frame.snr);
 
               return (
                 <tr
@@ -50,13 +52,13 @@ export function LiveNetworkFeed({ frames, metersReporting, onSelectMeter }: Prop
                   <td className="cc-mono cc-cell-bold">{frame.meterId}</td>
                   <td className="cc-mono cc-cell-mute">{frame.devEui}</td>
                   <td className="cc-mono">{frame.fCnt}</td>
-                  <td className="cc-mono">{frame.frequency}</td>
-                  <td className="cc-mono">DR{frame.dr}</td>
+                  <td className="cc-mono">{frame.frequency ?? '—'}</td>
+                  <td className="cc-mono">{frame.dr == null ? '—' : `DR${frame.dr}`}</td>
                   <td className={`cc-mono ${isWeak ? 'cc-text-warn' : ''}`}>
-                    {frame.rssi} dBm
+                    {frame.rssi == null ? '—' : `${frame.rssi} dBm`}
                   </td>
                   <td className={`cc-mono ${isPoor ? 'cc-text-danger' : ''}`}>
-                    {frame.snr} dB
+                    {frame.snr == null ? '—' : `${frame.snr} dB`}
                   </td>
                 </tr>
               );

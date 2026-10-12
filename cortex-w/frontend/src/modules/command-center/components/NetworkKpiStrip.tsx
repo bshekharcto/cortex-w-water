@@ -62,7 +62,9 @@ export function NetworkKpiStrip({ kpis, loading, windowText = '24H' }: Props) {
         </div>
         <div className="cc-kpi-value-row">
           <span className="cc-kpi-val">{kpis.framesReceived.toLocaleString()}</span>
-          <span className="cc-kpi-trend cc-kpi-trend--up">{kpis.framesTrend}</span>
+          {kpis.framesTrend && (
+            <span className={`cc-kpi-trend cc-kpi-trend--${trendDirection(kpis.framesTrend)}`}>{kpis.framesTrend}</span>
+          )}
         </div>
       </div>
 
@@ -91,4 +93,11 @@ export function NetworkKpiStrip({ kpis, loading, windowText = '24H' }: Props) {
       </div>
     </div>
   );
+}
+
+// framesTrend is text from the server: "+12.0% vs prev 7d", "-3.1% vs prev 7d" or "no earlier data"
+function trendDirection(text: string): 'up' | 'down' | 'flat' {
+  if (text.startsWith('+')) return 'up';
+  if (text.startsWith('-')) return 'down';
+  return 'flat';
 }

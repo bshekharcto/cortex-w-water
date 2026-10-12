@@ -107,6 +107,9 @@ export interface NetworkHealthThresholds {
   rssiCriticalDbm: number;
   snrWeakDb: number;
   snrCriticalDb: number;
+  avgRssiDegradedDbm: number;
+  avgSnrDegradedDb: number;
+  knownGatewayDays: number;
   trendMinPrevFrames: number;
   trendsEnabled: boolean;
   rssiBands: { strong: number; good: number; weak: number };

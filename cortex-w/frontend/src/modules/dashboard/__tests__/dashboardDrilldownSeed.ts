@@ -1,4 +1,4 @@
-import type { SeedProvenance } from '../provenance';
+import type { SeedProvenance } from '@/data/seed/provenance';
 
 export const DASHBOARD_DRILLDOWN_SEED_PROVENANCE: SeedProvenance = 'SYNTHETIC_DEMO';
 
