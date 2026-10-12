@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { GisMeter, MeterAlert } from './gisData';
 import { mapApi, LiveMeterDetailResponse, MeterDayRow } from '@/services/api/mapApi';
-import { consumerHeadline, csvCell, formatMHz, statusBadge, summarizeDays } from './meterDetailModel';
+import { consumerHeadline, csvCell, formatMHz, formatStamp, statusBadge, summarizeDays } from './meterDetailModel';
 
 interface DrawerErrorBoundaryProps {
   children: ReactNode;
@@ -152,7 +152,7 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
   const consumerWard = liveDetail?.consumer?.ward || null;
   const currentReadingM3 = liveDetail?.latestReading ?? meter.currentReadingM3 ?? null;
   const lastSeenDate = liveDetail?.lastSeen || liveDetail?.readingDate || meter.lastSeen || null;
-  const fmtDateTime = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : '—');
+  const fmtDateTime = formatStamp;
 
   const yesterdayL: number | null = liveDetail
     ? liveDetail.consumption == null
@@ -203,7 +203,7 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
           </div>
           <h2 className="gis-meter-id-title">Meter {meter.meterId}</h2>
           <p className="gis-meter-consumer-sub">
-            {consumerHeadline({ name: consumerName, ward: consumerWard, id: consumerId })}
+            {consumerHeadline({ name: consumerName, ward: consumerWard, id: consumerId, loading: isLoadingDetail })}
           </p>
           {(detailError || unavailableNote) && (
             <p style={{ margin: '4px 0 0 0', fontSize: 11, color: '#B45309' }}>{detailError || unavailableNote}</p>

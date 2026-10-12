@@ -8,6 +8,7 @@ import {
 } from '@/services/api/networkApi';
 import { decodeMeterRows, type MeterPoint } from '../networkModel';
 import { loadSnapshot, saveSnapshot } from '../networkCache';
+import { isUnauthorized } from '../../shared/meterDetailModel';
 
 const REFRESH_MS = 5 * 60 * 1000;
 
@@ -30,6 +31,8 @@ export interface NetworkData {
   isShowingSavedCopy: boolean;
   gatewaysError: string | null;
   metersError: string | null;
+  /** The sign-in is over (401): the page should go to the login screen. */
+  sessionExpired: boolean;
   reload: () => void;
 }
 
@@ -51,6 +54,7 @@ export function useNetworkData(siteId: string): NetworkData {
   const [gatewaysError, setGatewaysError] = useState<string | null>(null);
   const [metersError, setMetersError] = useState<string | null>(null);
   const [loadedSiteId, setLoadedSiteId] = useState<string | null>(null);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [tick, setTick] = useState(0);
   const siteRef = useRef(siteId);
 
@@ -61,6 +65,7 @@ export function useNetworkData(siteId: string): NetworkData {
     ]);
     if (signal.aborted || siteRef.current !== site) return;
 
+    if ((g.status === 'rejected' && isUnauthorized(g.reason)) || (m.status === 'rejected' && isUnauthorized(m.reason))) setSessionExpired(true);
     if (g.status === 'fulfilled' || m.status === 'fulfilled') setLoadedSiteId(site);
     if (g.status === 'fulfilled') {
       setGw(g.value);
@@ -135,6 +140,7 @@ export function useNetworkData(siteId: string): NetworkData {
     isShowingSavedCopy,
     gatewaysError,
     metersError,
+    sessionExpired,
     reload: () => setTick((t) => t + 1),
   };
 }

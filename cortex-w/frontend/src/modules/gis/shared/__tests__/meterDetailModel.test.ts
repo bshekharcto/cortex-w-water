@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { consumerHeadline, csvCell, formatMHz, statusBadge, summarizeDays } from '../meterDetailModel';
+import { consumerHeadline, csvCell, formatMHz, formatStamp, isUnauthorized, statusBadge, summarizeDays } from '../meterDetailModel';
 
 describe('summarizeDays', () => {
   it('has no Infinity and no invented numbers when there are no days', () => {
@@ -23,6 +23,31 @@ describe('consumerHeadline', () => {
     expect(consumerHeadline({ name: null, ward: null, id: null })).toBe('Consumer not linked');
     expect(consumerHeadline({ name: 'A Kumar', ward: '12', id: 'WS/BMC/1' })).toBe('A Kumar · Ward 12 · WS/BMC/1');
     expect(consumerHeadline({ name: 'A Kumar', ward: null, id: 'WS/BMC/1' })).toBe('A Kumar · WS/BMC/1');
+  });
+});
+
+describe('consumerHeadline while loading', () => {
+  it('says it is loading, not "not linked", until the details have arrived', () => {
+    expect(consumerHeadline({ name: null, ward: null, id: null, loading: true })).toBe('Loading consumer…');
+    expect(consumerHeadline({ name: null, ward: null, id: null, loading: false })).toBe('Consumer not linked');
+    expect(consumerHeadline({ name: 'A Kumar', ward: null, id: null, loading: true })).toBe('A Kumar');
+  });
+});
+
+describe('isUnauthorized', () => {
+  it('is true only for a 401', () => {
+    expect(isUnauthorized({ status: 401 })).toBe(true);
+    expect(isUnauthorized({ status: 500 })).toBe(false);
+    expect(isUnauthorized(new Error('x'))).toBe(false);
+    expect(isUnauthorized(null)).toBe(false);
+  });
+});
+
+describe('formatStamp', () => {
+  it('names the zone and shows a dash for missing or invalid input', () => {
+    expect(formatStamp(null)).toBe('—');
+    expect(formatStamp('nonsense')).toBe('—');
+    expect(formatStamp('2026-10-11T09:02:07Z')).toMatch(/^11 Oct, \d{2}:\d{2}:07 \S+/);
   });
 });
 

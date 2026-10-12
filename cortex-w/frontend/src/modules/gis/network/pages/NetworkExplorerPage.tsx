@@ -29,6 +29,7 @@ import { SpatialGridIndex, type BoundingBox } from '../../shared/spatialIndex';
 import { MarkerClusterer, SuperClusterAlgorithm } from '@googlemaps/markerclusterer';
 import { getDecibelBorder } from '../../shared/meterColorUtils';
 import { getGatewayMapMarkerIcon, getGatewaySvg } from '../../shared/gatewayIconUtils';
+import { formatStamp, isUnauthorized } from '../../shared/meterDetailModel';
 import { SiteTreeSelect } from '@/modules/command-center/components/SiteTreeSelect';
 import { useNetworkData } from '../hooks/useNetworkData';
 import {
@@ -53,7 +54,7 @@ type StatusFilter = 'ALL' | NetMeterStatus;
 
 const STATUS_ORDER: NetMeterStatus[] = ['live', 'stale', 'silent', 'never'];
 const dash = '—';
-const fmtTime = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString() : dash);
+const fmtTime = formatStamp;
 const fmtNum = (n: number | null | undefined, unit: string) => (n == null ? dash : `${n} ${unit}`);
 /** The gateway icon set knows reporting / degraded / stale; a gateway with no traffic looks like a stale one. */
 const iconStatus = (s: NetGateway['status']) => (s === 'no-traffic' ? 'stale' : s);
@@ -163,13 +164,22 @@ export function NetworkExplorerPage() {
   const debouncedIdleRef = useRef<any>(null);
   const fittedForRef = useRef<string | null>(null);
 
+  // The sign-in ended (the API answered 401 and the stored token is already cleared): go to the login screen instead of
+  // leaving a page whose "Try again" can never work.
+  useEffect(() => {
+    if (data.sessionExpired) navigate('/login', { replace: true });
+  }, [data.sessionExpired, navigate]);
+
   // ---- the area (site) list, from the same tree the Dashboard filters by ----
   useEffect(() => {
     const ctl = new AbortController();
     networkApi
       .listSites(ctl.signal)
       .then((list) => setSites(list.filter((s) => s.id !== 'ALL')))
-      .catch(() => setSites([])); // the picker then offers "All my sites" only
+      .catch((e) => {
+        if (isUnauthorized(e)) navigate('/login', { replace: true });
+        setSites([]); // the picker then offers "All my sites" only
+      });
     return () => ctl.abort();
   }, []);
 
@@ -282,6 +292,10 @@ export function NetworkExplorerPage() {
       })
       .catch((e) => {
         if (ctl.signal.aborted) return;
+        if (isUnauthorized(e)) {
+          navigate('/login', { replace: true });
+          return;
+        }
         setTableError((e as { operatorMessage?: string })?.operatorMessage || 'Could not load the meter list.');
         setTableLoading(false);
       });
@@ -357,6 +371,17 @@ export function NetworkExplorerPage() {
     }
   }, [activeView]);
 
+  const fitMapTo = useCallback((box: BoundingBox) => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    if (box.minLat === box.maxLat && box.minLng === box.maxLng) {
+      map.setCenter({ lat: box.minLat, lng: box.minLng });
+      map.setZoom(15);
+    } else {
+      map.fitBounds({ north: box.maxLat, south: box.minLat, east: box.maxLng, west: box.minLng }, 40);
+    }
+  }, []);
+
   // Fit the map to the data once per area selection (not on every background refresh, which would undo the user's panning)
   useEffect(() => {
     if (!isLoaded || !mapInstanceRef.current || fittedForRef.current === siteId) return;
@@ -364,14 +389,23 @@ export function NetworkExplorerPage() {
     const box = unionBounds(trimmedBounds(points), trimmedBounds(gateways));
     if (!box) return;
     fittedForRef.current = siteId;
-    const map = mapInstanceRef.current;
-    if (box.minLat === box.maxLat && box.minLng === box.maxLng) {
-      map.setCenter({ lat: box.minLat, lng: box.minLng });
-      map.setZoom(15);
-    } else {
-      map.fitBounds({ north: box.maxLat, south: box.minLat, east: box.maxLng, west: box.minLng }, 40);
-    }
-  }, [isLoaded, siteId, data.loadedSiteId, points, gateways]);
+    fitMapTo(box);
+  }, [isLoaded, siteId, data.loadedSiteId, points, gateways, fitMapTo]);
+
+  // Searching moves the map to what was found; clearing the search goes back to the whole selection.
+  const shownRef = useRef({ filteredPoints, filteredGateways, points, gateways });
+  shownRef.current = { filteredPoints, filteredGateways, points, gateways };
+  const lastSearchRef = useRef('');
+  useEffect(() => {
+    const previous = lastSearchRef.current;
+    lastSearchRef.current = debouncedSearch;
+    if (!isLoaded || !mapInstanceRef.current || previous === debouncedSearch) return;
+    const r = shownRef.current;
+    const box = debouncedSearch
+      ? unionBounds(trimmedBounds(r.filteredPoints, 0), trimmedBounds(r.filteredGateways, 0))
+      : unionBounds(trimmedBounds(r.points), trimmedBounds(r.gateways));
+    if (box) fitMapTo(box);
+  }, [debouncedSearch, isLoaded, fitMapTo]);
 
   // Gateways and their coverage
   useEffect(() => {
@@ -719,16 +753,22 @@ export function NetworkExplorerPage() {
           {coordinates?.status === 'stale' && (
             <div className="gis-map-notice gis-map-notice--warn">Meter positions could not be refreshed; showing the last known positions.</div>
           )}
-          {summary && summary.withoutCoordinates > 0 && coordinates?.status !== 'unavailable' && (
-            <div className="gis-map-notice" title="These meters are in the system but have no recorded position">
-              {summary.withoutCoordinates.toLocaleString()} of {summary.total.toLocaleString()} meters have no position and are not on the map
-            </div>
-          )}
-          {unplaced.length > 0 && (
-            <div className="gis-map-notice" title="Meters report through these gateways, but no usable location is stored for them">
-              {unplaced.length} gateway{unplaced.length === 1 ? '' : 's'} heard by meters {unplaced.length === 1 ? 'is' : 'are'} not on the map (see Performance)
-            </div>
-          )}
+          {(() => {
+            const parts: string[] = [];
+            if (summary && summary.withoutCoordinates > 0 && coordinates?.status !== 'unavailable') {
+              parts.push(`${summary.withoutCoordinates.toLocaleString()} of ${summary.total.toLocaleString()} meters have no position`);
+            }
+            if (unplaced.length > 0) parts.push(`${unplaced.length} gateway${unplaced.length === 1 ? '' : 's'} not on the map`);
+            if (parts.length === 0) return null;
+            return (
+              <div
+                className="gis-map-notice"
+                title="Meters without a recorded position cannot be drawn. Gateways listed here are heard by meters but have no usable location stored (see the Performance tab)."
+              >
+                {parts.join(' · ')}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Legend */}
