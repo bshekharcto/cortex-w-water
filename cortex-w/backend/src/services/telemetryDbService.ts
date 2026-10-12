@@ -61,6 +61,9 @@ export function getGatewayAlias(id: string): string {
   return `GW-${suffix}`;
 }
 
+/** Text for an ILIKE '%...%' search: the characters LIKE treats as wildcards are matched as themselves. */
+export const escapeLike = (text: string) => text.replace(/[\\%_]/g, (c) => `\\${c}`);
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Readings are stored in UTC and shown in the time zone of the site: every window, day and hour below is cut there.
@@ -235,7 +238,7 @@ export async function getGatewayMeters(opts: {
 }) {
   const zone = safeZone(opts.zone);
   const { fromDate, toDate } = dateRange(opts.days, opts.referenceDate, opts.custom, zone);
-  const search = (opts.q || '').trim();
+  const search = escapeLike((opts.q || '').trim());
   const res = await pool.query(
     `${framesCte(zone, opts.siteIds ? '$7' : undefined)},
     mine AS (
@@ -292,7 +295,7 @@ export async function searchMeters(
     latest AS (
       SELECT DISTINCT ON (meter_id) *
       FROM frames
-      WHERE meter_id ILIKE '%' || $3 || '%' OR dev_eui ILIKE '%' || $3 || '%'
+      WHERE strpos(lower(meter_id), lower($3)) > 0 OR strpos(lower(dev_eui), lower($3)) > 0 -- a plain substring: no LIKE wildcards
       ORDER BY meter_id, decoded_at DESC
     ),
     stats AS (

@@ -2,6 +2,7 @@ import { pool } from '../db/pool.js';
 import { networkHealthThresholds as T, GATEWAY_EUI_PREFIX } from '../config/networkHealth.js';
 import {
   dateRange,
+  escapeLike,
   formatRelativeTime,
   getGatewayAlias,
   inWindow,
@@ -240,7 +241,7 @@ export async function listFleetMeters(
   let inner = s.where;
   const q = (opts.q ?? '').trim().slice(0, 64);
   if (q) {
-    params.push(`%${q}%`);
+    params.push(`%${escapeLike(q)}%`);
     inner += ` AND (meter_id ILIKE $${params.length} OR dev_eui ILIKE $${params.length})`;
   }
 
