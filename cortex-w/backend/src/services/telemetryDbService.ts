@@ -336,8 +336,9 @@ export async function getPostgresAggregatedSummary(
     days = Math.round((Date.parse(toDate) - Date.parse(fromDate)) / DAY_MS) + 1;
   }
 
-  // a list of sites would make a long key (the column holds 100 characters): a short hash stands for it
-  const siteKey = !siteId || siteId === 'ALL' ? 'ALL' : siteId.length > 24 ? createHash('md5').update(siteId).digest('hex') : siteId;
+  // the cache is shared by users, so the key stands for the sites the numbers cover (a hash: the column holds 100
+  // characters), never for the filter the caller typed
+  const siteKey = siteIds ? 's' + createHash('md5').update([...siteIds].sort((a, b) => a - b).join(',')).digest('hex') : 'ALL';
   const cacheKey = custom
     ? `custom_${fromDate}_${toDate}_site_${siteKey}`
     : `${days}d_summary_${toDate}_site_${siteKey}`;

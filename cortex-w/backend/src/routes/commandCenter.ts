@@ -53,7 +53,7 @@ function customWindow(query: any, zone: string): DateWindow | undefined | null {
 
 router.get('/summary', async (req, res) => {
   try {
-    const days = parseInt((req.query.days as string) || '7', 10);
+    const days = intParam(req.query.days, 7, 1, 90);
     const date = req.query.date as string | undefined; // only for looking back from an earlier day; default: today at the site
     const refresh = req.query.refresh === 'true';
     const siteId = (req.query.siteId as string) || (req.query.siteIds as string) || 'ALL';
@@ -73,7 +73,7 @@ router.get('/summary', async (req, res) => {
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
     console.error('[commandCenter] Error generating telemetry summary:', err);
-    res.status(500).json({ error: 'Failed to aggregate telemetry', message: err.message });
+    res.status(500).json({ error: 'Failed to aggregate telemetry' });
   }
 });
 
@@ -109,7 +109,7 @@ router.get('/gateways/:gatewayId/meters', async (req, res) => {
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
     console.error('[commandCenter] Error getting gateway meters:', err);
-    res.status(500).json({ error: 'Failed to get gateway meters', message: err.message });
+    res.status(500).json({ error: 'Failed to get gateway meters' });
   }
 });
 
@@ -146,7 +146,7 @@ router.get('/gateways/:gatewayId/radio-health', async (req, res) => {
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
     console.error('[commandCenter] Error getting radio health:', err);
-    res.status(500).json({ error: 'Failed to get radio health', message: err.message });
+    res.status(500).json({ error: 'Failed to get radio health' });
   }
 });
 
@@ -157,7 +157,7 @@ router.get('/gateways/:gatewayId/hourly', async (req, res) => {
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
     console.error('[commandCenter] Error getting hourly activity:', err);
-    res.status(500).json({ error: 'Failed to get hourly activity', message: err.message });
+    res.status(500).json({ error: 'Failed to get hourly activity' });
   }
 });
 
@@ -177,7 +177,7 @@ router.get('/meters/search', async (req, res) => {
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
     console.error('[commandCenter] Error searching meters:', err);
-    res.status(500).json({ error: 'Failed to search meters', message: err.message });
+    res.status(500).json({ error: 'Failed to search meters' });
   }
 });
 
@@ -303,23 +303,6 @@ router.get('/radio', async (req, res) => {
     res.json(await getRadioHealth({ ...scope, gatewayId }));
   } catch (err: any) {
     failed(res, 'loading radio health', err);
-  }
-});
-
-router.get('/feed', async (req, res) => {
-  try {
-    const limit = parseInt((req.query.limit as string) || '100', 10);
-    const zone = safeZone(await resolveViewTimeZone(null));
-    const result = await pool.query(
-      `SELECT *, to_char(decoded_at AT TIME ZONE '${zone}', 'YYYY-MM-DD HH24:MI:SS') AS local_time
-       FROM water_meter_readings_v2 WHERE is_history = false ORDER BY decoded_at DESC LIMIT $1`,
-      [limit]
-    );
-    res.json(result.rows.map((r: any, idx: number) => toFrameItem(r, `feed-${idx}-${r.meter_id}-${new Date(r.time).getTime()}`)));
-  } catch (err: any) {
-    if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.error('[commandCenter] Error getting live feed:', err);
-    res.status(500).json({ error: 'Failed to get live feed', message: err.message });
   }
 });
 

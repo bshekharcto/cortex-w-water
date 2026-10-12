@@ -625,11 +625,12 @@ export async function getNodeAncestors(
 
 /**
  * The site ids a Command Center site filter covers: each site in `siteId` (one id, or several separated by commas) and
- * everything below it. `null` = no filter ("ALL"). An empty list means the caller may see none of them, so the caller
- * must show nothing. A site the caller may not open is left out of the others.
+ * everything below it. "ALL" (or no filter) means every site the caller may open, never the whole fleet. An empty list
+ * means the caller may see none of them, so the caller must show nothing. A site the caller may not open is left out of
+ * the others.
  */
-export async function resolveSiteScope(siteId: string | undefined, authHeader?: string): Promise<number[] | null> {
-  if (!siteId || siteId === 'ALL') return null;
+export async function resolveSiteScope(siteId: string | undefined, authHeader?: string): Promise<number[]> {
+  if (!siteId || siteId === 'ALL') return [...(await getAllowedSiteIds(authHeader))].sort((a, b) => a - b);
   const requested = siteId
     .split(',')
     .map((part) => Number(part.trim()))
@@ -642,7 +643,7 @@ export async function resolveSiteScope(siteId: string | undefined, authHeader?: 
     if (!allowed.has(id)) continue;
     subtreeSiteIds(snap, id).forEach((s) => ids.add(s));
   }
-  return [...ids];
+  return [...ids].sort((a, b) => a - b);
 }
 
 export interface SiteOption {

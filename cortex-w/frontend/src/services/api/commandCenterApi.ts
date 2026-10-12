@@ -102,22 +102,9 @@ export async function fetchCommandCenterSummary(
     query,
   });
 
-  // Save to client cache keyed by days and siteId
-  setLocalCachedSummary(data, days, siteId);
+  // Save to client cache keyed by days and siteId (a custom window is not the plain N-day view)
+  if (!custom) setLocalCachedSummary(data, days, siteId);
   return data;
-}
-
-/**
- * Fetches the latest live frame feed
- */
-export async function fetchLiveTelemetryFeed(
-  date?: string,
-  limit: number = 100
-): Promise<RawFrameItem[]> {
-  return apiRequest<RawFrameItem[]>('/command-center/feed', {
-    method: 'GET',
-    query: { ...(date ? { date } : {}), limit },
-  });
 }
 
 /** The window and site a per-gateway request covers. */
