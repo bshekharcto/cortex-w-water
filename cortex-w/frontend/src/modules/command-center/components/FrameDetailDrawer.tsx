@@ -1,4 +1,3 @@
-import { frameStatusLabel } from '../utils/frameStatusLabel';
 import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import type { RawFrameItem } from '../types/commandCenter.types';
@@ -35,8 +34,6 @@ export function FrameDetailDrawer({ frame, onClose, onOpenMeter }: Props) {
     ['ADR', yesNo(frame.adr)],
     ['Checksum', fmt(frame.checksumStatus)],
     ['Status byte', formatStatusByte(frame.statusByte)],
-    ['Link quality', frameStatusLabel(frame.statusEvent)],
-    ['Heard by several gateways', frame.multiGateway ? 'Yes' : 'No'],
   ];
 
   return (

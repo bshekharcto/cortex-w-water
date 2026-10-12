@@ -53,7 +53,7 @@ export interface FramesPage {
   total: number;
   limit: number;
   offset: number;
-  items: Array<ReturnType<typeof toFrameItem> & { multiGateway: boolean }>;
+  items: Array<ReturnType<typeof toFrameItem>>;
 }
 
 async function framesPage(opts: WindowOpts & { gatewayId?: string; meterId?: string; limit: number; offset: number }): Promise<FramesPage> {
@@ -81,10 +81,7 @@ async function framesPage(opts: WindowOpts & { gatewayId?: string; meterId?: str
     total: res.rows[0]?.total ?? 0,
     limit: opts.limit,
     offset: opts.offset,
-    items: res.rows.map((r: any) => ({
-      ...toFrameItem(r, `${r.meter_id}-${new Date(r.decoded_at).getTime()}-${r.gateway_id}`),
-      multiGateway: (r.gateway_count ?? 1) > 1,
-    })),
+    items: res.rows.map((r: any) => toFrameItem(r, `${r.meter_id}-${new Date(r.decoded_at).getTime()}-${r.gateway_id}`)),
   };
 }
 
@@ -123,10 +120,6 @@ export function freshness(decodedAt: string | Date): 'live' | 'stale' | 'silent'
 
 function meterItem(m: any, heard: Array<{ gatewayId: string; rssi: number | null; snr: number | null }>) {
   const status = freshness(m.decoded_at);
-  const diagnostics: string[] = [];
-  if (m.rssi != null && m.rssi < T.rssiWeakDbm) diagnostics.push('weak-rssi');
-  if (m.snr != null && m.snr < T.snrWeakDb) diagnostics.push('poor-snr');
-  if ((m.gateway_count ?? 1) > 1) diagnostics.push('multi-gw');
   return {
     meterId: m.meter_id,
     devEui: m.dev_eui,
@@ -146,8 +139,7 @@ function meterItem(m: any, heard: Array<{ gatewayId: string; rssi: number | null
     otherGatewaysCount: Math.max(0, heard.length - 1),
     checksumStatus: m.checksum_status,
     meterTimestamp: m.meter_timestamp,
-    statusChips: [status, ...diagnostics],
-    diagnostics,
+    statusChips: [status],
     gatewaysHeard: heard.map((h) => ({
       gatewayId: h.gatewayId,
       alias: getGatewayAlias(h.gatewayId),

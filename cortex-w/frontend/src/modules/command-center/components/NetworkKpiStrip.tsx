@@ -77,18 +77,6 @@ export function NetworkKpiStrip({ kpis, loading, windowText = '24H' }: Props) {
         </div>
       </div>
 
-      {/* KPI 6 */}
-      <div className="cc-kpi-card">
-        <div className="cc-kpi-top">
-          <span className="cc-kpi-dot cc-kpi-dot--purple" />
-          <span className="cc-kpi-label">MULTI-GW METERS</span>
-        </div>
-        <div className="cc-kpi-value-row">
-          <span className="cc-kpi-val">{kpis.multiGatewayMeters}</span>
-          <span className="cc-kpi-sub">heard by &gt;1 GW</span>
-        </div>
-      </div>
-
       {/* KPI 7 & 8 */}
       <div className="cc-kpi-card">
         <div className="cc-kpi-top">

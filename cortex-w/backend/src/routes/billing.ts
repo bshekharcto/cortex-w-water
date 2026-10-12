@@ -285,7 +285,7 @@ router.get('/:id/detail', async (req, res) => {
         city: detectedCity,
         ward: extractWard(address),
         siteName: matchedBill.siteName || detectedCity,
-        mobile: matchedGisMeter?.householdPhone || '—',
+        mobile: '—', // the mobile number is not in the metadata mirror (the old lookup never carried one either)
       },
       meter: {
         meterId: matchedBill.meterId,

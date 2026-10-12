@@ -159,7 +159,7 @@ export async function fetchGatewayHourly(gatewayId: string, scope: GatewayScope)
   });
 }
 
-export type MeterFilterKey = 'ALL' | 'LIVE' | 'STALE' | 'WEAK_RSSI' | 'POOR_SNR' | 'MULTI_GW';
+export type MeterFilterKey = 'ALL' | 'LIVE' | 'STALE';
 
 export interface GatewayMetersPage {
   content: MeterTelemetryItem[];

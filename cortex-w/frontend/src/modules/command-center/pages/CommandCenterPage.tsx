@@ -51,7 +51,6 @@ const EMPTY_KPIS: NetworkKpiData = {
   framesReceived: 0,
   framesTrend: '',
   lastFrameAge: '—',
-  multiGatewayMeters: 0,
   avgRssi: 0,
   avgSnr: 0,
 };

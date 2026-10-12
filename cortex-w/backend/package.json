@@ -11,6 +11,7 @@
     "migrate:neon": "tsx src/scripts/migrateToNeon.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "test:isolation": "node test/isolation.test.mjs",
+    "test:network": "tsx test/network.test.ts",
     "test:crypto": "tsx test/sessionStore.test.ts"
   },
   "dependencies": {

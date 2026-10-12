@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Radio,
@@ -14,20 +14,109 @@ import {
 } from 'lucide-react';
 import { runtimeConfig } from '@/config/runtimeConfig';
 import { useGoogleMaps } from '../../shared/useGoogleMaps';
-import {
-  BHUBANESWAR_CENTER,
-  ODISHA_CENTER,
-  GisGateway,
-  GisMeter,
-} from '../../shared/gisData';
+import type { GisMeter } from '../../shared/gisData';
 import { MeterHistoryDrawer } from '../../shared/MeterHistoryDrawer';
-import { mapApi } from '@/services/api/mapApi';
-import { SpatialGridIndex, BoundingBox } from '../../shared/spatialIndex';
-import { gisLocalDb } from '../../shared/gisLocalDb';
-import { MarkerClusterer, SuperClusterAlgorithm } from '@googlemaps/markerclusterer';
-import { getMeterColorInfo } from '../../shared/meterColorUtils';
+import {
+  networkApi,
+  type NetGateway,
+  type NetMeter,
+  type NetMeterPage,
+  type NetMeterStatus,
+  type NetSiteOption,
+  type NetUnplacedGateway,
+} from '@/services/api/networkApi';
+import type { BoundingBox } from '../../shared/spatialIndex';
+import { createMeterLayer, type LayerItem, type MeterLayer } from '../../shared/meterCanvasLayer';
+import { getDecibelBorder } from '../../shared/meterColorUtils';
 import { getGatewayMapMarkerIcon, getGatewaySvg } from '../../shared/gatewayIconUtils';
+import { formatStamp, isUnauthorized } from '../../shared/meterDetailModel';
+import { SiteTreeSelect } from '@/modules/command-center/components/SiteTreeSelect';
+import { useNetworkData } from '../hooks/useNetworkData';
+import {
+  GATEWAY_STATUS_LABEL,
+  METER_STATUS_STYLE,
+  gatewayLabel,
+  matchesSearch,
+  toGisMeter,
+  trimmedBounds,
+  unionBounds,
+  type MeterPoint,
+} from '../networkModel';
 import '../../shared/gis.css';
+
+// Where the map looks before any data has arrived. As soon as meters and gateways are loaded the map fits them, so
+// this only decides what is on screen for the first moments (a neutral overview of India, not a customer's city).
+const INITIAL_VIEW = { center: { lat: 22.5, lng: 80 }, zoom: 5 };
+
+type SelectedEntity = { type: 'gateway'; data: NetGateway } | { type: 'meter'; data: GisMeter } | null;
+type StatusFilter = 'ALL' | NetMeterStatus;
+
+const STATUS_ORDER: NetMeterStatus[] = ['live', 'stale', 'silent', 'never'];
+const dash = '—';
+const fmtTime = formatStamp;
+const fmtNum = (n: number | null | undefined, unit: string) => (n == null ? dash : `${n} ${unit}`);
+/** The gateway icon set knows reporting / degraded / stale; a gateway with no traffic looks like a stale one. */
+const iconStatus = (s: NetGateway['status']) => (s === 'no-traffic' ? 'stale' : s);
+
+function gatewayBadgeClass(s: NetGateway['status']): string {
+  if (s === 'reporting') return 'cw-badge--green';
+  if (s === 'degraded') return 'cw-badge--orange';
+  return 'cw-badge--muted';
+}
+function meterBadgeClass(s: NetMeterStatus): string {
+  return s === 'live' ? 'cw-badge--green' : s === 'stale' ? 'cw-badge--orange' : s === 'silent' ? 'cw-badge--red' : 'cw-badge--muted';
+}
+
+/** What the map is waiting for, step by step, so a slow load never looks like a frozen page. */
+function MapLoadingOverlay({ steps }: { steps: Array<{ label: string; done: boolean }> }) {
+  return (
+    <div className="gis-loading-overlay" role="status" aria-live="polite">
+      <div className="gis-loading-card">
+        <div className="cw-spinner" />
+        <div className="gis-loading-title">Loading network data…</div>
+        <div className="gis-loading-steps">
+          {steps.map((st) => (
+            <div key={st.label} className={`gis-loading-step ${st.done ? 'gis-loading-step--done' : ''}`}>
+              <span className="gis-loading-dot" />
+              <span>{st.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SkeletonRows({ rows, cols }: { rows: number; cols: number }) {
+  return (
+    <>
+      {Array.from({ length: rows }, (_, r) => (
+        <tr key={r} aria-hidden="true">
+          {Array.from({ length: cols }, (_, c) => (
+            <td key={c}>
+              <span className="gis-skeleton" style={{ width: c === 1 ? 110 : c === 2 ? 130 : 60, height: 12 }} />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
+  );
+}
+
+function GatewayCardSkeletons({ count }: { count: number }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }} aria-hidden="true">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="gis-card-skeleton">
+          <span className="gis-skeleton" style={{ width: '55%', height: 16 }} />
+          {[70, 60, 80, 50].map((w, j) => (
+            <span key={j} className="gis-skeleton" style={{ width: `${w}%`, height: 11 }} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function NetworkExplorerPage() {
   const navigate = useNavigate();
@@ -35,248 +124,173 @@ export function NetworkExplorerPage() {
   const { isLoaded, loadError } = useGoogleMaps(apiKey);
 
   const [activeView, setActiveView] = useState<'map' | 'table' | 'performance'>('map');
-  const [selectedCity, setSelectedCity] = useState<string>('ALL');
+  const [siteId, setSiteId] = useState<string>('ALL');
+  const [sites, setSites] = useState<NetSiteOption[]>([]);
   const [selectedGatewayId, setSelectedGatewayId] = useState<string>('ALL');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showMeters, setShowMeters] = useState(true);
   const [showGateways, setShowGateways] = useState(true);
-  const [showCircles, setShowCircles] = useState(true);
+  const [showCircles, setShowCircles] = useState(false); // coverage circles start hidden; the toggle turns them on
   const [enableClustering, setEnableClustering] = useState(true);
-  const [problemsOnly, setProblemsOnly] = useState(false);
   const [isLegendOpen, setIsLegendOpen] = useState(false);
 
-  // High-performance map viewport & LOD state
-  const [mapZoom, setMapZoom] = useState<number>(10);
-  const [mapBounds, setMapBounds] = useState<BoundingBox | null>(null);
-  const [renderedMetersCount, setRenderedMetersCount] = useState<number>(0);
+  const [mapZoom, setMapZoom] = useState<number>(INITIAL_VIEW.zoom);
 
-  // Table Pagination & Filter State
   const [tablePage, setTablePage] = useState(1);
   const [tablePageSize, setTablePageSize] = useState(50);
   const [tableTab, setTableTab] = useState<'all' | 'gateways' | 'meters'>('all');
+  const [tableData, setTableData] = useState<NetMeterPage | null>(null);
+  const [tableLoading, setTableLoading] = useState(false);
+  const [tableError, setTableError] = useState<string | null>(null);
 
-  // Performance Load More State
   const [perfVisibleCount, setPerfVisibleCount] = useState(8);
+  const [selectedEntity, setSelectedEntity] = useState<SelectedEntity>(null);
 
-  const [gateways, setGateways] = useState<GisGateway[]>([]);
-  const [meters, setMeters] = useState<GisMeter[]>([]);
-  const [liveSummary, setLiveSummary] = useState<{ totalMeters: number; activeCount: number; problemCount: number } | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isCachedFromDb, setIsCachedFromDb] = useState(false);
-  const [dataLoadError, setDataLoadError] = useState<string | null>(null);
-
-  // Reset table pagination when search or filters change
-  useEffect(() => {
-    setTablePage(1);
-  }, [searchQuery, selectedCity, selectedGatewayId, problemsOnly, tableTab, tablePageSize]);
-
-  // Compute meter breakdown per city
-  const cityCounts = useMemo(() => {
-    let bmc = 0;
-    let pri = 0;
-    let ctc = 0;
-    meters.forEach((m) => {
-      if (m.city === 'Puri') pri++;
-      else if (m.city === 'Cuttack') ctc++;
-      else bmc++;
-    });
-    return {
-      ALL: meters.length,
-      Bhubaneswar: bmc,
-      Puri: pri,
-      Cuttack: ctc,
-    };
-  }, [meters]);
-
-  const [selectedEntity, setSelectedEntity] = useState<
-    { type: 'gateway'; data: GisGateway } | { type: 'meter'; data: GisMeter } | null
-  >(null);
+  const data = useNetworkData(siteId);
+  const { gateways, unplaced, points, summary, coordinates } = data;
 
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const circlesRef = useRef<any[]>([]);
-  const meterMarkersMapRef = useRef<Map<string, any>>(new Map());
-  const markerClustererRef = useRef<MarkerClusterer | null>(null);
+  const meterLayerRef = useRef<MeterLayer<MeterPoint> | null>(null);
   const infoWindowRef = useRef<any>(null);
   const debouncedIdleRef = useRef<any>(null);
+  const fittedForRef = useRef<string | null>(null);
 
-  // Instant Startup with Local IndexedDB (<15ms) + Background Delta Sync for All Odisha Cities
+  // The sign-in ended (the API answered 401 and the stored token is already cleared): go to the login screen instead of
+  // leaving a page whose "Try again" can never work.
   useEffect(() => {
-    let cancelled = false;
+    if (data.sessionExpired) navigate('/login', { replace: true });
+  }, [data.sessionExpired, navigate]);
 
-    async function loadDataWithLocalStorage() {
-      let hadCachedData = false;
-
-      // Step 1: Immediate local database load (a real cache of previously-
-      // fetched live data, not fabricated — populated by Step 2 below)
-      try {
-        const cached = (await gisLocalDb.loadMeters('ALL')) || (await gisLocalDb.loadMeters('6394'));
-        if (!cancelled && cached && cached.meters.length > 0) {
-          hadCachedData = true;
-          setMeters(cached.meters);
-          setIsCachedFromDb(true);
-          const activeCount = cached.meters.filter((m) => m.status === 'active').length;
-          const warningCount = cached.meters.filter((m) => m.status === 'weak').length;
-          const problemCount = cached.meters.filter((m) => m.status === 'silent').length;
-          setLiveSummary({
-            totalMeters: cached.meters.length,
-            activeCount,
-            problemCount: warningCount + problemCount,
-          });
-        }
-      } catch (e) {
-        console.warn('[gis] Local DB load notice:', e);
-      }
-
-      // Step 2: Background network fetch to sync live telemetry across all cities
-      try {
-        setIsLoading(true);
-        const [gwData, metersData] = await Promise.all([
-          mapApi.getGateways('ALL').catch((e) => {
-            console.warn('[gis] Failed to load live gateways:', e);
-            return null;
-          }),
-          mapApi.getMeters({ siteId: 'ALL' }).catch((e) => {
-            console.warn('[gis] Failed to load live meters:', e);
-            return null;
-          }),
-        ]);
-
-        if (cancelled) return;
-
-        const gatewaysOk = gwData && Array.isArray(gwData) && gwData.length > 0;
-        const metersOk = metersData && metersData.meters && metersData.meters.length > 0;
-
-        if (gatewaysOk) {
-          setGateways(gwData);
-        }
-
-        if (metersOk) {
-          setMeters(metersData.meters);
-          if (metersData.summary) {
-            setLiveSummary(metersData.summary);
-          }
-          // Persist all 18,353+ meters in IndexedDB for subsequent instant startups
-          gisLocalDb.saveMeters(metersData.meters, 'ALL').catch((e) => {
-            console.warn('[gis] Failed to save to IndexedDB:', e);
-          });
-          setDataLoadError(null);
-        } else if (!hadCachedData) {
-          // Live fetch failed AND there's no cached data to fall back on —
-          // tell the user honestly instead of silently showing an empty map.
-          setDataLoadError('Unable to load live network data. Please check your connection and try again.');
-        }
-      } catch (err) {
-        console.warn('[gis] Error syncing live data:', err);
-        if (!hadCachedData) {
-          setDataLoadError('Unable to load live network data. Please check your connection and try again.');
-        }
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    }
-
-    loadDataWithLocalStorage();
-
-    return () => {
-      cancelled = true;
-    };
+  // ---- the area (site) list, from the same tree the Dashboard filters by ----
+  useEffect(() => {
+    const ctl = new AbortController();
+    networkApi
+      .listSites(ctl.signal)
+      .then((list) => setSites(list.filter((s) => s.id !== 'ALL')))
+      .catch((e) => {
+        if (isUnauthorized(e)) navigate('/login', { replace: true });
+        setSites([]); // the picker then offers "All my sites" only
+      });
+    return () => ctl.abort();
   }, []);
 
-  // Filtered lists
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [searchQuery]);
+
+  // A new area starts from a clean slate: the gateway filter belongs to the area before it.
+  useEffect(() => {
+    setSelectedGatewayId('ALL');
+    setSelectedEntity(null);
+  }, [siteId]);
+
+  useEffect(() => {
+    setTablePage(1);
+  }, [debouncedSearch, siteId, selectedGatewayId, statusFilter, tableTab, tablePageSize]);
+
+  const gatewayById = useMemo(() => new Map(gateways.map((g) => [g.gatewayId, g])), [gateways]);
+  const gatewayName = useCallback((id: string | null) => (id ? (gatewayById.has(id) ? gatewayLabel(gatewayById.get(id)!) : id) : dash), [gatewayById]);
+  const siteName = useMemo(() => new Map(sites.map((s) => [Number(s.id), s.name])), [sites]);
+
+  // ---- what is shown ----
   const filteredGateways = useMemo(() => {
-    return gateways.filter((gw) => {
-      if (selectedCity === 'Puri') return false; // Puri has direct LoRa links without physical gateways
-      if (selectedCity === 'Cuttack' && gw.gatewayId !== '506f9800000002a0') return false;
-      if (selectedCity === 'Bhubaneswar' && gw.gatewayId === '506f9800000002a0') return false;
-      if (selectedGatewayId !== 'ALL' && gw.gatewayId !== selectedGatewayId) return false;
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase();
-        return gw.alias.toLowerCase().includes(q) || gw.gatewayId.toLowerCase().includes(q);
-      }
-      return true;
+    const q = debouncedSearch.toLowerCase();
+    return gateways.filter((g) => {
+      if (selectedGatewayId !== 'ALL' && g.gatewayId !== selectedGatewayId) return false;
+      if (!q) return true;
+      return g.gatewayId.includes(q) || gatewayLabel(g).toLowerCase().includes(q);
     });
-  }, [gateways, selectedCity, selectedGatewayId, searchQuery]);
+  }, [gateways, selectedGatewayId, debouncedSearch]);
 
-  const filteredMeters = useMemo(() => {
-    return meters.filter((m) => {
-      if (selectedCity !== 'ALL' && m.city && m.city !== selectedCity) return false;
-      if (selectedGatewayId !== 'ALL' && m.gatewayId !== selectedGatewayId) return false;
-      if (problemsOnly && m.status === 'active') return false;
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase();
-        return (
-          String(m.meterId || '').toLowerCase().includes(q) ||
-          String(m.householdId || '').toLowerCase().includes(q) ||
-          (m.householdName && String(m.householdName).toLowerCase().includes(q)) ||
-          (m.city && String(m.city).toLowerCase().includes(q))
-        );
+  const filteredPoints = useMemo(
+    () =>
+      points.filter((p) => {
+        if (selectedGatewayId !== 'ALL' && p.gatewayId !== selectedGatewayId) return false;
+        if (statusFilter !== 'ALL' && p.status !== statusFilter) return false;
+        return matchesSearch(p, debouncedSearch);
+      }),
+    [points, selectedGatewayId, statusFilter, debouncedSearch]
+  );
+
+  // ---- opening a meter: instantly from what the map knows, then completed from the server ----
+  const openMeter = useCallback(
+    async (p: MeterPoint) => {
+      const gw = p.gatewayId ? gatewayById.get(p.gatewayId) ?? null : null;
+      const partial: NetMeter = {
+        meterId: p.meterId, assetId: p.assetId, devEui: null, consumerName: null, householdId: null, locality: null, ward: null,
+        zone: null, dma: null, siteId: null, siteName: null, lat: p.lat, lng: p.lng, gatewayId: p.gatewayId, distanceToGatewayM: null,
+        status: p.status, rssi: p.rssi, snr: p.snr, lastSeen: null, currentReadingKl: null,
+      };
+      setSelectedEntity({ type: 'meter', data: toGisMeter(partial, gw) });
+      try {
+        const page = await networkApi.listMeters({ siteId, search: p.meterId, limit: 5 });
+        const full = page.items.find((i) => i.meterId === p.meterId);
+        if (full) {
+          setSelectedEntity((cur) => (cur?.type === 'meter' && cur.data.meterId === p.meterId ? { type: 'meter', data: toGisMeter(full, gw) } : cur));
+        }
+      } catch {
+        // the drawer keeps what the map knows; it loads its own details from the server as well
       }
-      return true;
-    });
-  }, [meters, selectedCity, selectedGatewayId, problemsOnly, searchQuery]);
+    },
+    [siteId, gatewayById]
+  );
+  const openMeterRef = useRef(openMeter);
+  openMeterRef.current = openMeter;
 
-  // Paginated meters for table
-  const totalMeters = filteredMeters.length;
+  // ---- the meter table: one page at a time, filtered by the server ----
+  useEffect(() => {
+    if (activeView !== 'table' || tableTab === 'gateways') return;
+    const ctl = new AbortController();
+    setTableLoading(true);
+    setTableError(null);
+    networkApi
+      .listMeters(
+        {
+          siteId,
+          limit: tablePageSize,
+          offset: (tablePage - 1) * tablePageSize,
+          search: debouncedSearch || undefined,
+          status: statusFilter === 'ALL' ? undefined : statusFilter,
+          gatewayId: selectedGatewayId === 'ALL' ? undefined : selectedGatewayId,
+        },
+        ctl.signal
+      )
+      .then((page) => {
+        setTableData(page);
+        setTableLoading(false);
+      })
+      .catch((e) => {
+        if (ctl.signal.aborted) return;
+        if (isUnauthorized(e)) {
+          navigate('/login', { replace: true });
+          return;
+        }
+        setTableError((e as { operatorMessage?: string })?.operatorMessage || 'Could not load the meter list.');
+        setTableLoading(false);
+      });
+    return () => ctl.abort();
+  }, [activeView, tableTab, siteId, tablePage, tablePageSize, debouncedSearch, statusFilter, selectedGatewayId]);
+
+  const totalMeters = tableData?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalMeters / tablePageSize));
-  const pagedMeters = useMemo(() => {
-    const start = (tablePage - 1) * tablePageSize;
-    return filteredMeters.slice(start, start + tablePageSize);
-  }, [filteredMeters, tablePage, tablePageSize]);
 
-  // Spatial 2D Grid Index for 15,296 meters (<1ms queries)
-  const spatialIndex = useMemo(() => {
-    return new SpatialGridIndex<GisMeter>(filteredMeters, 64);
-  }, [filteredMeters]);
-
-  // Viewport Culling with Level of Detail (LOD)
-  // Keeps active markers under 300 at all times, ensuring 60 FPS and zero thread lockups.
-  const MAX_VIEWPORT_PINS = 300;
-
-  const visibleMeters = useMemo(() => {
-    // When clustering is active (default), MarkerClusterer handles pins natively on canvas
-    if (!showMeters || enableClustering) return [];
-
-    // If a search query is active, show the matching meters directly
-    if (searchQuery.trim().length > 0) {
-      return filteredMeters.slice(0, MAX_VIEWPORT_PINS);
-    }
-
-    // At city overview zoom (< 14), render gateway hubs rather than flooding 15k DOM markers
-    if (mapZoom < 14) {
-      return [];
-    }
-
-    if (!mapBounds) {
-      return filteredMeters.slice(0, 60);
-    }
-
-    const latMargin = (mapBounds.maxLat - mapBounds.minLat) * 0.1;
-    const lngMargin = (mapBounds.maxLng - mapBounds.minLng) * 0.1;
-
-    return spatialIndex.query(
-      {
-        minLat: mapBounds.minLat - latMargin,
-        maxLat: mapBounds.maxLat + latMargin,
-        minLng: mapBounds.minLng - lngMargin,
-        maxLng: mapBounds.maxLng + lngMargin,
-      },
-      MAX_VIEWPORT_PINS
-    );
-  }, [showMeters, enableClustering, mapBounds, mapZoom, spatialIndex, filteredMeters, searchQuery]);
-
-  // Initialize Map
+  // ---- map ----
   useEffect(() => {
     if (!isLoaded || !mapContainerRef.current || mapInstanceRef.current) return;
     const google = (window as any).google;
     if (!google?.maps) return;
 
     const map = new google.maps.Map(mapContainerRef.current, {
-      center: ODISHA_CENTER,
-      zoom: 10,
-      minZoom: 7,
-      maxZoom: 18,
+      center: INITIAL_VIEW.center,
+      zoom: INITIAL_VIEW.zoom,
+      minZoom: 3,
+      maxZoom: 20,
       mapTypeId: 'roadmap',
       mapTypeControl: true,
       streetViewControl: false,
@@ -289,61 +303,88 @@ export function NetworkExplorerPage() {
       ],
     });
 
-    map.addListener('click', () => {
-      setSelectedEntity(null);
-      infoWindowRef.current?.close();
-    });
 
-    // Debounced idle listener to update viewport bounds smoothly without triggering HTML re-render loops
+    // Debounced so panning does not re-render React on every frame
     const handleIdle = () => {
       if (debouncedIdleRef.current) clearTimeout(debouncedIdleRef.current);
       debouncedIdleRef.current = setTimeout(() => {
-        if (!mapInstanceRef.current) return;
         const currentMap = mapInstanceRef.current;
-        const b = currentMap.getBounds();
-        const z = currentMap.getZoom() ?? 10;
+        if (!currentMap) return;
+        const z = currentMap.getZoom() ?? INITIAL_VIEW.zoom;
         setMapZoom((prev) => (prev !== z ? z : prev));
-        if (b) {
-          const sw = b.getSouthWest();
-          const ne = b.getNorthEast();
-          setMapBounds((prev) => {
-            if (
-              prev &&
-              Math.abs(prev.minLat - sw.lat()) < 1e-4 &&
-              Math.abs(prev.maxLat - ne.lat()) < 1e-4 &&
-              Math.abs(prev.minLng - sw.lng()) < 1e-4 &&
-              Math.abs(prev.maxLng - ne.lng()) < 1e-4
-            ) {
-              return prev; // Bounds unchanged, skip React re-render
-            }
-            return {
-              minLat: sw.lat(),
-              minLng: sw.lng(),
-              maxLat: ne.lat(),
-              maxLng: ne.lng(),
-            };
-          });
-        }
       }, 200);
     };
-
     map.addListener('idle', handleIdle);
 
     infoWindowRef.current = new google.maps.InfoWindow();
     mapInstanceRef.current = map;
+
+    // Meters are drawn on one canvas (see shared/meterCanvasLayer.ts); clicks on it are resolved there.
+    meterLayerRef.current = createMeterLayer<MeterPoint>(google, map, {
+      onClick: (hit) => {
+        if (!hit) {
+          setSelectedEntity(null);
+          infoWindowRef.current?.close();
+          return;
+        }
+        infoWindowRef.current?.close();
+        if (hit.kind === 'point') {
+          void openMeterRef.current(hit.item.ref);
+        } else if (hit.sameSpot) {
+          map.setCenter({ lat: hit.bounds.north, lng: hit.bounds.east });
+          map.setZoom(Math.min((map.getZoom() ?? 10) + 3, 20));
+        } else {
+          map.fitBounds({ north: hit.bounds.north, south: hit.bounds.south, east: hit.bounds.east, west: hit.bounds.west }, 60);
+        }
+      },
+    });
   }, [isLoaded]);
 
-  // Ensure Google Maps redraws its canvas whenever activeView switches back to 'map'
+  // Redraw the canvas when the map tab comes back
   useEffect(() => {
     if (activeView === 'map' && mapInstanceRef.current && (window as any).google?.maps) {
-      const timer = setTimeout(() => {
-        (window as any).google.maps.event.trigger(mapInstanceRef.current, 'resize');
-      }, 60);
+      const timer = setTimeout(() => (window as any).google.maps.event.trigger(mapInstanceRef.current, 'resize'), 60);
       return () => clearTimeout(timer);
     }
   }, [activeView]);
 
-  // Draw Gateways
+  const fitMapTo = useCallback((box: BoundingBox) => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    if (box.minLat === box.maxLat && box.minLng === box.maxLng) {
+      map.setCenter({ lat: box.minLat, lng: box.minLng });
+      map.setZoom(15);
+    } else {
+      map.fitBounds({ north: box.maxLat, south: box.minLat, east: box.maxLng, west: box.minLng }, 40);
+    }
+  }, []);
+
+  // Fit the map to the data once per area selection (not on every background refresh, which would undo the user's panning)
+  useEffect(() => {
+    if (!isLoaded || !mapInstanceRef.current || fittedForRef.current === siteId) return;
+    if (data.loadedSiteId !== siteId) return; // still showing the previous area's data
+    const box = unionBounds(trimmedBounds(points), trimmedBounds(gateways));
+    if (!box) return;
+    fittedForRef.current = siteId;
+    fitMapTo(box);
+  }, [isLoaded, siteId, data.loadedSiteId, points, gateways, fitMapTo]);
+
+  // Searching moves the map to what was found; clearing the search goes back to the whole selection.
+  const shownRef = useRef({ filteredPoints, filteredGateways, points, gateways });
+  shownRef.current = { filteredPoints, filteredGateways, points, gateways };
+  const lastSearchRef = useRef('');
+  useEffect(() => {
+    const previous = lastSearchRef.current;
+    lastSearchRef.current = debouncedSearch;
+    if (!isLoaded || !mapInstanceRef.current || previous === debouncedSearch) return;
+    const r = shownRef.current;
+    const box = debouncedSearch
+      ? unionBounds(trimmedBounds(r.filteredPoints, 0), trimmedBounds(r.filteredGateways, 0))
+      : unionBounds(trimmedBounds(r.points), trimmedBounds(r.gateways));
+    if (box) fitMapTo(box);
+  }, [debouncedSearch, isLoaded, fitMapTo]);
+
+  // Gateways and their coverage
   useEffect(() => {
     if (!mapInstanceRef.current || !isLoaded) return;
     const google = (window as any).google;
@@ -354,239 +395,82 @@ export function NetworkExplorerPage() {
     markersRef.current = [];
     circlesRef.current = [];
 
-    if (showGateways) {
-      filteredGateways.forEach((gw) => {
-        const marker = new google.maps.Marker({
-          position: { lat: gw.lat, lng: gw.lng },
-          map: mapInstanceRef.current,
-          title: `${gw.alias} (${gw.status.toUpperCase()})`,
-          icon: getGatewayMapMarkerIcon(gw.status),
-          zIndex: 9999,
-        });
+    if (!showGateways) return;
+    filteredGateways.forEach((gw) => {
+      const marker = new google.maps.Marker({
+        position: { lat: gw.lat, lng: gw.lng },
+        map: mapInstanceRef.current,
+        title: `${gatewayLabel(gw)} (${GATEWAY_STATUS_LABEL[gw.status]})`,
+        icon: getGatewayMapMarkerIcon(iconStatus(gw.status)),
+        zIndex: 9999,
+      });
+      marker.addListener('click', () => {
+        setSelectedEntity({ type: 'gateway', data: gw });
+        infoWindowRef.current?.close();
+      });
+      markersRef.current.push(marker);
 
-        marker.addListener('click', () => {
+      // The circle is the gateway's stored coverage radius, drawn at its true size
+      if (showCircles && gw.radiusM) {
+        const degraded = gw.status === 'degraded';
+        const circle = new google.maps.Circle({
+          strokeColor: degraded ? '#F59E0B' : '#2563EB',
+          strokeOpacity: 0.6,
+          strokeWeight: 1.5,
+          fillColor: degraded ? '#FBBF24' : '#3B82F6',
+          fillOpacity: 0.08,
+          map: mapInstanceRef.current,
+          center: { lat: gw.lat, lng: gw.lng },
+          radius: gw.radiusM,
+        });
+        circle.addListener('click', () => {
           setSelectedEntity({ type: 'gateway', data: gw });
           infoWindowRef.current?.close();
         });
-
-        markersRef.current.push(marker);
-
-        if (showCircles) {
-          const baseRadius = gw.radiusMeters || (gw as any).radius || 1000;
-          const circle = new google.maps.Circle({
-            strokeColor: gw.status === 'degraded' ? '#F59E0B' : '#2563EB',
-            strokeOpacity: 0.6,
-            strokeWeight: 1.5,
-            fillColor: gw.status === 'degraded' ? '#FBBF24' : '#3B82F6',
-            fillOpacity: 0.08,
-            map: mapInstanceRef.current,
-            center: { lat: gw.lat, lng: gw.lng },
-            radius: baseRadius * 2, // Doubled coverage circle size per user request
-          });
-
-          circle.addListener('click', () => {
-            setSelectedEntity({ type: 'gateway', data: gw });
-            infoWindowRef.current?.close();
-          });
-
-          circlesRef.current.push(circle);
-        }
-      });
-    }
+        circlesRef.current.push(circle);
+      }
+    });
   }, [isLoaded, filteredGateways, showGateways, showCircles]);
 
-  // 1. Google Maps Marker Clustering for Meters (SuperClusterAlgorithm with auto-zoom on click)
+  // Meters: one canvas layer (no marker per meter), so the map stays smooth at any zoom
+  const meterItems = useMemo<LayerItem<MeterPoint>[]>(
+    () =>
+      filteredPoints.map((p) => {
+        const border = getDecibelBorder(p.rssi ?? undefined);
+        return { id: p.meterId, lat: p.lat, lng: p.lng, fill: METER_STATUS_STYLE[p.status].color, stroke: border.strokeColor, strokeWidth: border.strokeWeight, ref: p };
+      }),
+    [filteredPoints]
+  );
   useEffect(() => {
-    if (!mapInstanceRef.current || !isLoaded) return;
-    const google = (window as any).google;
-    if (!google?.maps) return;
-
-    // If clustering is disabled or meters are hidden, clear clusterer
-    if (!enableClustering || !showMeters) {
-      if (markerClustererRef.current) {
-        markerClustererRef.current.clearMarkers();
-        markerClustererRef.current = null;
-      }
-      return;
-    }
-
-    // Build markers for all filtered meters
-    const validMeters = filteredMeters.filter(
-      (m) => m.lat != null && m.lng != null && !isNaN(m.lat) && !isNaN(m.lng)
-    );
-
-    const newMarkers = validMeters.map((meter) => {
-      const colorInfo = getMeterColorInfo(meter);
-
-      const marker = new google.maps.Marker({
-        position: { lat: meter.lat, lng: meter.lng },
-        title: `Meter ${meter.meterId} (${meter.householdName || 'Water Consumer'}) • ${colorInfo.label}`,
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: 8, // Doubled circle size for clarity
-          fillColor: colorInfo.color,
-          fillOpacity: 0.95,
-          strokeColor: colorInfo.strokeColor,
-          strokeWeight: colorInfo.strokeWeight,
-        },
-      });
-
-      marker.addListener('click', () => {
-        setSelectedEntity({ type: 'meter', data: meter });
-        infoWindowRef.current?.close();
-      });
-
-      return marker;
-    });
-
-    if (markerClustererRef.current) {
-      markerClustererRef.current.clearMarkers();
-      markerClustererRef.current.addMarkers(newMarkers);
-    } else {
-      markerClustererRef.current = new MarkerClusterer({
-        map: mapInstanceRef.current,
-        markers: newMarkers,
-        algorithm: new SuperClusterAlgorithm({ maxZoom: 17, radius: 80 }),
-        renderer: {
-          render(cluster) {
-            const count = cluster.count;
-            const position = cluster.position;
-            const color = count > 1000 ? '#1D4ED8' : count > 100 ? '#0284C7' : '#059669';
-            const size = count > 1000 ? 56 : count > 100 ? 48 : 40;
-            const labelText = count >= 1000 ? `${(count / 1000).toFixed(1)}k` : `${count}`;
-            const svg = window.btoa(`
-              <svg fill="${color}" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="${size}" height="${size}">
-                <circle cx="120" cy="120" opacity=".3" r="115" />
-                <circle cx="120" cy="120" opacity=".55" r="95" />
-                <circle cx="120" cy="120" opacity=".95" r="75" />
-              </svg>`);
-
-            return new google.maps.Marker({
-              position,
-              icon: {
-                url: `data:image/svg+xml;base64,${svg}`,
-                scaledSize: new google.maps.Size(size, size),
-                anchor: new google.maps.Point(size / 2, size / 2),
-              },
-              label: {
-                text: labelText,
-                color: '#FFFFFF',
-                fontWeight: '700',
-                fontSize: '12px',
-                fontFamily: 'Inter, Roboto, sans-serif',
-              },
-              zIndex: Number(google.maps.Marker.MAX_ZINDEX) + count,
-              title: `Cluster of ${count.toLocaleString()} meters - click to zoom in`,
-            });
-          },
-        },
-        onClusterClick: (_event, cluster, map) => {
-          if (cluster.bounds) {
-            const currentZ = map.getZoom() || 10;
-            if (cluster.bounds.getNorthEast().equals(cluster.bounds.getSouthWest())) {
-              map.panTo(cluster.position);
-              map.setZoom(Math.min(currentZ + 2, 17));
-            } else {
-              map.fitBounds(cluster.bounds, 50);
-              google.maps.event.addListenerOnce(map, 'idle', () => {
-                const z = map.getZoom();
-                if (z && z > 17) {
-                  map.setZoom(17);
-                }
-              });
-            }
-          }
-        },
-      });
-    }
-
-    setRenderedMetersCount(newMarkers.length);
-
-    return () => {
-      if (markerClustererRef.current) {
-        markerClustererRef.current.clearMarkers();
-      }
-    };
-  }, [isLoaded, enableClustering, showMeters, filteredMeters]);
-
-  // 2. Fallback: Draw Meters with Diff-Based Reconciliation when Clustering is OFF
+    meterLayerRef.current?.setItems(showMeters ? meterItems : []);
+  }, [meterItems, showMeters, isLoaded]);
   useEffect(() => {
-    // If clustering is enabled, MarkerClusterer handles markers
-    if (enableClustering || !showMeters) {
-      for (const marker of meterMarkersMapRef.current.values()) {
-        marker.setMap(null);
-        (window as any).google?.maps?.event?.clearInstanceListeners(marker);
-      }
-      meterMarkersMapRef.current.clear();
-      return;
-    }
-
-    if (!mapInstanceRef.current || !isLoaded) return;
-    const google = (window as any).google;
-    if (!google?.maps) return;
-
-    const map = mapInstanceRef.current;
-    const markersMap = meterMarkersMapRef.current;
-    const nextIds = new Set(visibleMeters.map((m) => m.meterId));
-
-    // Remove markers that left viewport
-    for (const [id, marker] of markersMap.entries()) {
-      if (!nextIds.has(id)) {
-        marker.setMap(null);
-        google.maps.event.clearInstanceListeners(marker);
-        markersMap.delete(id);
-      }
-    }
-
-    // Add newly visible markers
-    for (let i = 0; i < visibleMeters.length; i++) {
-      const meter = visibleMeters[i];
-      if (!markersMap.has(meter.meterId)) {
-        if (meter.lat == null || meter.lng == null) continue;
-
-        const colorInfo = getMeterColorInfo(meter);
-
-        const marker = new google.maps.Marker({
-          position: { lat: meter.lat, lng: meter.lng },
-          map: map,
-          title: `Meter ${meter.meterId} (${meter.householdName}) • ${colorInfo.label}`,
-          icon: {
-            path: google.maps.SymbolPath.CIRCLE,
-            scale: 8, // Doubled circle size
-            fillColor: colorInfo.color,
-            fillOpacity: 0.95,
-            strokeColor: colorInfo.strokeColor,
-            strokeWeight: colorInfo.strokeWeight,
-          },
-          optimized: true,
-        });
-
-        marker.addListener('click', () => {
-          setSelectedEntity({ type: 'meter', data: meter });
-          infoWindowRef.current?.close();
-        });
-
-        markersMap.set(meter.meterId, marker);
-      }
-    }
-
-    setRenderedMetersCount(markersMap.size);
-  }, [isLoaded, enableClustering, showMeters, visibleMeters]);
-
-  // Clean up all markers on component unmount
+    meterLayerRef.current?.setClustering(enableClustering);
+  }, [enableClustering, isLoaded]);
+  useEffect(() => {
+    meterLayerRef.current?.setSelected(selectedEntity?.type === 'meter' ? selectedEntity.data.meterId : null);
+  }, [selectedEntity]);
   useEffect(() => {
     return () => {
-      const google = (window as any).google;
-      meterMarkersMapRef.current.forEach((m) => {
-        m.setMap(null);
-        if (google?.maps) {
-          google.maps.event.clearInstanceListeners(m);
-        }
-      });
-      meterMarkersMapRef.current.clear();
+      meterLayerRef.current?.destroy();
+      meterLayerRef.current = null;
     };
   }, []);
 
+  // ---- notices on the map ----
+  const noData = !data.isLoading && points.length === 0 && gateways.length === 0;
+  const failedCompletely = noData && (data.metersError || data.gatewaysError);
+
+  const placeGateway = (id: string) => {
+    setSelectedGatewayId(id);
+    const gw = gateways.find((g) => g.gatewayId === id);
+    if (gw && mapInstanceRef.current) {
+      mapInstanceRef.current.panTo({ lat: gw.lat, lng: gw.lng });
+      mapInstanceRef.current.setZoom(16);
+    }
+  };
+
+  const siteLabel = (id: number | null) => (id == null ? null : siteName.get(id) ?? null);
 
   return (
     <div className="gis-container">
@@ -595,8 +479,8 @@ export function NetworkExplorerPage() {
         <div className="gis-toolbar-left">
           <div className="gis-title-badge">
             <Radio size={16} className="gis-title-icon" />
-            <span>GIS Network Explorer</span>
-            {liveSummary ? (
+            <span>Network Explorer</span>
+            {summary ? (
               <span
                 style={{
                   fontSize: 10,
@@ -608,21 +492,12 @@ export function NetworkExplorerPage() {
                   borderRadius: 12,
                   letterSpacing: '0.04em',
                 }}
+                title={data.latestFrameAt ? `Newest frame received ${fmtTime(data.latestFrameAt)}` : 'No frames received yet'}
               >
-                LIVE WATCO ({liveSummary.totalMeters.toLocaleString()} METERS)
+                {summary.total.toLocaleString()} METERS
               </span>
-            ) : isLoading ? (
-              <span
-                style={{
-                  fontSize: 10,
-                  color: '#64748B',
-                  background: '#F1F5F9',
-                  padding: '2px 6px',
-                  borderRadius: 10,
-                }}
-              >
-                Connecting...
-              </span>
+            ) : data.isLoading ? (
+              <span style={{ fontSize: 10, color: '#64748B', background: '#F1F5F9', padding: '2px 6px', borderRadius: 10 }}>Loading…</span>
             ) : null}
           </div>
 
@@ -631,60 +506,29 @@ export function NetworkExplorerPage() {
             <input
               type="text"
               className="gis-search-input"
-              placeholder="Search Meter, Household, GW..."
+              placeholder={activeView === 'table' ? 'Search meter, consumer, locality…' : 'Search meter ID or gateway…'}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
 
-          <select
-            className="gis-select"
-            value={selectedCity}
-            onChange={(e) => {
-              const city = e.target.value;
-              setSelectedCity(city);
-              if (mapInstanceRef.current) {
-                if (city === 'Puri') {
-                  mapInstanceRef.current.panTo({ lat: 19.8050, lng: 85.8180 });
-                  mapInstanceRef.current.setZoom(14);
-                } else if (city === 'Cuttack') {
-                  mapInstanceRef.current.panTo({ lat: 20.4810, lng: 85.8200 });
-                  mapInstanceRef.current.setZoom(14);
-                } else if (city === 'Bhubaneswar') {
-                  mapInstanceRef.current.panTo(BHUBANESWAR_CENTER);
-                  mapInstanceRef.current.setZoom(13);
-                } else {
-                  mapInstanceRef.current.panTo(ODISHA_CENTER);
-                  mapInstanceRef.current.setZoom(10);
-                }
-              }
-            }}
-          >
-            <option value="ALL">All Cities ({cityCounts.ALL.toLocaleString()} Meters)</option>
-            <option value="Bhubaneswar">Bhubaneswar ({cityCounts.Bhubaneswar.toLocaleString()})</option>
-            <option value="Puri">Puri ({cityCounts.Puri.toLocaleString()})</option>
-            <option value="Cuttack">Cuttack ({cityCounts.Cuttack.toLocaleString()})</option>
-          </select>
+          <SiteTreeSelect sites={sites} value={siteId} onChange={setSiteId} />
 
-          <select
-            className="gis-select"
-            value={selectedGatewayId}
-            onChange={(e) => {
-              const gwId = e.target.value;
-              setSelectedGatewayId(gwId);
-              if (gwId !== 'ALL' && mapInstanceRef.current) {
-                const gw = gateways.find((g) => g.gatewayId === gwId);
-                if (gw) {
-                  mapInstanceRef.current.panTo({ lat: gw.lat, lng: gw.lng });
-                  mapInstanceRef.current.setZoom(16);
-                }
-              }
-            }}
-          >
-            <option value="ALL">All Gateways ({gateways.length} reporting)</option>
+          <select className="gis-select" value={selectedGatewayId} onChange={(e) => placeGateway(e.target.value)} title="Gateway">
+            <option value="ALL">All gateways ({gateways.length})</option>
             {gateways.map((gw) => (
               <option key={gw.gatewayId} value={gw.gatewayId}>
-                {gw.alias} ({gw.metersObserved || (gw as any).activeMeters || 0} active)
+                {gatewayLabel(gw)} ({gw.metersHeard.toLocaleString()} meters)
+              </option>
+            ))}
+          </select>
+
+          <select className="gis-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)} title="Meter status">
+            <option value="ALL">All statuses</option>
+            {STATUS_ORDER.map((s) => (
+              <option key={s} value={s}>
+                {METER_STATUS_STYLE[s].label}
+                {summary ? ` (${summary[s].toLocaleString()})` : ''}
               </option>
             ))}
           </select>
@@ -692,58 +536,34 @@ export function NetworkExplorerPage() {
 
         <div className="gis-toolbar-right">
           <div className="gis-layer-pills">
-            <button
-              className={`gis-layer-btn ${showGateways ? 'gis-layer-btn--active' : ''}`}
-              onClick={() => setShowGateways(!showGateways)}
-            >
+            <button className={`gis-layer-btn ${showGateways ? 'gis-layer-btn--active' : ''}`} onClick={() => setShowGateways(!showGateways)}>
               Gateways ({filteredGateways.length})
             </button>
-            <button
-              className={`gis-layer-btn ${showMeters ? 'gis-layer-btn--active' : ''}`}
-              onClick={() => setShowMeters(!showMeters)}
-            >
-              Meters ({filteredMeters.length})
+            <button className={`gis-layer-btn ${showMeters ? 'gis-layer-btn--active' : ''}`} onClick={() => setShowMeters(!showMeters)}>
+              Meters ({filteredPoints.length.toLocaleString()})
             </button>
-            <button
-              className={`gis-layer-btn ${showCircles ? 'gis-layer-btn--active' : ''}`}
-              onClick={() => setShowCircles(!showCircles)}
-            >
+            <button className={`gis-layer-btn ${showCircles ? 'gis-layer-btn--active' : ''}`} onClick={() => setShowCircles(!showCircles)}>
               Coverage Circles
             </button>
             <button
               className={`gis-layer-btn ${enableClustering ? 'gis-layer-btn--active' : ''}`}
               onClick={() => setEnableClustering(!enableClustering)}
-              title="Google Maps Marker Clustering"
+              title="Group nearby meters"
             >
               Cluster ({enableClustering ? 'On' : 'Off'})
-            </button>
-            <button
-              className={`gis-layer-btn ${problemsOnly ? 'gis-layer-btn--active' : ''}`}
-              onClick={() => setProblemsOnly(!problemsOnly)}
-            >
-              Problems Only
             </button>
           </div>
 
           <div className="gis-view-tabs">
-            <button
-              className={`gis-view-tab ${activeView === 'map' ? 'gis-view-tab--active' : ''}`}
-              onClick={() => setActiveView('map')}
-            >
+            <button className={`gis-view-tab ${activeView === 'map' ? 'gis-view-tab--active' : ''}`} onClick={() => setActiveView('map')}>
               <MapIcon size={12} style={{ display: 'inline', marginRight: 4 }} />
               Map
             </button>
-            <button
-              className={`gis-view-tab ${activeView === 'table' ? 'gis-view-tab--active' : ''}`}
-              onClick={() => setActiveView('table')}
-            >
+            <button className={`gis-view-tab ${activeView === 'table' ? 'gis-view-tab--active' : ''}`} onClick={() => setActiveView('table')}>
               <TableIcon size={12} style={{ display: 'inline', marginRight: 4 }} />
               Table
             </button>
-            <button
-              className={`gis-view-tab ${activeView === 'performance' ? 'gis-view-tab--active' : ''}`}
-              onClick={() => setActiveView('performance')}
-            >
+            <button className={`gis-view-tab ${activeView === 'performance' ? 'gis-view-tab--active' : ''}`} onClick={() => setActiveView('performance')}>
               <BarChart3 size={12} style={{ display: 'inline', marginRight: 4 }} />
               Performance
             </button>
@@ -751,37 +571,57 @@ export function NetworkExplorerPage() {
         </div>
       </div>
 
-      {/* Main Map View - KEPT MOUNTED IN DOM TO PRESERVE GOOGLE MAPS CANVAS */}
-      <div
-        className="gis-map-viewport"
-        style={{
-          display: activeView === 'map' ? 'block' : 'none',
-        }}
-      >
+      {/* Map - kept mounted so the Google Maps canvas survives tab switches */}
+      <div className="gis-map-viewport" style={{ display: activeView === 'map' ? 'block' : 'none' }}>
         <div ref={mapContainerRef} className="gis-google-map-canvas" />
 
-        {/* Floating Collapsible Map Legend (Bottom Left) */}
+        {/* Nothing to draw yet: say what is being waited for. Quiet background refreshes only show the thin bar. */}
+        {!loadError && !data.metersReady && !data.gatewaysReady && (data.isLoading || !isLoaded) && (
+          <MapLoadingOverlay
+            steps={[
+              { label: 'Map', done: isLoaded },
+              { label: 'Gateways', done: data.gatewaysReady },
+              { label: 'Meters and their status', done: data.metersReady },
+            ]}
+          />
+        )}
+        {!loadError && (data.metersReady || data.gatewaysReady) && (data.isLoading || data.isShowingSavedCopy) && !data.metersError && !data.gatewaysError && (
+          <div className="gis-loading-bar" role="progressbar" aria-label="Refreshing" />
+        )}
+
+        <div className="gis-map-notices">
+          {data.isShowingSavedCopy && !data.metersError && !data.gatewaysError && (
+            <div className="gis-map-notice">Showing the copy saved on your last visit, refreshing…</div>
+          )}
+          {!failedCompletely && data.metersError && (
+            <div className="gis-map-notice gis-map-notice--error">
+              {data.metersError} <button onClick={data.reload}>Retry</button>
+            </div>
+          )}
+          {!failedCompletely && data.gatewaysError && (
+            <div className="gis-map-notice gis-map-notice--error">
+              {data.gatewaysError} <button onClick={data.reload}>Retry</button>
+            </div>
+          )}
+          {coordinates?.status === 'unavailable' && (
+            <div className="gis-map-notice gis-map-notice--warn">Meter positions are not available right now, so meters cannot be drawn. Gateways are shown.</div>
+          )}
+          {coordinates?.status === 'stale' && (
+            <div className="gis-map-notice gis-map-notice--warn">Meter positions could not be refreshed; showing the last known positions.</div>
+          )}
+        </div>
+
+        {/* Legend */}
         <div style={{ position: 'absolute', bottom: 20, left: 20, zIndex: 5 }}>
           {!isLegendOpen ? (
             <button
               onClick={() => setIsLegendOpen(true)}
               style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 7,
-                background: 'rgba(255, 255, 255, 0.95)',
-                backdropFilter: 'blur(8px)',
-                border: '1px solid #CBD5E1',
-                borderRadius: 20,
-                padding: '6px 14px',
-                fontSize: 12,
-                fontWeight: 600,
-                color: '#1E293B',
-                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-                cursor: 'pointer',
-                transition: 'all 0.15s ease',
+                display: 'inline-flex', alignItems: 'center', gap: 7, background: 'rgba(255, 255, 255, 0.95)', backdropFilter: 'blur(8px)',
+                border: '1px solid #CBD5E1', borderRadius: 20, padding: '6px 14px', fontSize: 12, fontWeight: 600, color: '#1E293B',
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)', cursor: 'pointer',
               }}
-              title="Click to view Map Legend & Signal Quality"
+              title="Click to view the map legend"
             >
               <Info size={14} color="#2563EB" />
               <span>Map Legend</span>
@@ -790,102 +630,66 @@ export function NetworkExplorerPage() {
           ) : (
             <div className="gis-map-legend" style={{ position: 'relative', bottom: 'auto', left: 'auto', minWidth: 260 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-                <span className="gis-legend-title" style={{ margin: 0 }}>Map Legend</span>
+                <span className="gis-legend-title" style={{ margin: 0 }}>Meter status (fill)</span>
                 <button
                   onClick={() => setIsLegendOpen(false)}
-                  style={{
-                    border: 'none',
-                    background: 'transparent',
-                    cursor: 'pointer',
-                    padding: '2px 4px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    color: '#64748B',
-                    fontSize: 11,
-                    fontWeight: 500,
-                  }}
-                  title="Close Legend"
+                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: '2px 4px', display: 'flex', alignItems: 'center', gap: 4, color: '#64748B', fontSize: 11, fontWeight: 500 }}
+                  title="Close legend"
                 >
                   <span>Hide</span>
                   <ChevronDown size={14} />
                 </button>
               </div>
-
-              <div className="gis-legend-item">
-                <span className="gis-legend-icon gis-legend-icon--72h" />
-                <span>Last 72 Hours (Deep Green)</span>
-              </div>
-              <div className="gis-legend-item">
-                <span className="gis-legend-icon gis-legend-icon--10d" />
-                <span>Last 10 Days (Mid Green)</span>
-              </div>
-              <div className="gis-legend-item">
-                <span className="gis-legend-icon gis-legend-icon--30d" />
-                <span>Last 30 Days (Light Green)</span>
-              </div>
-              <div className="gis-legend-item">
-                <span className="gis-legend-icon gis-legend-icon--never" />
-                <span>Never Received (Light Gray)</span>
-              </div>
+              {STATUS_ORDER.map((s) => (
+                <div className="gis-legend-item" key={s} title={METER_STATUS_STYLE[s].hint}>
+                  <span className="gis-legend-icon" style={{ background: METER_STATUS_STYLE[s].color, border: '1.5px solid #FFFFFF', boxShadow: '0 0 3px rgba(0,0,0,0.25)' }} />
+                  <span>
+                    {METER_STATUS_STYLE[s].label} · {METER_STATUS_STYLE[s].hint}
+                  </span>
+                </div>
+              ))}
               <div style={{ height: 1, background: '#E2E8F0', margin: '3px 0' }} />
-              <span className="gis-legend-title" style={{ fontSize: 9.5 }}>Signal Quality (Border)</span>
+              <span className="gis-legend-title" style={{ fontSize: 9.5 }}>Signal quality (border)</span>
               <div className="gis-legend-item">
-                <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2px solid #FFFFFF', display: 'inline-block' }} />
-                <span>Strong (&gt; -95 dBm · White)</span>
+                <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#94A3B8', border: '2px solid #FFFFFF', display: 'inline-block' }} />
+                <span>Strong (≥ -95 dBm · white)</span>
               </div>
               <div className="gis-legend-item">
-                <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2.5px solid #EAB308', display: 'inline-block' }} />
-                <span>Marginal (-95 to -105 dBm · Yellow)</span>
+                <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#94A3B8', border: '2.5px solid #EAB308', display: 'inline-block' }} />
+                <span>Marginal (-95 to -105 dBm · yellow)</span>
               </div>
               <div className="gis-legend-item">
-                <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#047857', border: '2.5px solid #EF4444', display: 'inline-block' }} />
-                <span>Critical (&lt; -105 dBm · Red)</span>
+                <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#94A3B8', border: '2.5px solid #EF4444', display: 'inline-block' }} />
+                <span>Weak (&lt; -105 dBm · red)</span>
+              </div>
+              <div className="gis-legend-item">
+                <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#94A3B8', border: '2px solid #94A3B8', display: 'inline-block' }} />
+                <span>No signal reading (grey)</span>
               </div>
               <div style={{ height: 1, background: '#E2E8F0', margin: '3px 0' }} />
               <div className="gis-legend-item">
                 <span
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: 15,
-                    height: 17,
-                    flexShrink: 0,
-                  }}
-                  dangerouslySetInnerHTML={{
-                    __html: getGatewaySvg('reporting').replace('width="38"', 'width="15"').replace('height="44"', 'height="17"'),
-                  }}
+                  style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 15, height: 17, flexShrink: 0 }}
+                  dangerouslySetInnerHTML={{ __html: getGatewaySvg('reporting').replace('width="38"', 'width="15"').replace('height="44"', 'height="17"') }}
                 />
-                <span>LoRa Gateway (Network Box &amp; Antenna)</span>
+                <span>Gateway (blue reporting · amber degraded · grey stale / no traffic)</span>
               </div>
               <div className="gis-legend-item">
                 <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#2563EB', color: '#fff', fontSize: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>50</span>
-                <span>Meter Cluster (Click to Zoom)</span>
+                <span>Group of meters (click to zoom)</span>
               </div>
             </div>
           )}
         </div>
 
-        {/* Live Performance HUD */}
+        {/* What the map is showing right now */}
         <div className="gis-map-perf-pill">
           <span className="gis-perf-dot" />
           <span>
-            {enableClustering
-              ? `Clustering Active: ${filteredMeters.length.toLocaleString()} Meters Clustered • Click Cluster to Zoom`
-              : mapZoom < 14
-              ? `City View: 22 LoRa Gateways (${filteredMeters.length.toLocaleString()} Meters) • Zoom in for Street Pins`
-              : `Street Inspection: Showing ${renderedMetersCount} Pins in Viewport`}
+            {`${filteredPoints.length.toLocaleString()} meters on the map${enableClustering ? ' • click a group to zoom in' : ''}`}
           </span>
           <span className="gis-perf-divider">•</span>
           <span>Zoom {mapZoom}</span>
-          {isCachedFromDb && (
-            <>
-              <span className="gis-perf-divider">•</span>
-              <span style={{ color: '#10B981', fontWeight: 600 }}>⚡ Local IndexedDB</span>
-            </>
-          )}
-          <span className="gis-perf-badge">60 FPS</span>
         </div>
 
         {/* Gateway Inspector Drawer */}
@@ -894,12 +698,9 @@ export function NetworkExplorerPage() {
             <div className="gis-drawer-header">
               <div className="gis-drawer-title-group">
                 <span className="gis-drawer-type">LoRaWAN Gateway</span>
-                <span className="gis-drawer-name">{selectedEntity.data.alias}</span>
+                <span className="gis-drawer-name">{gatewayLabel(selectedEntity.data)}</span>
               </div>
-              <button
-                className="gis-drawer-close"
-                onClick={() => setSelectedEntity(null)}
-              >
+              <button className="gis-drawer-close" onClick={() => setSelectedEntity(null)}>
                 <X size={16} />
               </button>
             </div>
@@ -911,18 +712,32 @@ export function NetworkExplorerPage() {
                 <span className="gis-v">{selectedEntity.data.gatewayId}</span>
               </div>
               <div className="gis-kv-row">
-                <span className="gis-k">Meters Heard</span>
-                <span className="gis-v">{selectedEntity.data.metersObserved}</span>
+                <span className="gis-k">Status</span>
+                <span className="gis-v">{GATEWAY_STATUS_LABEL[selectedEntity.data.status]}</span>
+              </div>
+              <div className="gis-kv-row">
+                <span className="gis-k">Meters heard</span>
+                <span className="gis-v">
+                  {selectedEntity.data.metersHeard.toLocaleString()} ({selectedEntity.data.liveMeters.toLocaleString()} live)
+                </span>
               </div>
               <div className="gis-kv-row">
                 <span className="gis-k">Avg RSSI / SNR</span>
                 <span className="gis-v">
-                  {selectedEntity.data.avgRssi} dBm · {selectedEntity.data.avgSnr} dB
+                  {fmtNum(selectedEntity.data.avgRssi, 'dBm')} · {fmtNum(selectedEntity.data.avgSnr, 'dB')}
                 </span>
               </div>
               <div className="gis-kv-row">
-                <span className="gis-k">Coverage Radius</span>
-                <span className="gis-v">{selectedEntity.data.radiusMeters} meters</span>
+                <span className="gis-k">Last frame</span>
+                <span className="gis-v">{fmtTime(selectedEntity.data.lastFrameAt)}</span>
+              </div>
+              <div className="gis-kv-row">
+                <span className="gis-k">Coverage radius</span>
+                <span className="gis-v">{selectedEntity.data.radiusM ? `${selectedEntity.data.radiusM} meters` : dash}</span>
+              </div>
+              <div className="gis-kv-row">
+                <span className="gis-k">Site</span>
+                <span className="gis-v">{siteLabel(selectedEntity.data.siteId) ?? dash}</span>
               </div>
               <div className="gis-kv-row">
                 <span className="gis-k">Coordinates</span>
@@ -932,117 +747,97 @@ export function NetworkExplorerPage() {
               </div>
             </div>
 
-            <button
-              className="gis-action-btn"
-              onClick={() =>
-                navigate(`/app/command-center?gateway=${selectedEntity.data.gatewayId}`)
-              }
-            >
+            <button className="gis-action-btn" onClick={() => navigate(`/app/command-center/gateways/${selectedEntity.data.gatewayId}`)}>
               Open in Command Center
             </button>
           </div>
         )}
 
-        {/* Load error / fallback if Google Maps API key has domain or quota restriction */}
+        {/* Nothing could be loaded: say so instead of showing an empty map */}
+        {!loadError && failedCompletely && (
+          <div className="gis-error-fallback">
+            <AlertTriangle size={32} color="#EF4444" />
+            <strong style={{ fontSize: 14 }}>Network data could not be loaded</strong>
+            <p style={{ fontSize: 12, color: '#64748B', margin: 0 }}>{data.metersError || data.gatewaysError}</p>
+            <button className="gis-action-btn" style={{ marginTop: 8 }} onClick={data.reload}>
+              Try again
+            </button>
+          </div>
+        )}
+        {!loadError && noData && !failedCompletely && (
+          <div className="gis-error-fallback">
+            <Info size={28} color="#2563EB" />
+            <strong style={{ fontSize: 14 }}>Nothing to show for this selection</strong>
+            <p style={{ fontSize: 12, color: '#64748B', margin: 0 }}>No gateways or meters were found for the chosen area.</p>
+          </div>
+        )}
+
+        {/* Google Maps could not load (key, referrer or quota) */}
         {loadError && (
           <div className="gis-error-fallback">
             <AlertTriangle size={32} color="#F59E0B" />
             <strong style={{ fontSize: 14 }}>Google Maps Notice</strong>
-            <p style={{ fontSize: 12, color: '#64748B', margin: 0 }}>
-              {loadError}
-            </p>
-            <button
-              className="gis-action-btn"
-              style={{ marginTop: 8 }}
-              onClick={() => setActiveView('table')}
-            >
+            <p style={{ fontSize: 12, color: '#64748B', margin: 0 }}>{loadError}</p>
+            <button className="gis-action-btn" style={{ marginTop: 8 }} onClick={() => setActiveView('table')}>
               Switch to Table View
-            </button>
-          </div>
-        )}
-
-        {/* Honest error when live network data genuinely failed to load (no
-            cached fallback available) — never silently show stale/fake data */}
-        {!loadError && dataLoadError && (
-          <div className="gis-error-fallback">
-            <AlertTriangle size={32} color="#EF4444" />
-            <strong style={{ fontSize: 14 }}>Data Load Failed</strong>
-            <p style={{ fontSize: 12, color: '#64748B', margin: 0 }}>
-              {dataLoadError}
-            </p>
-            <button
-              className="gis-action-btn"
-              style={{ marginTop: 8 }}
-              onClick={() => window.location.reload()}
-            >
-              Retry
             </button>
           </div>
         )}
       </div>
 
-      {/* Table View with Pagination */}
+      {/* Table View with server-side paging */}
       {activeView === 'table' && (
         <div className="gis-table-container">
-          {/* Table Header Filter & Stats Bar */}
           <div
             style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              padding: '10px 16px',
-              borderBottom: '1px solid #E2E8F0',
-              background: '#FFFFFF',
-              flexShrink: 0,
-              flexWrap: 'wrap',
-              gap: 10,
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 16px', borderBottom: '1px solid #E2E8F0',
+              background: '#FFFFFF', flexShrink: 0, flexWrap: 'wrap', gap: 10,
             }}
           >
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button
-                className={`gis-layer-btn ${tableTab === 'all' ? 'gis-layer-btn--active' : ''}`}
-                onClick={() => setTableTab('all')}
-              >
-                All ({filteredGateways.length + filteredMeters.length})
+              <button className={`gis-layer-btn ${tableTab === 'all' ? 'gis-layer-btn--active' : ''}`} onClick={() => setTableTab('all')}>
+                All
               </button>
-              <button
-                className={`gis-layer-btn ${tableTab === 'meters' ? 'gis-layer-btn--active' : ''}`}
-                onClick={() => setTableTab('meters')}
-              >
-                Meters ({filteredMeters.length.toLocaleString()})
+              <button className={`gis-layer-btn ${tableTab === 'meters' ? 'gis-layer-btn--active' : ''}`} onClick={() => setTableTab('meters')}>
+                Meters ({(tableData?.total ?? summary?.total ?? 0).toLocaleString()})
               </button>
-              <button
-                className={`gis-layer-btn ${tableTab === 'gateways' ? 'gis-layer-btn--active' : ''}`}
-                onClick={() => setTableTab('gateways')}
-              >
-                Gateways ({filteredGateways.length})
+              <button className={`gis-layer-btn ${tableTab === 'gateways' ? 'gis-layer-btn--active' : ''}`} onClick={() => setTableTab('gateways')}>
+                Gateways ({filteredGateways.length + unplaced.length})
               </button>
             </div>
-
             <div style={{ fontSize: 12, color: '#64748B' }}>
               {tableTab === 'gateways'
-                ? `Showing ${filteredGateways.length} Gateways`
-                : `Showing ${((tablePage - 1) * tablePageSize) + 1}–${Math.min(tablePage * tablePageSize, totalMeters)} of ${totalMeters.toLocaleString()} Meters`}
+                ? `${filteredGateways.length} on the map, ${unplaced.length} not placed`
+                : totalMeters === 0
+                ? tableLoading ? 'Loading meters…' : 'No meters match'
+                : `${tableLoading ? 'Updating… ' : ''}Showing ${((tablePage - 1) * tablePageSize + 1).toLocaleString()}–${Math.min(tablePage * tablePageSize, totalMeters).toLocaleString()} of ${totalMeters.toLocaleString()} meters`}
             </div>
           </div>
 
-          <div className="gis-table-body-scroll">
+          {tableError && (
+            <div className="gis-map-notice gis-map-notice--error" style={{ margin: '8px 16px' }}>
+              {tableError}
+            </div>
+          )}
+
+          <div className="gis-table-body-scroll" style={{ opacity: tableLoading ? 0.6 : 1 }}>
             <table className="gis-data-table">
               <thead>
                 <tr>
                   <th>Entity Type</th>
                   <th>Identifier</th>
-                  <th>Alias / Consumer</th>
+                  <th>Name / Consumer</th>
                   <th>Locality</th>
                   <th>Latitude</th>
                   <th>Longitude</th>
-                  <th>Gateway Reach</th>
+                  <th>Gateway / Reach</th>
                   <th>RSSI</th>
                   <th>SNR</th>
                   <th>Status</th>
                 </tr>
               </thead>
               <tbody>
+                {tableTab !== 'meters' && data.isLoading && gateways.length === 0 && <SkeletonRows rows={5} cols={10} />}
                 {tableTab !== 'meters' &&
                   filteredGateways.map((gw) => (
                     <tr
@@ -1051,192 +846,178 @@ export function NetworkExplorerPage() {
                         setSelectedEntity({ type: 'gateway', data: gw });
                         setActiveView('map');
                       }}
+                      style={{ cursor: 'pointer' }}
                     >
                       <td><strong>Gateway</strong></td>
                       <td><code>{gw.gatewayId}</code></td>
-                      <td>{gw.alias}</td>
-                      <td>Bhubaneswar Base</td>
-                      <td>{gw.lat != null ? Number(gw.lat).toFixed(4) : '—'}</td>
-                      <td>{gw.lng != null ? Number(gw.lng).toFixed(4) : '—'}</td>
-                      <td>Radius {gw.radiusMeters || (gw as any).radius || 1000}m</td>
-                      <td>{gw.avgRssi || -82} dBm</td>
-                      <td>{gw.avgSnr || 8} dB</td>
-                      <td><span className="cw-badge cw-badge--green">{gw.status.toUpperCase()}</span></td>
+                      <td>{gatewayLabel(gw)}</td>
+                      <td>{gw.address || siteLabel(gw.siteId) || dash}</td>
+                      <td>{gw.lat.toFixed(4)}</td>
+                      <td>{gw.lng.toFixed(4)}</td>
+                      <td>
+                        {gw.radiusM ? `Radius ${gw.radiusM} m · ` : ''}
+                        {gw.metersHeard.toLocaleString()} meters
+                      </td>
+                      <td>{fmtNum(gw.avgRssi, 'dBm')}</td>
+                      <td>{fmtNum(gw.avgSnr, 'dB')}</td>
+                      <td><span className={`cw-badge ${gatewayBadgeClass(gw.status)}`}>{GATEWAY_STATUS_LABEL[gw.status].toUpperCase()}</span></td>
                     </tr>
                   ))}
 
-                {tableTab !== 'gateways' &&
-                  pagedMeters.map((m) => (
-                    <tr
-                      key={m.meterId}
-                      onClick={() => {
-                        setSelectedEntity({ type: 'meter', data: m });
-                      }}
-                      style={{ cursor: 'pointer' }}
-                    >
-                      <td>Meter</td>
-                      <td><code>{m.meterId}</code></td>
-                      <td>{m.householdName}</td>
-                      <td>{m.locality}</td>
-                      <td>{m.lat != null ? Number(m.lat).toFixed(4) : '—'}</td>
-                      <td>{m.lng != null ? Number(m.lng).toFixed(4) : '—'}</td>
-                      <td>{m.gatewayAlias} ({m.distanceMeters}m)</td>
-                      <td>{m.rssi} dBm</td>
-                      <td>{m.snr} dB</td>
-                      <td>
-                        <span className={`cw-badge cw-badge--${m.status === 'active' ? 'green' : m.status === 'weak' ? 'orange' : 'red'}`}>
-                          {m.status.toUpperCase()}
-                        </span>
-                      </td>
+                {tableTab !== 'meters' &&
+                  unplaced.map((gw: NetUnplacedGateway) => (
+                    <tr key={`unplaced-${gw.gatewayId}`}>
+                      <td><strong>Gateway</strong></td>
+                      <td><code>{gw.gatewayId}</code></td>
+                      <td>Not on the map</td>
+                      <td>{gw.reason === 'no-geofence' ? 'No location stored' : 'Stored location unusable'}</td>
+                      <td>{dash}</td>
+                      <td>{dash}</td>
+                      <td>{gw.metersHeard.toLocaleString()} meters</td>
+                      <td>{fmtNum(gw.avgRssi, 'dBm')}</td>
+                      <td>{fmtNum(gw.avgSnr, 'dB')}</td>
+                      <td><span className={`cw-badge ${gatewayBadgeClass(gw.status)}`}>{GATEWAY_STATUS_LABEL[gw.status].toUpperCase()}</span></td>
                     </tr>
                   ))}
+
+                {tableTab !== 'gateways' && tableLoading && !tableData && <SkeletonRows rows={10} cols={10} />}
+                {tableTab !== 'gateways' &&
+                  tableData?.items.map((m) => {
+                    const gw = m.gatewayId ? gatewayById.get(m.gatewayId) ?? null : null;
+                    return (
+                      <tr key={m.meterId} onClick={() => setSelectedEntity({ type: 'meter', data: toGisMeter(m, gw) })} style={{ cursor: 'pointer' }}>
+                        <td>Meter</td>
+                        <td><code>{m.meterId}</code></td>
+                        <td>{m.consumerName || dash}</td>
+                        <td>{m.locality || m.siteName || dash}</td>
+                        <td>{m.lat != null ? m.lat.toFixed(4) : dash}</td>
+                        <td>{m.lng != null ? m.lng.toFixed(4) : dash}</td>
+                        <td>
+                          {m.gatewayId ? gatewayName(m.gatewayId) : dash}
+                          {m.distanceToGatewayM != null ? ` (${m.distanceToGatewayM.toLocaleString()} m)` : ''}
+                        </td>
+                        <td>{fmtNum(m.rssi, 'dBm')}</td>
+                        <td>{fmtNum(m.snr, 'dB')}</td>
+                        <td><span className={`cw-badge ${meterBadgeClass(m.status)}`}>{METER_STATUS_STYLE[m.status].label.toUpperCase()}</span></td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
 
-          {/* Pagination Controls */}
           {tableTab !== 'gateways' && (
             <div className="gis-table-pagination">
               <div className="gis-pagination-info">
                 <span>
-                  Showing <strong>{((tablePage - 1) * tablePageSize) + 1}</strong> – <strong>{Math.min(tablePage * tablePageSize, totalMeters)}</strong> of <strong>{totalMeters.toLocaleString()}</strong> meters
+                  <strong>{totalMeters.toLocaleString()}</strong> meters
                 </span>
                 <span style={{ margin: '0 8px', color: '#CBD5E1' }}>|</span>
                 <span>Rows per page:</span>
-                <select
-                  className="gis-pagination-select"
-                  value={tablePageSize}
-                  onChange={(e) => setTablePageSize(Number(e.target.value))}
-                >
+                <select className="gis-pagination-select" value={tablePageSize} onChange={(e) => setTablePageSize(Number(e.target.value))}>
                   <option value={25}>25</option>
                   <option value={50}>50</option>
                   <option value={100}>100</option>
-                  <option value={250}>250</option>
+                  <option value={200}>200</option>
                 </select>
               </div>
-
               <div className="gis-pagination-actions">
-                <button
-                  className="gis-pagination-btn"
-                  onClick={() => setTablePage(1)}
-                  disabled={tablePage === 1}
-                  title="First Page"
-                >
-                  &laquo; First
-                </button>
-                <button
-                  className="gis-pagination-btn"
-                  onClick={() => setTablePage((p) => Math.max(p - 1, 1))}
-                  disabled={tablePage === 1}
-                  title="Previous Page"
-                >
-                  &lsaquo; Prev
-                </button>
-                <span style={{ margin: '0 6px', fontWeight: 600 }}>
-                  Page {tablePage} of {totalPages}
-                </span>
-                <button
-                  className="gis-pagination-btn"
-                  onClick={() => setTablePage((p) => Math.min(p + 1, totalPages))}
-                  disabled={tablePage === totalPages}
-                  title="Next Page"
-                >
-                  Next &rsaquo;
-                </button>
-                <button
-                  className="gis-pagination-btn"
-                  onClick={() => setTablePage(totalPages)}
-                  disabled={tablePage === totalPages}
-                  title="Last Page"
-                >
-                  Last &raquo;
-                </button>
+                <button className="gis-pagination-btn" onClick={() => setTablePage(1)} disabled={tablePage === 1}>&laquo; First</button>
+                <button className="gis-pagination-btn" onClick={() => setTablePage((p) => Math.max(p - 1, 1))} disabled={tablePage === 1}>&lsaquo; Prev</button>
+                <span style={{ margin: '0 6px', fontWeight: 600 }}>Page {tablePage} of {totalPages}</span>
+                <button className="gis-pagination-btn" onClick={() => setTablePage((p) => Math.min(p + 1, totalPages))} disabled={tablePage >= totalPages}>Next &rsaquo;</button>
+                <button className="gis-pagination-btn" onClick={() => setTablePage(totalPages)} disabled={tablePage >= totalPages}>Last &raquo;</button>
               </div>
             </div>
           )}
         </div>
       )}
 
-      {/* Performance View with Load More */}
+      {/* Performance View */}
       {activeView === 'performance' && (
         <div className="gis-table-container" style={{ padding: 16, overflowY: 'auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
             <div>
-              <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>Gateway Geographic Density & Coverage</h3>
+              <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>Gateway coverage and link quality</h3>
               <p style={{ margin: 0, fontSize: 12, color: '#64748B' }}>
-                Showing {Math.min(perfVisibleCount, gateways.length)} of {gateways.length} LoRaWAN Gateways
+                Showing {Math.min(perfVisibleCount, filteredGateways.length)} of {filteredGateways.length} gateways
+                {unplaced.length > 0 ? `, plus ${unplaced.length} heard by meters but not on the map` : ''}
               </p>
             </div>
-            {perfVisibleCount < gateways.length && (
-              <button
-                className="gis-layer-btn"
-                onClick={() => setPerfVisibleCount(gateways.length)}
-                style={{ fontSize: 11 }}
-              >
-                Show All ({gateways.length})
+            {perfVisibleCount < filteredGateways.length && (
+              <button className="gis-layer-btn" onClick={() => setPerfVisibleCount(filteredGateways.length)} style={{ fontSize: 11 }}>
+                Show All ({filteredGateways.length})
               </button>
             )}
           </div>
 
+          {gateways.length === 0 && unplaced.length === 0 && data.isLoading && <GatewayCardSkeletons count={6} />}
+          {gateways.length === 0 && unplaced.length === 0 && !data.isLoading && (
+            <div style={{ color: '#64748B', fontSize: 13 }}>No gateways found for this selection.</div>
+          )}
+
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
-            {gateways.slice(0, perfVisibleCount).map((gw) => (
+            {filteredGateways.slice(0, perfVisibleCount).map((gw) => (
               <div key={gw.gatewayId} className="gis-card" style={{ background: '#FFFFFF' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <strong style={{ fontSize: 14, color: '#2563EB' }}>{gw.alias}</strong>
-                  <span style={{ fontSize: 11, background: '#F1F5F9', padding: '2px 6px', borderRadius: 4 }}>
-                    Radius {gw.radiusMeters || (gw as any).radius || 1000}m
-                  </span>
+                  <strong style={{ fontSize: 14, color: '#2563EB' }}>{gatewayLabel(gw)}</strong>
+                  <span className={`cw-badge ${gatewayBadgeClass(gw.status)}`}>{GATEWAY_STATUS_LABEL[gw.status]}</span>
                 </div>
-                <div className="gis-kv-row">
-                  <span className="gis-k">Location</span>
-                  <span className="gis-v">{gw.lat.toFixed(4)}° N, {gw.lng.toFixed(4)}° E</span>
-                </div>
-                <div className="gis-kv-row">
-                  <span className="gis-k">Meters Heard</span>
-                  <span className="gis-v">{gw.metersObserved || (gw as any).activeMeters || 0}</span>
-                </div>
-                <div className="gis-kv-row">
-                  <span className="gis-k">Avg Link Quality</span>
-                  <span className="gis-v">{gw.avgRssi || -82} dBm (SNR {gw.avgSnr || 8} dB)</span>
-                </div>
+                <div className="gis-kv-row"><span className="gis-k">Gateway ID</span><span className="gis-v">{gw.gatewayId}</span></div>
+                <div className="gis-kv-row"><span className="gis-k">Location</span><span className="gis-v">{gw.lat.toFixed(4)}, {gw.lng.toFixed(4)}</span></div>
+                <div className="gis-kv-row"><span className="gis-k">Coverage radius</span><span className="gis-v">{gw.radiusM ? `${gw.radiusM} m` : dash}</span></div>
+                <div className="gis-kv-row"><span className="gis-k">Meters heard</span><span className="gis-v">{gw.metersHeard.toLocaleString()} ({gw.liveMeters.toLocaleString()} live)</span></div>
+                <div className="gis-kv-row"><span className="gis-k">Avg link quality</span><span className="gis-v">{fmtNum(gw.avgRssi, 'dBm')} · SNR {fmtNum(gw.avgSnr, 'dB')}</span></div>
+                <div className="gis-kv-row"><span className="gis-k">Last frame</span><span className="gis-v">{fmtTime(gw.lastFrameAt)}</span></div>
                 <button
                   className="gis-action-btn"
                   style={{ marginTop: 8, padding: '5px 10px', fontSize: 11.5 }}
                   onClick={() => {
-                    setSelectedGatewayId(gw.gatewayId);
+                    placeGateway(gw.gatewayId);
                     setActiveView('map');
                   }}
                 >
-                  View Connected Meters on Map
+                  View connected meters on map
                 </button>
               </div>
             ))}
           </div>
 
-          {perfVisibleCount < gateways.length ? (
+          {perfVisibleCount < filteredGateways.length && (
             <div style={{ display: 'flex', justifyContent: 'center', marginTop: 20, marginBottom: 12 }}>
-              <button
-                className="gis-load-more-btn"
-                onClick={() => setPerfVisibleCount((prev) => Math.min(prev + 8, gateways.length))}
-              >
-                Load More Gateways ({gateways.length - perfVisibleCount} remaining)
+              <button className="gis-load-more-btn" onClick={() => setPerfVisibleCount((prev) => Math.min(prev + 8, filteredGateways.length))}>
+                Load more gateways ({filteredGateways.length - perfVisibleCount} remaining)
               </button>
             </div>
-          ) : (
-            <div style={{ textAlign: 'center', color: '#64748B', fontSize: 12, marginTop: 20, marginBottom: 12 }}>
-              ✓ All {gateways.length} Gateways Loaded
+          )}
+
+          {unplaced.length > 0 && (
+            <div style={{ marginTop: 24 }}>
+              <h3 style={{ margin: '0 0 4px 0', fontSize: 15 }}>Heard by meters, not on the map</h3>
+              <p style={{ margin: '0 0 10px 0', fontSize: 12, color: '#64748B' }}>
+                Meters report through these gateways, but no usable location is stored for them, so they cannot be drawn.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
+                {unplaced.map((gw) => (
+                  <div key={gw.gatewayId} className="gis-card" style={{ background: '#FFFFFF' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <strong style={{ fontSize: 14 }}>{gw.gatewayId}</strong>
+                      <span className={`cw-badge ${gatewayBadgeClass(gw.status)}`}>{GATEWAY_STATUS_LABEL[gw.status]}</span>
+                    </div>
+                    <div className="gis-kv-row"><span className="gis-k">Why</span><span className="gis-v">{gw.reason === 'no-geofence' ? 'No location stored' : 'Stored location unusable'}</span></div>
+                    <div className="gis-kv-row"><span className="gis-k">Meters heard</span><span className="gis-v">{gw.metersHeard.toLocaleString()} ({gw.liveMeters.toLocaleString()} live)</span></div>
+                    <div className="gis-kv-row"><span className="gis-k">Avg link quality</span><span className="gis-v">{fmtNum(gw.avgRssi, 'dBm')} · SNR {fmtNum(gw.avgSnr, 'dB')}</span></div>
+                    <div className="gis-kv-row"><span className="gis-k">Last frame</span><span className="gis-v">{fmtTime(gw.lastFrameAt)}</span></div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
       )}
 
-      {/* Meter 360 History Drawer (accessible from Map, Table, and Search) */}
-      {selectedEntity?.type === 'meter' && (
-        <MeterHistoryDrawer
-          meter={selectedEntity.data}
-          onClose={() => setSelectedEntity(null)}
-        />
-      )}
+      {/* Meter 360 History Drawer (from the map and the table) */}
+      {selectedEntity?.type === 'meter' && <MeterHistoryDrawer meter={selectedEntity.data} onClose={() => setSelectedEntity(null)} />}
     </div>
   );
 }

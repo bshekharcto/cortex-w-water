@@ -539,6 +539,59 @@
   background: #FEE2E2;
   color: #B91C1C;
 }
+/* the Network Explorer's status scale (live / stale / silent / never seen) */
+.gis-status-badge--live {
+  background: #DCFCE7;
+  color: #15803D;
+}
+.gis-status-badge--stale {
+  background: #FEF3C7;
+  color: #B45309;
+}
+.gis-status-badge--never {
+  background: #F1F5F9;
+  color: #475569;
+}
+
+/* notices floating at the top of the map */
+.gis-map-notices {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: min(640px, calc(100% - 24px));
+  pointer-events: none;
+}
+.gis-map-notice {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  color: #334155;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+.gis-map-notice--warn { background: #FFFBEB; border-color: #FCD34D; color: #92400E; }
+.gis-map-notice--error { background: #FEF2F2; border-color: #FCA5A5; color: #991B1B; }
+.gis-map-notice button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 12px;
+}
 
 .gis-badge-sub {
   font-size: 10px;
@@ -1321,3 +1374,62 @@
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+/* the shared site tree filter, in this page's light palette */
+.gis-toolbar .cc-sitetree {
+  --st-panel-bg: #FFFFFF;
+  --st-border: #CBD5E1;
+  --st-text: #1E293B;
+  --st-title: #475569;
+  --st-link: #2563EB;
+  --st-chip-bg: #E2E8F0;
+  --st-chip-text: #1E293B;
+  --st-muted: #64748B;
+  --st-hover: #F1F5F9;
+  --st-checked: rgba(37, 99, 235, 0.12);
+  --st-btn-border: #CBD5E1;
+  --st-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  --st-button-bg: #FFFFFF;
+  --st-button-text: #1E293B;
+}
+.gis-toolbar .cc-sitetree-button {
+  min-width: 150px;
+  padding: 5px 10px;
+  height: 30px;
+}
+
+/* ---- loading states of the Network Explorer ---- */
+.gis-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(241, 245, 249, 0.82);
+  backdrop-filter: blur(2px);
+}
+.gis-loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-width: 250px;
+  padding: 20px 26px;
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.1);
+  color: #334155;
+  font-size: 12.5px;
+}
+.gis-loading-title { font-size: 14px; font-weight: 700; color: #0F172A; }
+.gis-loading-steps { display: flex; flex-direction: column; gap: 6px; align-self: stretch; }
+.gis-loading-step { display: flex; align-items: center; gap: 8px; color: #64748B; }
+.gis-loading-step--done { color: #047857; }
+.gis-loading-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid #CBD5E1; border-top-color: #2563EB; animation: cw-spin 0.7s linear infinite; flex-shrink: 0; }
+.gis-loading-step--done .gis-loading-dot { animation: none; background: #10B981; border-color: #10B981; }
+.gis-loading-bar { position: absolute; top: 0; left: 0; right: 0; height: 3px; overflow: hidden; z-index: 7; background: transparent; }
+.gis-loading-bar::after { content: ''; display: block; height: 100%; width: 35%; background: #2563EB; animation: gis-bar-slide 1.1s ease-in-out infinite; }
+@keyframes gis-bar-slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+.gis-card-skeleton { display: flex; flex-direction: column; gap: 10px; padding: 14px; background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; }
