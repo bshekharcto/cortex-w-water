@@ -3,29 +3,14 @@ import { Eye, EyeOff } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 
-const DEMO_ROLES = [
-  { label: 'WATCO', username: 'WATCOAdmin', password: 'AdminWatco' },
-  { label: 'Admin', username: 'admin', password: 'admin' },
-  { label: 'Consumer', username: 'admin', password: 'admin' },
-  { label: 'Bill Desk', username: 'admin', password: 'admin' },
-] as const;
-
 export function LoginForm() {
   const navigate = useNavigate();
   const login = useAuth((s) => s.login);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [activeRole, setActiveRole] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-
-  function handleRoleSelect(role: typeof DEMO_ROLES[number]) {
-    setUsername(role.username);
-    setPassword(role.password);
-    setActiveRole(role.label);
-    setError(null);
-  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -49,30 +34,6 @@ export function LoginForm() {
           Enter your credentials to access the platform
         </p>
 
-        {/* In-form Demo Auth box matching reference */}
-        <div className="cw-demo-auth-box">
-          <span className="cw-demo-auth-label">Quick Role:</span>
-          {DEMO_ROLES.map((r, idx) => (
-            <span key={r.label} style={{ display: 'inline-flex', alignItems: 'center' }}>
-              <button
-                type="button"
-                id={`demo-btn-${r.label.toLowerCase().replace(/\s+/g, '-')}`}
-                className={`cw-demo-role-btn ${activeRole === r.label ? 'cw-demo-role-btn--active' : ''}`}
-                onClick={() => handleRoleSelect(r)}
-              >
-                {r.label}
-              </button>
-              {idx < DEMO_ROLES.length - 1 && <span className="cw-demo-sep">|</span>}
-            </span>
-          ))}
-        </div>
-
-        {activeRole && (
-          <div className="cw-autofill-indicator">
-            ✓ Auto-filled credentials for <strong>{activeRole}</strong> (<code>{username}</code>)
-          </div>
-        )}
-
         <label className="cw-field-label" htmlFor="username" style={{ letterSpacing: '0.04em' }}>
           USER ID / USERNAME
         </label>
@@ -82,9 +43,8 @@ export function LoginForm() {
           value={username}
           onChange={(e) => {
             setUsername(e.target.value);
-            setActiveRole(null);
           }}
-          placeholder="WATCOAdmin or admin"
+          placeholder="Username"
           autoComplete="username"
           required
         />
@@ -100,8 +60,7 @@ export function LoginForm() {
             value={password}
             onChange={(e) => {
               setPassword(e.target.value);
-              setActiveRole(null);
-            }}
+              }}
             placeholder="••••••••••••"
             autoComplete="current-password"
             required

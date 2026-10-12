@@ -101,7 +101,7 @@ export function Sidebar() {
               <div className="cw-sidebar-user-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {user?.displayName || 'Active User'}
               </div>
-              <div className="cw-sidebar-user-role">{user?.role || 'WatcoAdmin'}</div>
+              <div className="cw-sidebar-user-role">{user?.role ?? ''}</div>
             </div>
           )}
           <button onClick={handleLogout} className="cw-sidebar-logout" aria-label="Sign out" title="Sign out / Logout">
