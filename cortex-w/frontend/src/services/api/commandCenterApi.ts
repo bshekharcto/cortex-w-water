@@ -27,8 +27,8 @@ export interface TelemetrySummaryResponse {
   recentFrames: RawFrameItem[];
   hourlyActivity: Array<{ hour: string; count: number }>;
   radioHealth: {
-    avgRssi: number;
-    avgSnr: number;
+    avgRssi: number | null;
+    avgSnr: number | null;
     rssiBuckets: { excellent: number; good: number; fair: number; poor: number };
     snrBuckets: { excellent: number; good: number; fair: number; poor: number };
   };

@@ -84,9 +84,9 @@ export function NetworkKpiStrip({ kpis, loading, windowText = '24H' }: Props) {
           <span className="cc-kpi-label">AVG RSSI / SNR</span>
         </div>
         <div className="cc-kpi-value-row">
-          <span className="cc-kpi-val cc-kpi-val--sm">{kpis.avgRssi}</span>
+          <span className="cc-kpi-val cc-kpi-val--sm">{kpis.avgRssi ?? '—'}</span>
           <span className="cc-kpi-unit">dBm</span>
-          <span className="cc-kpi-sub">· {kpis.avgSnr} dB</span>
+          <span className="cc-kpi-sub">· {kpis.avgSnr ?? '—'} dB</span>
         </div>
       </div>
     </div>

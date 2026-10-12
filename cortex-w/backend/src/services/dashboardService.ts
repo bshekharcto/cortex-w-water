@@ -52,7 +52,7 @@ export interface MeterPageRow {
   consumerId: string | null;
   consumerName: string | null;
   address: string | null;
-  totalizerKl: number;
+  totalizerKl: number | null; // null: the meter has no reading yet
   decodedAt: string | null;
   decodedLocal: string | null; // the same moment as clock time at the meter's site: "2026-10-08 17:38:01"
   connectivity: Connectivity;
@@ -71,7 +71,7 @@ interface NodeTotals {
 
 interface Snapshot {
   builtAt: number;       // when this snapshot was built (it is rebuilt a minute later)
-  dataUpdatedAt: number; // when the scheduler last updated the numbers (every 15 minutes)
+  dataUpdatedAt: number | null; // when the scheduler last updated the numbers (every 15 minutes)
   nowLocal: Map<string, string>; // zone -> the clock time there when the scheduler last updated the numbers
   sites: Map<number, SiteNode>;
   childrenOf: Map<number, number[]>;
@@ -186,7 +186,7 @@ async function buildSnapshot(): Promise<Snapshot> {
   ]);
   const nowLocal = new Map<string, string>(zoneRes.rows.filter((r: any) => r.local).map((r: any) => [r.tz, r.local]));
   const updatedAtRow = zoneRes.rows.find((r: any) => r.updated_at);
-  const dataUpdatedAt: number = updatedAtRow ? new Date(updatedAtRow.updated_at).getTime() : Date.now();
+  const dataUpdatedAt: number | null = updatedAtRow ? new Date(updatedAtRow.updated_at).getTime() : null; // null: no daily rows lately
 
   const sites = new Map<number, SiteNode>();
   for (const r of siteRes.rows) {
@@ -210,10 +210,14 @@ async function buildSnapshot(): Promise<Snapshot> {
     }
   }
 
-  // a meter whose site is not a known site counts nowhere, as before
+  // a meter whose site is not a known site counts nowhere; say how many, so the gap in the totals is not silent
   const direct = new Map<number, NodeTotals>();
+  let unplaced = 0;
   for (const r of statsRes.rows) {
-    if (r.site_id == null || !sites.has(Number(r.site_id))) continue;
+    if (r.site_id == null || !sites.has(Number(r.site_id))) {
+      unplaced += Number(r.meters) || 0;
+      continue;
+    }
     direct.set(Number(r.site_id), {
       meters: Number(r.meters) || 0,
       connected: Number(r.connected) || 0,
@@ -224,6 +228,8 @@ async function buildSnapshot(): Promise<Snapshot> {
       monthKl: Number(r.month_kl) || 0,
     });
   }
+
+  if (unplaced > 0) console.warn(`[dashboard] ${unplaced} active meter(s) have no known site and are left out of every total`);
 
   return { builtAt: Date.now(), dataUpdatedAt, nowLocal, sites, childrenOf, direct, subtree: new Map() };
 }
@@ -281,9 +287,12 @@ export async function getAllowedSiteIds(authHeader?: string): Promise<Set<number
       return { status: 0, data: null };
     }
   );
-  if (upstream.status === 401 || upstream.status === 403) {
-    console.warn(`[dashboard] The beta /api/site/ refused the token (${upstream.status}); the user has to sign in again`);
+  if (upstream.status === 401) {
+    console.warn('[dashboard] The beta /api/site/ refused the token (401); the user has to sign in again');
     throw new SessionExpiredError();
+  }
+  if (upstream.status === 403) {
+    console.warn('[dashboard] The beta /api/site/ answered 403; the user may open no sites');
   }
   if (upstream.status !== 200) {
     console.warn(`[dashboard] The beta /api/site/ answered ${upstream.status}; no sites are shown`);
@@ -320,7 +329,7 @@ export interface NodeSummary {
   yesterdayFlowM3: number;
   todayFlowM3: number;
   monthToDateFlowM3: number;
-  dataTimestamp: string;
+  dataTimestamp: string | null; // null when there is no recent daily data
   dataLocalTime: string; // when the numbers were built, as clock time at the area's site
 }
 
@@ -358,7 +367,7 @@ function summaryOf(
     yesterdayFlowM3: round2(t.yesterdayKl),
     todayFlowM3: round2(t.todayKl),
     monthToDateFlowM3: round2(t.monthKl),
-    dataTimestamp: new Date(snap.dataUpdatedAt).toISOString(),
+    dataTimestamp: snap.dataUpdatedAt != null ? new Date(snap.dataUpdatedAt).toISOString() : null,
     dataLocalTime: snap.nowLocal.get(opts.zone) ?? '',
   };
 }
@@ -543,7 +552,7 @@ export async function getNodeMeters(nodeRef: string, opts: MeterPageOptions, aut
   const res = await pool.query(
     `WITH base AS (
        SELECT m.asset_id, m.meter_id, m.site_id, m.household_custom_id, m.consumer_name, m.address,
-              l.dev_eui, l.decoded_at, COALESCE(l.forward_flow_kl, 0) AS totalizer_kl,
+              l.dev_eui, l.decoded_at, l.forward_flow_kl AS totalizer_kl,
               to_char(l.decoded_at AT TIME ZONE z.tz, 'YYYY-MM-DD HH24:MI:SS') AS decoded_local,
               CASE
                 WHEN l.decoded_at IS NULL THEN 'NEVER_SEEN'
@@ -576,7 +585,7 @@ export async function getNodeMeters(nodeRef: string, opts: MeterPageOptions, aut
     consumerId: r.household_custom_id ?? null,
     consumerName: r.consumer_name ?? null,
     address: r.address ?? null,
-    totalizerKl: Number(r.totalizer_kl) || 0,
+    totalizerKl: r.totalizer_kl != null && Number.isFinite(Number(r.totalizer_kl)) ? Number(r.totalizer_kl) : null,
     decodedAt: r.decoded_at ? new Date(r.decoded_at).toISOString() : null,
     decodedLocal: r.decoded_local ?? null,
     connectivity: r.connectivity,
@@ -755,7 +764,7 @@ export async function getNodeTrend(
            per_month AS (
              SELECT meter_id, mon, SUM(used_kl) AS used, MAX(day) AS last_day FROM src GROUP BY meter_id, mon
            )
-           SELECT p.mon AS bucket, COALESCE(SUM(p.used), 0) AS consumption, COALESCE(SUM(w2.reading_kl), 0) AS reading
+           SELECT to_char(p.mon, 'YYYY-MM-DD') AS bucket, COALESCE(SUM(p.used), 0) AS consumption, COALESCE(SUM(w2.reading_kl), 0) AS reading
            FROM per_month p
            JOIN water_meter_daily w2 ON w2.meter_id = p.meter_id AND w2.day = p.last_day
            GROUP BY p.mon
@@ -763,7 +772,7 @@ export async function getNodeTrend(
           [siteIds, zone]
         )
       : await pool.query(
-          `SELECT w.day AS bucket, COALESCE(SUM(w.used_kl), 0) AS consumption, COALESCE(SUM(w.reading_kl), 0) AS reading
+          `SELECT to_char(w.day, 'YYYY-MM-DD') AS bucket, COALESCE(SUM(w.used_kl), 0) AS consumption, COALESCE(SUM(w.reading_kl), 0) AS reading
            FROM water_meter_daily w
            WHERE w.day >= ((NOW() AT TIME ZONE $2)::date - ($3::int - 1))
              AND w.meter_id IN (SELECT meter_id FROM meter_metadata WHERE is_active AND site_id = ANY($1::bigint[]))
@@ -773,8 +782,7 @@ export async function getNodeTrend(
         );
 
   const points: TrendPoint[] = res.rows.map((r: any) => {
-    const date = new Date(r.bucket);
-    const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const iso = String(r.bucket); // YYYY-MM-DD from SQL: a Date here would shift a day with the server's own zone
     return {
       label: mode === 'MONTHLY' ? iso.slice(0, 7) : iso,
       consumption: round2(Number(r.consumption) || 0),

@@ -51,8 +51,8 @@ const EMPTY_KPIS: NetworkKpiData = {
   framesReceived: 0,
   framesTrend: '',
   lastFrameAge: '—',
-  avgRssi: 0,
-  avgSnr: 0,
+  avgRssi: null,
+  avgSnr: null,
 };
 
 const METERS_PAGE_SIZE = 100;

@@ -92,8 +92,8 @@ export interface NetworkKpiData {
   framesReceived: number;
   framesTrend: string;
   lastFrameAge: string;
-  avgRssi: number;
-  avgSnr: number;
+  avgRssi: number | null; // null: no frame in the window
+  avgSnr: number | null;
 }
 
 export interface NetworkHealthThresholds {

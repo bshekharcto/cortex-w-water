@@ -14,8 +14,8 @@ export interface TelemetrySummary {
     framesReceived: number;
     framesTrend: string;
     lastFrameAge: string;
-    avgRssi: number;
-    avgSnr: number;
+    avgRssi: number | null; // null: no frame in the window
+    avgSnr: number | null;
     reverseFlowCount: number;
   };
   gateways: Array<{
@@ -34,8 +34,8 @@ export interface TelemetrySummary {
   recentFrames: any[];
   hourlyActivity: Array<{ hour: string; count: number }>;
   radioHealth: {
-    avgRssi: number;
-    avgSnr: number;
+    avgRssi: number | null;
+    avgSnr: number | null;
     rssiBuckets: { excellent: number; good: number; fair: number; poor: number };
     snrBuckets: { excellent: number; good: number; fair: number; poor: number };
   };
@@ -57,7 +57,7 @@ export function formatRelativeTime(dateStr: string | null): string {
 
 export function getGatewayAlias(id: string): string {
   if (!id) return 'GW-UNK';
-  const suffix = id.slice(-3).toUpperCase();
+  const suffix = id.slice(-4).toUpperCase(); // the id is all there is to name it by; 4 characters keep two gateways apart
   return `GW-${suffix}`;
 }
 
@@ -373,8 +373,8 @@ export async function getPostgresAggregatedSummary(
       COUNT(DISTINCT gateway_id)::int as gateways_with_traffic,
       COUNT(DISTINCT meter_id)::int as unique_meters_seen,
       COUNT(*)::int as frames_received,
-      COALESCE(AVG(rssi)::numeric(10,1), -90)::float as avg_rssi,
-      COALESCE(AVG(snr)::numeric(10,1), -10)::float as avg_snr,
+      (AVG(rssi)::numeric(10,1))::float as avg_rssi,
+      (AVG(snr)::numeric(10,1))::float as avg_snr,
       COUNT(*) FILTER (WHERE reverse_flow_m3 > 0.05)::int as reverse_flow_count,
       MAX(decoded_at) as latest_frame_at
     FROM water_meter_readings_v2
@@ -492,8 +492,8 @@ export async function getPostgresAggregatedSummary(
       framesReceived: kpiRow.frames_received ?? 0,
       framesTrend: trendText(kpiRow.frames_received ?? 0, previousFrames, days),
       lastFrameAge: formatRelativeTime(kpiRow.latest_frame_at),
-      avgRssi: kpiRow.avg_rssi ?? -90,
-      avgSnr: kpiRow.avg_snr ?? -10,
+      avgRssi: kpiRow.avg_rssi ?? null,
+      avgSnr: kpiRow.avg_snr ?? null,
       reverseFlowCount: kpiRow.reverse_flow_count ?? 0,
     },
     gateways,
@@ -501,8 +501,8 @@ export async function getPostgresAggregatedSummary(
     recentFrames,
     hourlyActivity,
     radioHealth: {
-      avgRssi: kpiRow.avg_rssi ?? -90,
-      avgSnr: kpiRow.avg_snr ?? -10,
+      avgRssi: kpiRow.avg_rssi ?? null,
+      avgSnr: kpiRow.avg_snr ?? null,
       rssiBuckets: {
         excellent: radioRow.rssi_excellent ?? 0,
         good: radioRow.rssi_good ?? 0,

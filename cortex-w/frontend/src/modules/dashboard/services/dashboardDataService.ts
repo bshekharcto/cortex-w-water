@@ -23,17 +23,11 @@ function isSeedMode(): boolean {
  */
 export async function fetchNodeChildren(parentId: string | null): Promise<NodeRow[]> {
   if (isSeedMode()) return [];
-  try {
-    const res = await apiRequest<NodeRow[]>('/dashboard/nodes', {
-      query: parentId ? { parentId } : {},
-    });
-    // Real API call succeeded — even a genuinely empty result is the truth,
-    // not a reason to fall back to fake data.
-    if (Array.isArray(res)) return res;
-  } catch (err) {
-    console.warn('[dashboardDataService] Error fetching node children from API:', err);
-  }
-  return [];
+  // Throws when it cannot be loaded, so the page can say so instead of showing "no sites" as if it were the truth.
+  const res = await apiRequest<NodeRow[]>('/dashboard/nodes', {
+    query: parentId ? { parentId } : {},
+  });
+  return Array.isArray(res) ? res : [];
 }
 
 export type MeterSortField =
