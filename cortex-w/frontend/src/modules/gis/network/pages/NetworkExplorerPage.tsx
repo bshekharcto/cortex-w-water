@@ -25,8 +25,8 @@ import {
   type NetSiteOption,
   type NetUnplacedGateway,
 } from '@/services/api/networkApi';
-import { SpatialGridIndex, type BoundingBox } from '../../shared/spatialIndex';
-import { MarkerClusterer, SuperClusterAlgorithm } from '@googlemaps/markerclusterer';
+import type { BoundingBox } from '../../shared/spatialIndex';
+import { createMeterLayer, type LayerItem, type MeterLayer } from '../../shared/meterCanvasLayer';
 import { getDecibelBorder } from '../../shared/meterColorUtils';
 import { getGatewayMapMarkerIcon, getGatewaySvg } from '../../shared/gatewayIconUtils';
 import { formatStamp, isUnauthorized } from '../../shared/meterDetailModel';
@@ -47,7 +47,6 @@ import '../../shared/gis.css';
 // Where the map looks before any data has arrived. As soon as meters and gateways are loaded the map fits them, so
 // this only decides what is on screen for the first moments (a neutral overview of India, not a customer's city).
 const INITIAL_VIEW = { center: { lat: 22.5, lng: 80 }, zoom: 5 };
-const MAX_VIEWPORT_PINS = 300;
 
 type SelectedEntity = { type: 'gateway'; data: NetGateway } | { type: 'meter'; data: GisMeter } | null;
 type StatusFilter = 'ALL' | NetMeterStatus;
@@ -133,13 +132,11 @@ export function NetworkExplorerPage() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showMeters, setShowMeters] = useState(true);
   const [showGateways, setShowGateways] = useState(true);
-  const [showCircles, setShowCircles] = useState(true);
+  const [showCircles, setShowCircles] = useState(false); // coverage circles start hidden; the toggle turns them on
   const [enableClustering, setEnableClustering] = useState(true);
   const [isLegendOpen, setIsLegendOpen] = useState(false);
 
   const [mapZoom, setMapZoom] = useState<number>(INITIAL_VIEW.zoom);
-  const [mapBounds, setMapBounds] = useState<BoundingBox | null>(null);
-  const [renderedMetersCount, setRenderedMetersCount] = useState<number>(0);
 
   const [tablePage, setTablePage] = useState(1);
   const [tablePageSize, setTablePageSize] = useState(50);
@@ -158,8 +155,7 @@ export function NetworkExplorerPage() {
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const circlesRef = useRef<any[]>([]);
-  const meterMarkersMapRef = useRef<Map<string, any>>(new Map());
-  const markerClustererRef = useRef<MarkerClusterer | null>(null);
+  const meterLayerRef = useRef<MeterLayer<MeterPoint> | null>(null);
   const infoWindowRef = useRef<any>(null);
   const debouncedIdleRef = useRef<any>(null);
   const fittedForRef = useRef<string | null>(null);
@@ -221,27 +217,6 @@ export function NetworkExplorerPage() {
       }),
     [points, selectedGatewayId, statusFilter, debouncedSearch]
   );
-
-  const spatialIndex = useMemo(() => new SpatialGridIndex<MeterPoint>(filteredPoints, 64), [filteredPoints]);
-
-  // Pins in the viewport when clustering is off (the clusterer handles everything otherwise).
-  const visibleMeters = useMemo(() => {
-    if (!showMeters || enableClustering) return [];
-    if (debouncedSearch) return filteredPoints.slice(0, MAX_VIEWPORT_PINS);
-    if (mapZoom < 14) return [];
-    if (!mapBounds) return filteredPoints.slice(0, 60);
-    const latMargin = (mapBounds.maxLat - mapBounds.minLat) * 0.1;
-    const lngMargin = (mapBounds.maxLng - mapBounds.minLng) * 0.1;
-    return spatialIndex.query(
-      {
-        minLat: mapBounds.minLat - latMargin,
-        maxLat: mapBounds.maxLat + latMargin,
-        minLng: mapBounds.minLng - lngMargin,
-        maxLng: mapBounds.maxLng + lngMargin,
-      },
-      MAX_VIEWPORT_PINS
-    );
-  }, [showMeters, enableClustering, mapBounds, mapZoom, spatialIndex, filteredPoints, debouncedSearch]);
 
   // ---- opening a meter: instantly from what the map knows, then completed from the server ----
   const openMeter = useCallback(
@@ -315,7 +290,7 @@ export function NetworkExplorerPage() {
       center: INITIAL_VIEW.center,
       zoom: INITIAL_VIEW.zoom,
       minZoom: 3,
-      maxZoom: 18,
+      maxZoom: 20,
       mapTypeId: 'roadmap',
       mapTypeControl: true,
       streetViewControl: false,
@@ -328,10 +303,6 @@ export function NetworkExplorerPage() {
       ],
     });
 
-    map.addListener('click', () => {
-      setSelectedEntity(null);
-      infoWindowRef.current?.close();
-    });
 
     // Debounced so panning does not re-render React on every frame
     const handleIdle = () => {
@@ -339,28 +310,34 @@ export function NetworkExplorerPage() {
       debouncedIdleRef.current = setTimeout(() => {
         const currentMap = mapInstanceRef.current;
         if (!currentMap) return;
-        const b = currentMap.getBounds();
         const z = currentMap.getZoom() ?? INITIAL_VIEW.zoom;
         setMapZoom((prev) => (prev !== z ? z : prev));
-        if (b) {
-          const sw = b.getSouthWest();
-          const ne = b.getNorthEast();
-          setMapBounds((prev) =>
-            prev &&
-            Math.abs(prev.minLat - sw.lat()) < 1e-4 &&
-            Math.abs(prev.maxLat - ne.lat()) < 1e-4 &&
-            Math.abs(prev.minLng - sw.lng()) < 1e-4 &&
-            Math.abs(prev.maxLng - ne.lng()) < 1e-4
-              ? prev
-              : { minLat: sw.lat(), minLng: sw.lng(), maxLat: ne.lat(), maxLng: ne.lng() }
-          );
-        }
       }, 200);
     };
     map.addListener('idle', handleIdle);
 
     infoWindowRef.current = new google.maps.InfoWindow();
     mapInstanceRef.current = map;
+
+    // Meters are drawn on one canvas (see shared/meterCanvasLayer.ts); clicks on it are resolved there.
+    meterLayerRef.current = createMeterLayer<MeterPoint>(google, map, {
+      onClick: (hit) => {
+        if (!hit) {
+          setSelectedEntity(null);
+          infoWindowRef.current?.close();
+          return;
+        }
+        infoWindowRef.current?.close();
+        if (hit.kind === 'point') {
+          void openMeterRef.current(hit.item.ref);
+        } else if (hit.sameSpot) {
+          map.setCenter({ lat: hit.bounds.north, lng: hit.bounds.east });
+          map.setZoom(Math.min((map.getZoom() ?? 10) + 3, 20));
+        } else {
+          map.fitBounds({ north: hit.bounds.north, south: hit.bounds.south, east: hit.bounds.east, west: hit.bounds.west }, 60);
+        }
+      },
+    });
   }, [isLoaded]);
 
   // Redraw the canvas when the map tab comes back
@@ -455,149 +432,28 @@ export function NetworkExplorerPage() {
     });
   }, [isLoaded, filteredGateways, showGateways, showCircles]);
 
-  const pinIcon = (google: any, p: MeterPoint) => {
-    const border = getDecibelBorder(p.rssi ?? undefined);
-    return {
-      path: google.maps.SymbolPath.CIRCLE,
-      scale: 8,
-      fillColor: METER_STATUS_STYLE[p.status].color,
-      fillOpacity: 0.95,
-      strokeColor: border.strokeColor,
-      strokeWeight: border.strokeWeight,
-    };
-  };
-  const pinTitle = (p: MeterPoint) => `Meter ${p.meterId} • ${METER_STATUS_STYLE[p.status].label}`;
-
-  // Meters, clustered
+  // Meters: one canvas layer (no marker per meter), so the map stays smooth at any zoom
+  const meterItems = useMemo<LayerItem<MeterPoint>[]>(
+    () =>
+      filteredPoints.map((p) => {
+        const border = getDecibelBorder(p.rssi ?? undefined);
+        return { id: p.meterId, lat: p.lat, lng: p.lng, fill: METER_STATUS_STYLE[p.status].color, stroke: border.strokeColor, strokeWidth: border.strokeWeight, ref: p };
+      }),
+    [filteredPoints]
+  );
   useEffect(() => {
-    if (!mapInstanceRef.current || !isLoaded) return;
-    const google = (window as any).google;
-    if (!google?.maps) return;
-
-    if (!enableClustering || !showMeters) {
-      if (markerClustererRef.current) {
-        markerClustererRef.current.clearMarkers();
-        markerClustererRef.current = null;
-      }
-      return;
-    }
-
-    const newMarkers = filteredPoints.map((p) => {
-      const marker = new google.maps.Marker({ position: { lat: p.lat, lng: p.lng }, title: pinTitle(p), icon: pinIcon(google, p) });
-      marker.addListener('click', () => {
-        void openMeterRef.current(p);
-        infoWindowRef.current?.close();
-      });
-      return marker;
-    });
-
-    if (markerClustererRef.current) {
-      markerClustererRef.current.clearMarkers();
-      markerClustererRef.current.addMarkers(newMarkers);
-    } else {
-      markerClustererRef.current = new MarkerClusterer({
-        map: mapInstanceRef.current,
-        markers: newMarkers,
-        algorithm: new SuperClusterAlgorithm({ maxZoom: 17, radius: 80 }),
-        renderer: {
-          render(cluster) {
-            const count = cluster.count;
-            const color = count > 1000 ? '#1D4ED8' : count > 100 ? '#0284C7' : '#059669';
-            const size = count > 1000 ? 56 : count > 100 ? 48 : 40;
-            const labelText = count >= 1000 ? `${(count / 1000).toFixed(1)}k` : `${count}`;
-            const svg = window.btoa(`
-              <svg fill="${color}" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="${size}" height="${size}">
-                <circle cx="120" cy="120" opacity=".3" r="115" />
-                <circle cx="120" cy="120" opacity=".55" r="95" />
-                <circle cx="120" cy="120" opacity=".95" r="75" />
-              </svg>`);
-            return new google.maps.Marker({
-              position: cluster.position,
-              icon: {
-                url: `data:image/svg+xml;base64,${svg}`,
-                scaledSize: new google.maps.Size(size, size),
-                anchor: new google.maps.Point(size / 2, size / 2),
-              },
-              label: { text: labelText, color: '#FFFFFF', fontWeight: '700', fontSize: '12px', fontFamily: 'Inter, Roboto, sans-serif' },
-              zIndex: Number(google.maps.Marker.MAX_ZINDEX) + count,
-              title: `Cluster of ${count.toLocaleString()} meters - click to zoom in`,
-            });
-          },
-        },
-        onClusterClick: (_event, cluster, map) => {
-          if (!cluster.bounds) return;
-          const currentZ = map.getZoom() || 10;
-          if (cluster.bounds.getNorthEast().equals(cluster.bounds.getSouthWest())) {
-            map.panTo(cluster.position);
-            map.setZoom(Math.min(currentZ + 2, 17));
-          } else {
-            map.fitBounds(cluster.bounds, 50);
-            google.maps.event.addListenerOnce(map, 'idle', () => {
-              const z = map.getZoom();
-              if (z && z > 17) map.setZoom(17);
-            });
-          }
-        },
-      });
-    }
-
-    setRenderedMetersCount(newMarkers.length);
-    return () => {
-      markerClustererRef.current?.clearMarkers();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoaded, enableClustering, showMeters, filteredPoints]);
-
-  // Meters, individually (clustering off): only the pins in view
+    meterLayerRef.current?.setItems(showMeters ? meterItems : []);
+  }, [meterItems, showMeters, isLoaded]);
   useEffect(() => {
-    if (enableClustering || !showMeters) {
-      for (const marker of meterMarkersMapRef.current.values()) {
-        marker.setMap(null);
-        (window as any).google?.maps?.event?.clearInstanceListeners(marker);
-      }
-      meterMarkersMapRef.current.clear();
-      return;
-    }
-    if (!mapInstanceRef.current || !isLoaded) return;
-    const google = (window as any).google;
-    if (!google?.maps) return;
-
-    const markersMap = meterMarkersMapRef.current;
-    const nextIds = new Set(visibleMeters.map((m) => m.meterId));
-    for (const [id, marker] of markersMap.entries()) {
-      if (!nextIds.has(id)) {
-        marker.setMap(null);
-        google.maps.event.clearInstanceListeners(marker);
-        markersMap.delete(id);
-      }
-    }
-    for (const p of visibleMeters) {
-      if (markersMap.has(p.meterId)) continue;
-      const marker = new google.maps.Marker({
-        position: { lat: p.lat, lng: p.lng },
-        map: mapInstanceRef.current,
-        title: pinTitle(p),
-        icon: pinIcon(google, p),
-        optimized: true,
-      });
-      marker.addListener('click', () => {
-        void openMeterRef.current(p);
-        infoWindowRef.current?.close();
-      });
-      markersMap.set(p.meterId, marker);
-    }
-    setRenderedMetersCount(markersMap.size);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoaded, enableClustering, showMeters, visibleMeters]);
-
+    meterLayerRef.current?.setClustering(enableClustering);
+  }, [enableClustering, isLoaded]);
+  useEffect(() => {
+    meterLayerRef.current?.setSelected(selectedEntity?.type === 'meter' ? selectedEntity.data.meterId : null);
+  }, [selectedEntity]);
   useEffect(() => {
     return () => {
-      const google = (window as any).google;
-      meterMarkersMapRef.current.forEach((m) => {
-        m.setMap(null);
-        if (google?.maps) google.maps.event.clearInstanceListeners(m);
-      });
-      meterMarkersMapRef.current.clear();
+      meterLayerRef.current?.destroy();
+      meterLayerRef.current = null;
     };
   }, []);
 
@@ -753,22 +609,6 @@ export function NetworkExplorerPage() {
           {coordinates?.status === 'stale' && (
             <div className="gis-map-notice gis-map-notice--warn">Meter positions could not be refreshed; showing the last known positions.</div>
           )}
-          {(() => {
-            const parts: string[] = [];
-            if (summary && summary.withoutCoordinates > 0 && coordinates?.status !== 'unavailable') {
-              parts.push(`${summary.withoutCoordinates.toLocaleString()} of ${summary.total.toLocaleString()} meters have no position`);
-            }
-            if (unplaced.length > 0) parts.push(`${unplaced.length} gateway${unplaced.length === 1 ? '' : 's'} not on the map`);
-            if (parts.length === 0) return null;
-            return (
-              <div
-                className="gis-map-notice"
-                title="Meters without a recorded position cannot be drawn. Gateways listed here are heard by meters but have no usable location stored (see the Performance tab)."
-              >
-                {parts.join(' · ')}
-              </div>
-            );
-          })()}
         </div>
 
         {/* Legend */}
@@ -846,11 +686,7 @@ export function NetworkExplorerPage() {
         <div className="gis-map-perf-pill">
           <span className="gis-perf-dot" />
           <span>
-            {enableClustering
-              ? `${filteredPoints.length.toLocaleString()} meters on the map • click a group to zoom in`
-              : mapZoom < 14
-              ? `${filteredGateways.length} gateways • zoom in to see individual meters`
-              : `Showing ${renderedMetersCount} meters in view`}
+            {`${filteredPoints.length.toLocaleString()} meters on the map${enableClustering ? ' • click a group to zoom in' : ''}`}
           </span>
           <span className="gis-perf-divider">•</span>
           <span>Zoom {mapZoom}</span>
