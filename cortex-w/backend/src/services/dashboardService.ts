@@ -82,13 +82,18 @@ interface Snapshot {
 // Per site, how many of its meters are connected / disconnected / never seen and the water they used. Everything is
 // worked out in the database from the CURRENT meter -> site link, so moving a meter to another site changes the totals
 // at the next refresh; only one row per site comes back, not one per meter. A site's meters share its time zone.
+// The Dashboard counts only meters that are configured (active) and linked to a household. The Cognecto Water Executive
+// Summary reports "Households Mapped" against "Meters Configured" and the Dashboard follows the first. The metadata
+// mirror holds every meter, so the filter is applied here, on alias `m`.
+const MAPPED_METER = `(m.is_active AND m.household_id IS NOT NULL)`;
+
 const STATS_SQL = `
   WITH mtd AS (
     SELECT m.meter_id, m.site_id, COALESCE(s.tz_sql, 'UTC') AS tz,
            (NOW() AT TIME ZONE COALESCE(s.tz_sql, 'UTC'))::date AS today
     FROM meter_metadata m
     LEFT JOIN site_metadata s ON s.site_id = m.site_id
-    WHERE m.is_active
+    WHERE ${MAPPED_METER}
   ),
   status AS (
     SELECT d.site_id,
@@ -563,7 +568,7 @@ export async function getNodeMeters(nodeRef: string, opts: MeterPageOptions, aut
        LEFT JOIN site_metadata s ON s.site_id = m.site_id
        CROSS JOIN LATERAL (SELECT COALESCE(s.tz_sql, 'UTC') AS tz) z
        LEFT JOIN water_meter_latest l ON l.meter_id = m.meter_id
-       WHERE m.is_active AND m.site_id = ANY($1::bigint[])
+       WHERE ${MAPPED_METER} AND m.site_id = ANY($1::bigint[])
        ${search}
      )
      SELECT *, COUNT(*) OVER()::int AS total
@@ -753,7 +758,7 @@ export async function getNodeTrend(
     mode === 'MONTHLY'
       ? await pool.query(
           `WITH mine AS (
-             SELECT meter_id FROM meter_metadata WHERE is_active AND site_id = ANY($1::bigint[])
+             SELECT meter_id FROM meter_metadata m WHERE ${MAPPED_METER} AND site_id = ANY($1::bigint[])
            ),
            src AS (
              SELECT w.meter_id, date_trunc('month', w.day)::date AS mon, w.used_kl, w.day
@@ -775,7 +780,7 @@ export async function getNodeTrend(
           `SELECT to_char(w.day, 'YYYY-MM-DD') AS bucket, COALESCE(SUM(w.used_kl), 0) AS consumption, COALESCE(SUM(w.reading_kl), 0) AS reading
            FROM water_meter_daily w
            WHERE w.day >= ((NOW() AT TIME ZONE $2)::date - ($3::int - 1))
-             AND w.meter_id IN (SELECT meter_id FROM meter_metadata WHERE is_active AND site_id = ANY($1::bigint[]))
+             AND w.meter_id IN (SELECT meter_id FROM meter_metadata m WHERE ${MAPPED_METER} AND site_id = ANY($1::bigint[]))
            GROUP BY w.day
            ORDER BY w.day`,
           [siteIds, zone, span]
