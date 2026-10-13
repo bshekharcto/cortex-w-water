@@ -32,6 +32,7 @@ import { getGatewayMapMarkerIcon, getGatewaySvg } from '../../shared/gatewayIcon
 import { formatStamp, isUnauthorized } from '../../shared/meterDetailModel';
 import { SiteTreeSelect } from '@/modules/command-center/components/SiteTreeSelect';
 import { useNetworkData } from '../hooks/useNetworkData';
+import { GatewayCoveragePanel, defaultRadius } from '../components/GatewayCoveragePanel';
 import {
   GATEWAY_STATUS_LABEL,
   METER_STATUS_STYLE,
@@ -147,6 +148,9 @@ export function NetworkExplorerPage() {
 
   const [perfVisibleCount, setPerfVisibleCount] = useState(8);
   const [selectedEntity, setSelectedEntity] = useState<SelectedEntity>(null);
+  // the gateway whose coverage is open (circle + panel), and the radius it is drawn at: set by clicking a gateway or choosing one
+  const [coverageGatewayId, setCoverageGatewayId] = useState<string | null>(null);
+  const [radiusM, setRadiusM] = useState<number>(500);
 
   const data = useNetworkData(siteId);
   const { gateways, unplaced, points, summary, coordinates } = data;
@@ -155,6 +159,8 @@ export function NetworkExplorerPage() {
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const circlesRef = useRef<any[]>([]);
+  const focusCircleRef = useRef<any>(null);
+  const storedCircleRef = useRef<any>(null); // the gateway's actual (stored) radius: stays put while the slider moves the other circle
   const meterLayerRef = useRef<MeterLayer<MeterPoint> | null>(null);
   const infoWindowRef = useRef<any>(null);
   const debouncedIdleRef = useRef<any>(null);
@@ -188,6 +194,7 @@ export function NetworkExplorerPage() {
   useEffect(() => {
     setSelectedGatewayId('ALL');
     setSelectedEntity(null);
+    setCoverageGatewayId(null);
   }, [siteId]);
 
   useEffect(() => {
@@ -195,6 +202,18 @@ export function NetworkExplorerPage() {
   }, [debouncedSearch, siteId, selectedGatewayId, statusFilter, tableTab, tablePageSize]);
 
   const gatewayById = useMemo(() => new Map(gateways.map((g) => [g.gatewayId, g])), [gateways]);
+  const focusGateway = coverageGatewayId ? gatewayById.get(coverageGatewayId) ?? null : null;
+  const focusId = focusGateway?.gatewayId ?? null;
+  // choosing a gateway in the picker opens its coverage too
+  useEffect(() => {
+    if (selectedGatewayId !== 'ALL') setCoverageGatewayId(selectedGatewayId);
+  }, [selectedGatewayId]);
+  // each gateway starts at the radius stored for it; the slider only changes what is drawn and counted
+  useEffect(() => {
+    const gw = focusId ? gatewayById.get(focusId) : null;
+    if (gw) setRadiusM(defaultRadius(gw));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId]);
   const gatewayName = useCallback((id: string | null) => (id ? (gatewayById.has(id) ? gatewayLabel(gatewayById.get(id)!) : id) : dash), [gatewayById]);
   const siteName = useMemo(() => new Map(sites.map((s) => [Number(s.id), s.name])), [sites]);
 
@@ -406,12 +425,13 @@ export function NetworkExplorerPage() {
       });
       marker.addListener('click', () => {
         setSelectedEntity({ type: 'gateway', data: gw });
+        setCoverageGatewayId(gw.gatewayId);
         infoWindowRef.current?.close();
       });
       markersRef.current.push(marker);
 
       // The circle is the gateway's stored coverage radius, drawn at its true size
-      if (showCircles && gw.radiusM) {
+      if (showCircles && gw.radiusM && gw.gatewayId !== coverageGatewayId) {
         const degraded = gw.status === 'degraded';
         const circle = new google.maps.Circle({
           strokeColor: degraded ? '#F59E0B' : '#2563EB',
@@ -425,12 +445,76 @@ export function NetworkExplorerPage() {
         });
         circle.addListener('click', () => {
           setSelectedEntity({ type: 'gateway', data: gw });
+          setCoverageGatewayId(gw.gatewayId);
           infoWindowRef.current?.close();
         });
         circlesRef.current.push(circle);
       }
     });
-  }, [isLoaded, filteredGateways, showGateways, showCircles]);
+  }, [isLoaded, filteredGateways, showGateways, showCircles, coverageGatewayId]);
+
+  // The open gateway's radius circle: drawn at the chosen radius, redrawn as the slider moves, and the map goes to it once
+  // when a gateway is opened (not on every slider step, which would fight the user's own panning)
+  useEffect(() => {
+    const google = (window as any).google;
+    if (!isLoaded || !mapInstanceRef.current || !google?.maps) return;
+    if (!focusGateway) {
+      focusCircleRef.current?.setMap(null);
+      focusCircleRef.current = null;
+      storedCircleRef.current?.setMap(null);
+      storedCircleRef.current = null;
+      return;
+    }
+    // the actual radius: a fixed dashed ring, there as long as the gateway is open (none when no radius is stored for it)
+    if (focusGateway.radiusM) {
+      if (!storedCircleRef.current) {
+        storedCircleRef.current = new google.maps.Circle({
+          strokeColor: '#F59E0B',
+          strokeOpacity: 0.95,
+          strokeWeight: 2,
+          fillOpacity: 0,
+          map: mapInstanceRef.current,
+          clickable: false,
+          zIndex: 2,
+        });
+      }
+      storedCircleRef.current.setCenter({ lat: focusGateway.lat, lng: focusGateway.lng });
+      storedCircleRef.current.setRadius(focusGateway.radiusM);
+    } else {
+      storedCircleRef.current?.setMap(null);
+      storedCircleRef.current = null;
+    }
+    if (!focusCircleRef.current) {
+      focusCircleRef.current = new google.maps.Circle({
+        strokeColor: '#2563EB',
+        strokeOpacity: 0.9,
+        strokeWeight: 2,
+        fillColor: '#3B82F6',
+        fillOpacity: 0.1,
+        map: mapInstanceRef.current,
+        clickable: false,
+        zIndex: 1,
+      });
+    }
+    focusCircleRef.current.setCenter({ lat: focusGateway.lat, lng: focusGateway.lng });
+    focusCircleRef.current.setRadius(radiusM);
+  }, [isLoaded, focusGateway, radiusM, activeView]);
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const gw = focusId ? gatewayById.get(focusId) : null;
+    if (!gw || !map) return;
+    // the box around the gateway's stored radius (a degree is about 111 km); computed here, as the radius state is still
+    // being reset to this gateway's own value when this effect runs
+    const r = defaultRadius(gw);
+    const dLat = r / 111320;
+    const dLng = r / (111320 * Math.max(0.1, Math.cos((gw.lat * Math.PI) / 180)));
+    map.fitBounds({ north: gw.lat + dLat, south: gw.lat - dLat, east: gw.lng + dLng, west: gw.lng - dLng }, 40);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId]);
+  useEffect(() => () => {
+    focusCircleRef.current?.setMap(null);
+    storedCircleRef.current?.setMap(null);
+  }, []);
 
   // Meters: one canvas layer (no marker per meter), so the map stays smooth at any zoom
   const meterItems = useMemo<LayerItem<MeterPoint>[]>(
@@ -463,6 +547,7 @@ export function NetworkExplorerPage() {
 
   const placeGateway = (id: string) => {
     setSelectedGatewayId(id);
+    setCoverageGatewayId(id);
     const gw = gateways.find((g) => g.gatewayId === id);
     if (gw && mapInstanceRef.current) {
       mapInstanceRef.current.panTo({ lat: gw.lat, lng: gw.lng });
@@ -480,23 +565,7 @@ export function NetworkExplorerPage() {
           <div className="gis-title-badge">
             <Radio size={16} className="gis-title-icon" />
             <span>Network Explorer</span>
-            {summary ? (
-              <span
-                style={{
-                  fontSize: 10,
-                  fontWeight: 600,
-                  background: 'rgba(16, 185, 129, 0.12)',
-                  color: '#059669',
-                  border: '1px solid rgba(16, 185, 129, 0.3)',
-                  padding: '2px 7px',
-                  borderRadius: 12,
-                  letterSpacing: '0.04em',
-                }}
-                title={data.latestFrameAt ? `Newest frame received ${fmtTime(data.latestFrameAt)}` : 'No frames received yet'}
-              >
-                {summary.total.toLocaleString()} METERS
-              </span>
-            ) : data.isLoading ? (
+            {!summary && data.isLoading ? (
               <span style={{ fontSize: 10, color: '#64748B', background: '#F1F5F9', padding: '2px 6px', borderRadius: 10 }}>Loading…</span>
             ) : null}
           </div>
@@ -691,6 +760,23 @@ export function NetworkExplorerPage() {
           <span className="gis-perf-divider">•</span>
           <span>Zoom {mapZoom}</span>
         </div>
+
+        {/* What the open gateway reaches: radius, nearest / farthest meter, what a radius would cover */}
+        {focusGateway && (
+          <GatewayCoveragePanel
+            gateway={focusGateway}
+            points={points}
+            radiusM={radiusM}
+            onRadiusChange={setRadiusM}
+            onClose={() => setCoverageGatewayId(null)}
+            onOpenMeter={(id) => {
+              const p = points.find((x) => x.meterId === id);
+              if (!p) return;
+              mapInstanceRef.current?.panTo({ lat: p.lat, lng: p.lng });
+              void openMeter(p);
+            }}
+          />
+        )}
 
         {/* Gateway Inspector Drawer */}
         {selectedEntity?.type === 'gateway' && (
