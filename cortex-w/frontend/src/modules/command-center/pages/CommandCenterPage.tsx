@@ -473,7 +473,8 @@ export function CommandCenterPage() {
 
       {/* Bottom: Live Network Telemetry Feed */}
       <LiveNetworkFeed
-        frames={allFrames}
+        win={gatewayScope}
+        initialFrames={allFrames}
         metersReporting={currentKpis.uniqueMetersSeen}
         onSelectMeter={handleSelectMeterById}
       />
