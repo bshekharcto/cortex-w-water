@@ -16,9 +16,9 @@ test('gateway_list: full ids, empty, missing and malformed entries', () => {
   assert.deepEqual(gatewaysFromList('029c'), [{ gatewayId: '506f98000000029c', snr: null }]);
 });
 
-test('freshness: live under 24 h, stale up to 48 h, silent after', () => {
+test('freshness: connected within 7 days of the last frame, disconnected after', () => {
   const ago = (h: number) => new Date(Date.now() - h * 3600000);
-  assert.equal(freshness(ago(1)), 'live');
-  assert.equal(freshness(ago(30)), 'stale');
-  assert.equal(freshness(ago(60)), 'silent');
+  assert.equal(freshness(ago(1)), 'connected');
+  assert.equal(freshness(ago(100)), 'connected');
+  assert.equal(freshness(ago(170)), 'disconnected');
 });

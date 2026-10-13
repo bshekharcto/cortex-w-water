@@ -89,8 +89,8 @@ export function localDateIn(zone: string, instant: Date = new Date()): string {
 }
 
 /** The frames from the start of day `from` to the end of day `to`, days of the zone. */
-export const inWindow = (zone: string, from: string, to: string) =>
-  `time >= (${from}::date)::timestamp AT TIME ZONE '${zone}' AND time < ((${to}::date + 1)::timestamp AT TIME ZONE '${zone}')`;
+export const inWindow = (zone: string, from: string, to: string, hours?: number) =>
+  `time >= (${from}::date)::timestamp AT TIME ZONE '${zone}' AND time < ((${to}::date + 1)::timestamp AT TIME ZONE '${zone}')${recentClause(hours)}`;
 
 const STALE_GATEWAY_AFTER_MS = T.gatewayStaleMinutes * 60 * 1000; // 24 h: these meters report once a day (config/networkHealth.ts)
 
@@ -110,7 +110,13 @@ function trendText(current: number, previous: number, days: number): string {
 export interface DateWindow {
   fromDate: string;
   toDate: string;
+  /** Today at the site, but only the last 1 or 6 hours of it (the "1H" / "6H" windows). */
+  hours?: number;
 }
+
+/** AND-clause keeping the frames of the last `hours` hours (1H / 6H); empty for a window of whole days. */
+export const recentClause = (hours?: number) =>
+  hours === 1 || hours === 6 ? ` AND decoded_at >= NOW() - INTERVAL '${hours} hours'` : '';
 
 /** The last `days` days ending today at the zone's site (or at `referenceDate`, never later than today), or a custom window. */
 export function dateRange(days: number, referenceDate?: string, custom?: DateWindow, zone: string = 'UTC'): DateWindow {
@@ -120,17 +126,17 @@ export function dateRange(days: number, referenceDate?: string, custom?: DateWin
   return { fromDate: shiftDate(toDate, -(days - 1)), toDate };
 }
 
-export type MeterFilter = 'ALL' | 'LIVE' | 'STALE';
+export type MeterFilter = 'ALL' | 'CONNECTED' | 'DISCONNECTED';
 
-// The status of a meter is only how recently it reported: live (within 24 h) or stale. The filter below uses the same limit,
+// The status of a meter is only how recently it reported: connected (within 7 days) or disconnected. The filter below uses the same limit,
 // so a filter and the chip on the row always agree.
-const STALE_AFTER_MS = DAY_MS;
+const CONNECTED_WITHIN_MS = T.meterConnectedHours * 3_600_000;
 export const WEAK_RSSI_DBM = -95;
 export const POOR_SNR_DB = -10;
 
 function meterStatusChips(m: { decoded_at: string }): string[] {
-  const stale = Date.now() - new Date(m.decoded_at).getTime() > STALE_AFTER_MS;
-  return [stale ? 'stale' : 'live'];
+  const disconnected = Date.now() - new Date(m.decoded_at).getTime() > CONNECTED_WITHIN_MS;
+  return [disconnected ? 'disconnected' : 'connected'];
 }
 
 /** The status of a gateway from its newest frame and how it is doing: the labels the rail shows. */
@@ -204,21 +210,21 @@ function toMeterItem(m: any, gatewayId: string) {
 // Each filter as a SQL condition on the per-meter row built in getGatewayMeters (same limit as meterStatusChips).
 const FILTER_SQL: Record<MeterFilter, string> = {
   ALL: 'TRUE',
-  LIVE: `decoded_at >= NOW() - INTERVAL '24 hours'`,
-  STALE: `decoded_at < NOW() - INTERVAL '24 hours'`,
+  CONNECTED: `decoded_at >= NOW() - INTERVAL '${T.meterConnectedHours} hours'`,
+  DISCONNECTED: `decoded_at < NOW() - INTERVAL '${T.meterConnectedHours} hours'`,
 };
 
 // Limits a query to the meters of some sites; `param` is the placeholder holding the site ids (a bigint[]).
 export const siteClause = (param: string) =>
   ` AND meter_id IN (SELECT meter_id FROM meter_metadata WHERE site_id = ANY(${param}::bigint[]))`;
 
-const framesCte = (zone: string, sitesParam?: string) => `
+const framesCte = (zone: string, sitesParam?: string, hours?: number) => `
   WITH frames AS (
     SELECT meter_id, gateway_id, dev_eui, decoded_at, rssi, snr, f_cnt, f_port, frequency, dr, adr, confirmed,
            forward_flow_kl, reverse_flow_m3,
            to_char(decoded_at AT TIME ZONE '${zone}', 'YYYY-MM-DD HH24:MI:SS') AS local_time
     FROM water_meter_readings_v2
-    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${sitesParam ? siteClause(sitesParam) : ''}
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2', hours)}${sitesParam ? siteClause(sitesParam) : ''}
   )`;
 
 /**
@@ -242,7 +248,7 @@ export async function getGatewayMeters(opts: {
   const { fromDate, toDate } = dateRange(opts.days, opts.referenceDate, opts.custom, zone);
   const search = escapeLike((opts.q || '').trim());
   const res = await pool.query(
-    `${framesCte(zone, opts.siteIds ? '$7' : undefined)},
+    `${framesCte(zone, opts.siteIds ? '$7' : undefined, opts.custom?.hours)},
     mine AS (
       SELECT DISTINCT ON (meter_id) *
       FROM frames
@@ -293,7 +299,7 @@ export async function searchMeters(
   zone = safeZone(zone);
   const { fromDate, toDate } = dateRange(days, referenceDate, custom, zone);
   const res = await pool.query(
-    `${framesCte(zone, siteIds ? '$5' : undefined)},
+    `${framesCte(zone, siteIds ? '$5' : undefined, custom?.hours)},
     latest AS (
       SELECT DISTINCT ON (meter_id) *
       FROM frames
@@ -341,7 +347,10 @@ export async function getPostgresAggregatedSummary(
   // the cache is shared by users, so the key stands for the sites the numbers cover (a hash: the column holds 100
   // characters), never for the filter the caller typed
   const siteKey = siteIds ? 's' + createHash('md5').update([...siteIds].sort((a, b) => a - b).join(',')).digest('hex') : 'ALL';
-  const cacheKey = custom
+  const hours = custom?.hours;
+  const cacheKey = hours
+    ? `${hours}h_summary_${toDate}_site_${siteKey}`
+    : custom
     ? `custom_${fromDate}_${toDate}_site_${siteKey}`
     : `${days}d_summary_${toDate}_site_${siteKey}`;
 
@@ -380,7 +389,7 @@ export async function getPostgresAggregatedSummary(
       COUNT(*) FILTER (WHERE reverse_flow_m3 > 0.05)::int as reverse_flow_count,
       MAX(decoded_at) as latest_frame_at
     FROM water_meter_readings_v2
-    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${SITE}
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2', hours)}${SITE}
   `, RANGE_ARGS);
 
   const kpiRow = kpiRes.rows[0] || {};
@@ -400,12 +409,12 @@ export async function getPostgresAggregatedSummary(
   const gwRes = await pool.query(`
     SELECT
       gateway_id,
-      COUNT(DISTINCT meter_id) FILTER (WHERE ${inWindow(zone, '$1', '$2')})::int AS unique_meters,
-      COUNT(*) FILTER (WHERE ${inWindow(zone, '$1', '$2')})::int AS frame_count,
+      COUNT(DISTINCT meter_id) FILTER (WHERE ${inWindow(zone, '$1', '$2', hours)})::int AS unique_meters,
+      COUNT(*) FILTER (WHERE ${inWindow(zone, '$1', '$2', hours)})::int AS frame_count,
       COUNT(*) FILTER (WHERE ${inWindow(zone, '$3', '$4')})::int AS prev_frame_count,
       MAX(decoded_at) AS latest_decoded_at,
-      COALESCE((AVG(rssi) FILTER (WHERE ${inWindow(zone, '$1', '$2')}))::numeric(10,1), 0)::float AS avg_rssi,
-      COALESCE((AVG(snr) FILTER (WHERE ${inWindow(zone, '$1', '$2')}))::numeric(10,1), 0)::float AS avg_snr
+      COALESCE((AVG(rssi) FILTER (WHERE ${inWindow(zone, '$1', '$2', hours)}))::numeric(10,1), 0)::float AS avg_rssi,
+      COALESCE((AVG(snr) FILTER (WHERE ${inWindow(zone, '$1', '$2', hours)}))::numeric(10,1), 0)::float AS avg_snr
     FROM water_meter_readings_v2
     WHERE is_history = false AND gateway_id IS NOT NULL
       AND time >= (LEAST($3::date, $5::date))::timestamp AT TIME ZONE '${zone}'
@@ -440,7 +449,7 @@ export async function getPostgresAggregatedSummary(
       TO_CHAR(decoded_at AT TIME ZONE '${zone}', 'HH24:00') as hour_str,
       COUNT(*)::int as count
     FROM water_meter_readings_v2
-    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${SITE}
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2', hours)}${SITE}
     GROUP BY hour_str
     ORDER BY hour_str ASC
   `, RANGE_ARGS);
@@ -469,7 +478,7 @@ export async function getPostgresAggregatedSummary(
       COUNT(*) FILTER (WHERE snr < -5 AND snr >= -12)::int as snr_fair,
       COUNT(*) FILTER (WHERE snr < -12)::int as snr_poor
     FROM water_meter_readings_v2
-    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${SITE}
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2', hours)}${SITE}
   `, RANGE_ARGS);
   const radioRow = radioRes.rows[0] || {};
 
@@ -539,7 +548,7 @@ export async function getPostgresAggregatedSummary(
 function windowArgs(opts: { days: number; referenceDate?: string; custom?: DateWindow; siteIds?: number[] | null; zone?: string }) {
   const zone = safeZone(opts.zone);
   const { fromDate, toDate } = dateRange(opts.days, opts.referenceDate, opts.custom, zone);
-  return { zone, fromDate, toDate, site: opts.siteIds ? siteClause('$4') : '', extra: opts.siteIds ? [opts.siteIds] : [] };
+  return { zone, fromDate, toDate, hours: opts.custom?.hours, site: opts.siteIds ? siteClause('$4') : '', extra: opts.siteIds ? [opts.siteIds] : [] };
 }
 
 /** How the frames one gateway received split into signal-quality bands (the Radio Health tab). */
@@ -551,7 +560,7 @@ export async function getGatewayRadioHealth(opts: {
   siteIds?: number[] | null;
   zone?: string;
 }) {
-  const { zone, fromDate, toDate, site, extra } = windowArgs(opts);
+  const { zone, fromDate, toDate, hours, site, extra } = windowArgs(opts);
   const res = await pool.query(
     `SELECT
        COUNT(*)::int AS frames,
@@ -564,7 +573,7 @@ export async function getGatewayRadioHealth(opts: {
        COUNT(*) FILTER (WHERE snr < 0 AND snr >= -10)::int           AS snr_marginal,
        COUNT(*) FILTER (WHERE snr < -10)::int                        AS snr_poor
      FROM water_meter_readings_v2
-     WHERE is_history = false AND gateway_id = $3 AND ${inWindow(zone, '$1', '$2')}${site}`,
+     WHERE is_history = false AND gateway_id = $3 AND ${inWindow(zone, '$1', '$2', hours)}${site}`,
     [fromDate, toDate, opts.gatewayId, ...extra]
   );
   const r = res.rows[0] || {};
@@ -584,7 +593,7 @@ export async function getGatewayHourly(opts: {
   siteIds?: number[] | null;
   zone?: string;
 }) {
-  const { zone, fromDate, toDate, site, extra } = windowArgs(opts);
+  const { zone, fromDate, toDate, hours, site, extra } = windowArgs(opts);
   const res = await pool.query(
     `SELECT TO_CHAR(decoded_at AT TIME ZONE '${zone}', 'HH24:00') AS hour,
             COUNT(*)::int AS total,

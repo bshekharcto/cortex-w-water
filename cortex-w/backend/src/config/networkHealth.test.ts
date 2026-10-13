@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { networkHealthThresholds as T, OPERATIONAL_TZ } from './networkHealth.js';
 
-test('freshness limits are ordered: stale comes before silent/no-traffic', () => {
-  assert.ok(T.meterStaleMinutes < T.meterCriticalHours * 60);
+test('a meter is connected for 7 days after its last frame; gateway freshness limits are ordered', () => {
+  assert.equal(T.meterConnectedHours, 7 * 24);
   assert.ok(T.gatewayStaleMinutes < T.gatewayCriticalMinutes);
 });
 

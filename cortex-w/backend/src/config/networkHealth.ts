@@ -1,13 +1,13 @@
 // Single source of truth for Command Center health thresholds (Cortex-W spec §16).
 // The summary response carries these to the frontend so both sides always agree.
-// Cadence-aware freshness. This fleet's meters transmit once a day, so "fresh" means "reported within the
-// last day": live < 24h, stale 24-48h (missed one expected report), silent > 48h (missed two or more).
-// Gateways aggregate the same daily meters, so they use the same limits.
+// Cadence-aware freshness. This fleet's meters transmit once a day. A METER is "connected" when its last frame arrived
+// within meterConnectedHours (7 days), "disconnected" when it arrived earlier, and "never seen" when it has no frame at
+// all. Every page (Dashboard, Command Center, Network Explorer) reads this one number.
+// A GATEWAY aggregates the same daily meters: live < 24h, stale 24-48h, no-traffic when it sent nothing in the window.
 export const networkHealthThresholds = {
   gatewayStaleMinutes: 24 * 60,
   gatewayCriticalMinutes: 48 * 60,
-  meterStaleMinutes: 24 * 60,
-  meterCriticalHours: 48,
+  meterConnectedHours: 7 * 24,
   gatewayTrafficDropWarningPct: 30,
   gatewayTrafficDropCriticalPct: 60,
   rssiWeakDbm: -95,

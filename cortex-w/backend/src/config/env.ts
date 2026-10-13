@@ -82,7 +82,6 @@ const EnvSchema = z.object({
   TELEMETRY_TIMEZONE: z.string().default('Asia/Kolkata'),
   // A meter that reported within this many hours counts as CONNECTED when
   // neither the DMA report nor the asset inventory gives a status.
-  METER_CONNECTED_WINDOW_HOURS: z.coerce.number().positive().default(24),
 });
 
 const parsed = EnvSchema.parse(process.env);

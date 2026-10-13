@@ -539,14 +539,14 @@
   background: #FEE2E2;
   color: #B91C1C;
 }
-/* the Network Explorer's status scale (live / stale / silent / never seen) */
-.gis-status-badge--live {
+/* the meter status scale used everywhere (connected / disconnected / never seen) */
+.gis-status-badge--connected {
   background: #DCFCE7;
   color: #15803D;
 }
-.gis-status-badge--stale {
-  background: #FEF3C7;
-  color: #B45309;
+.gis-status-badge--disconnected {
+  background: #FEE2E2;
+  color: #B91C1C;
 }
 .gis-status-badge--never {
   background: #F1F5F9;

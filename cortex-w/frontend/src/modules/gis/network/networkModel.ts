@@ -16,9 +16,8 @@ export interface MeterPoint {
 
 /** One scale for the whole page: pin colour, legend, table badge and filter all read from here. */
 export const METER_STATUS_STYLE: Record<NetMeterStatus, { color: string; label: string; hint: string }> = {
-  live: { color: '#047857', label: 'Live', hint: 'Reported in the last 24 hours' },
-  stale: { color: '#F59E0B', label: 'Stale', hint: 'Last report 24 to 48 hours ago (missed one daily report)' },
-  silent: { color: '#DC2626', label: 'Silent', hint: 'No report for more than 48 hours' },
+  connected: { color: '#047857', label: 'Connected', hint: 'Reported in the last 7 days' },
+  disconnected: { color: '#DC2626', label: 'Disconnected', hint: 'No report for more than 7 days' },
   never: { color: '#94A3B8', label: 'Never seen', hint: 'No frame received yet' },
 };
 

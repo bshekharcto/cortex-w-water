@@ -90,7 +90,7 @@ try {
   check('A map 200', m1.status === 200, `cold ${m1.ms} ms`);
   const map = m1.body;
   const s = map?.summary;
-  check('summary adds up: statuses = total', s && s.live + s.stale + s.silent + s.never === s.total, JSON.stringify(s));
+  check('summary adds up: statuses = total', s && s.connected + s.disconnected + s.never === s.total, JSON.stringify(s));
   check('summary adds up: with + without coordinates = total', s && s.withCoordinates + s.withoutCoordinates === s.total);
   check('rows = meters with coordinates', map?.rows?.length === s?.withCoordinates);
   check('coordinates came from upstream', map?.coordinates?.status === 'fresh', map?.coordinates?.status);
@@ -115,8 +115,8 @@ try {
   check('page returns the limit and a consistent total', p1.body.items.length === 25 && p1.body.total === s.total, `total ${p1.body?.total}`);
   const p2 = await get('/api/network/meters?siteId=ALL&limit=25&offset=25', A.token);
   check('pages do not overlap', !p2.body.items.some((i: any) => p1.body.items.some((j: any) => j.meterId === i.meterId)));
-  const live = await get('/api/network/meters?siteId=ALL&status=live&limit=5', A.token);
-  check('status filter returns only that status', live.body.items.every((i: any) => i.status === 'live') && live.body.total === s.live, `live ${live.body?.total}`);
+  const live = await get('/api/network/meters?siteId=ALL&status=connected&limit=5', A.token);
+  check('status filter returns only that status', live.body.items.every((i: any) => i.status === 'connected') && live.body.total === s.connected, `connected ${live.body?.total}`);
   const never = await get('/api/network/meters?siteId=ALL&status=never&limit=5', A.token);
   check('"never seen" filter matches the summary', never.body.total === s.never && never.body.items.every((i: any) => i.lastSeen === null && i.rssi === null));
   const gwId = placed.find((x: any) => x.metersHeard > 0)?.gatewayId;
@@ -160,7 +160,7 @@ try {
   check('B table contains none of A meters', pb.body.items.every((i: any) => !aIds.has(i.meterId)));
 
   // --- meter detail (the Meter 360 drawer) ---
-  const liveRow = map.rows.find((r: any[]) => r[4] === 0) ?? map.rows.find((r: any[]) => r[4] === 1);
+  const liveRow = map.rows.find((r: any[]) => r[4] === 0) ?? map.rows.find((r: any[]) => r[4] === 1); // connected, else disconnected
   const d = await get(`/api/gis/meter-detail/${liveRow[1]}?meterId=${liveRow[0]}`, A.token);
   check('meter detail 200', d.status === 200, `${d.ms} ms`);
   const det = d.body;

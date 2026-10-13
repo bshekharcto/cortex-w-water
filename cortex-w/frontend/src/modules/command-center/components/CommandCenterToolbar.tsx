@@ -77,7 +77,7 @@ export function CommandCenterToolbar({
           </div>
 
           <div className="cc-time-group">
-            {(['TODAY', '7D', '30D', 'CUSTOM'] as TimeWindow[]).map((t) => (
+            {(['1H', '6H', 'TODAY', '7D', '30D', 'CUSTOM'] as TimeWindow[]).map((t) => (
               <button
                 key={t}
                 className={`cc-time-btn ${timeRange === t ? 'cc-time-btn--active' : ''}`}

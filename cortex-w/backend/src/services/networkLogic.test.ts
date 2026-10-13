@@ -5,15 +5,14 @@ import { gatewayStatus, haversineM, likePattern, meterStatus, round, validCoord,
 const NOW = Date.parse('2026-10-11T12:00:00Z');
 const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000);
 
-test('meter status follows the Command Center limits: live < 24 h, stale < 48 h, silent beyond', () => {
-  assert.equal(meterStatus(hoursAgo(1), NOW), 'live');
-  assert.equal(meterStatus(hoursAgo(23.9), NOW), 'live');
-  assert.equal(meterStatus(hoursAgo(24.1), NOW), 'stale');
-  assert.equal(meterStatus(hoursAgo(47.9), NOW), 'stale');
-  assert.equal(meterStatus(hoursAgo(48.1), NOW), 'silent');
+test('meter status: connected within 7 days of the last frame, disconnected after', () => {
+  assert.equal(meterStatus(hoursAgo(1), NOW), 'connected');
+  assert.equal(meterStatus(hoursAgo(48), NOW), 'connected');
+  assert.equal(meterStatus(hoursAgo(167.9), NOW), 'connected');
+  assert.equal(meterStatus(hoursAgo(168.1), NOW), 'disconnected');
 });
 
-test('a meter with no frame is "never", not silent; bad dates do not crash', () => {
+test('a meter with no frame is "never", not disconnected; bad dates do not crash', () => {
   assert.equal(meterStatus(null, NOW), 'never');
   assert.equal(meterStatus(undefined, NOW), 'never');
   assert.equal(meterStatus('not a date', NOW), 'never');

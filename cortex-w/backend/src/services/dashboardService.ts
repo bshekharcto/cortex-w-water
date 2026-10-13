@@ -1,6 +1,7 @@
 import { pool } from '../db/pool.js';
 import { proxyUpstream } from './upstreamProxy.js';
 import { tidySiteName } from './siteNames.js';
+import { networkHealthThresholds } from '../config/networkHealth.js';
 
 /**
  * The Dashboard (district -> zone -> DMA ...) served from Postgres.
@@ -14,11 +15,11 @@ import { tidySiteName } from './siteNames.js';
  * that user can open). That one small call is the only upstream dependency; every number comes from Postgres.
  * Without a token, or when the beta does not answer, nothing is shown (fail closed).
  *
- * A meter is CONNECTED when its last frame arrived within the last 25 hours, DISCONNECTED when it arrived earlier,
- * NEVER_SEEN when there is no frame. These meters report once a day, 23 to 24.5 hours apart in 82% of the cases and
- * 47 hours or more apart after a missed day (almost nothing in between), so 25 hours tells "reported on schedule" from
- * "missed a day" and, unlike "arrived today", does not call every meter disconnected between midnight and the morning
- * report. (The beta DMA report uses the calendar day, so its counts differ at night.) Flow of a day = the last reading of that
+ * A meter is CONNECTED when its last frame arrived within the last 7 days (config/networkHealth.ts meterConnectedHours, the
+ * same limit on every page), DISCONNECTED when it arrived earlier, NEVER_SEEN when there is no frame. These meters report
+ * once a day, so a week without a frame is a real outage, not a late report; a limit that long also does not call every
+ * meter disconnected between midnight and the morning report. (The beta DMA report uses the calendar day, so its counts
+ * differ.) Flow of a day = the last reading of that
  * day minus the last reading of the previous day that has one, if that was at most 7 days earlier; the scheduler works that
  * out once, when the readings arrive, and stores it as used_kl in water_meter_daily. today / yesterday / month-to-date are
  * sums of those. A day with no usable earlier reading counts as zero.
@@ -28,7 +29,7 @@ import { tidySiteName } from './siteNames.js';
 const DEFAULT_ZONE = 'UTC';
 const SNAPSHOT_TTL_MS = 60 * 1000;
 /** A meter is connected when its newest frame is not older than this. */
-export const CONNECTED_WINDOW_HOURS = 25;
+export const CONNECTED_WINDOW_HOURS = networkHealthThresholds.meterConnectedHours;
 const ALLOWED_TTL_MS = 5 * 60 * 1000;
 const ALLOWED_CACHE_MAX = 50;
 

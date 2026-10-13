@@ -53,9 +53,8 @@ describe('formatStamp', () => {
 
 describe('statusBadge', () => {
   it('maps the status scales and tolerates a missing status', () => {
-    expect(statusBadge('live')).toEqual({ label: 'LIVE', cssKey: 'live' });
+    expect(statusBadge('connected')).toEqual({ label: 'CONNECTED', cssKey: 'connected' });
     expect(statusBadge('never')).toEqual({ label: 'NEVER SEEN', cssKey: 'never' });
-    expect(statusBadge('weak')).toEqual({ label: 'WEAK', cssKey: 'weak' });
     expect(statusBadge(null).label).toBe('—');
   });
 });

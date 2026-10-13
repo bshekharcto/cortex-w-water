@@ -51,7 +51,7 @@ const INITIAL_VIEW = { center: { lat: 22.5, lng: 80 }, zoom: 5 };
 type SelectedEntity = { type: 'gateway'; data: NetGateway } | { type: 'meter'; data: GisMeter } | null;
 type StatusFilter = 'ALL' | NetMeterStatus;
 
-const STATUS_ORDER: NetMeterStatus[] = ['live', 'stale', 'silent', 'never'];
+const STATUS_ORDER: NetMeterStatus[] = ['connected', 'disconnected', 'never'];
 const dash = '—';
 const fmtTime = formatStamp;
 const fmtNum = (n: number | null | undefined, unit: string) => (n == null ? dash : `${n} ${unit}`);
@@ -64,7 +64,7 @@ function gatewayBadgeClass(s: NetGateway['status']): string {
   return 'cw-badge--muted';
 }
 function meterBadgeClass(s: NetMeterStatus): string {
-  return s === 'live' ? 'cw-badge--green' : s === 'stale' ? 'cw-badge--orange' : s === 'silent' ? 'cw-badge--red' : 'cw-badge--muted';
+  return s === 'connected' ? 'cw-badge--green' : s === 'disconnected' ? 'cw-badge--red' : 'cw-badge--muted';
 }
 
 /** What the map is waiting for, step by step, so a slow load never looks like a frozen page. */
@@ -718,7 +718,7 @@ export function NetworkExplorerPage() {
               <div className="gis-kv-row">
                 <span className="gis-k">Meters heard</span>
                 <span className="gis-v">
-                  {selectedEntity.data.metersHeard.toLocaleString()} ({selectedEntity.data.liveMeters.toLocaleString()} live)
+                  {selectedEntity.data.metersHeard.toLocaleString()} ({selectedEntity.data.liveMeters.toLocaleString()} connected)
                 </span>
               </div>
               <div className="gis-kv-row">
@@ -966,7 +966,7 @@ export function NetworkExplorerPage() {
                 <div className="gis-kv-row"><span className="gis-k">Gateway ID</span><span className="gis-v">{gw.gatewayId}</span></div>
                 <div className="gis-kv-row"><span className="gis-k">Location</span><span className="gis-v">{gw.lat.toFixed(4)}, {gw.lng.toFixed(4)}</span></div>
                 <div className="gis-kv-row"><span className="gis-k">Coverage radius</span><span className="gis-v">{gw.radiusM ? `${gw.radiusM} m` : dash}</span></div>
-                <div className="gis-kv-row"><span className="gis-k">Meters heard</span><span className="gis-v">{gw.metersHeard.toLocaleString()} ({gw.liveMeters.toLocaleString()} live)</span></div>
+                <div className="gis-kv-row"><span className="gis-k">Meters heard</span><span className="gis-v">{gw.metersHeard.toLocaleString()} ({gw.liveMeters.toLocaleString()} connected)</span></div>
                 <div className="gis-kv-row"><span className="gis-k">Avg link quality</span><span className="gis-v">{fmtNum(gw.avgRssi, 'dBm')} · SNR {fmtNum(gw.avgSnr, 'dB')}</span></div>
                 <div className="gis-kv-row"><span className="gis-k">Last frame</span><span className="gis-v">{fmtTime(gw.lastFrameAt)}</span></div>
                 <button
@@ -1005,7 +1005,7 @@ export function NetworkExplorerPage() {
                       <span className={`cw-badge ${gatewayBadgeClass(gw.status)}`}>{GATEWAY_STATUS_LABEL[gw.status]}</span>
                     </div>
                     <div className="gis-kv-row"><span className="gis-k">Why</span><span className="gis-v">{gw.reason === 'no-geofence' ? 'No location stored' : 'Stored location unusable'}</span></div>
-                    <div className="gis-kv-row"><span className="gis-k">Meters heard</span><span className="gis-v">{gw.metersHeard.toLocaleString()} ({gw.liveMeters.toLocaleString()} live)</span></div>
+                    <div className="gis-kv-row"><span className="gis-k">Meters heard</span><span className="gis-v">{gw.metersHeard.toLocaleString()} ({gw.liveMeters.toLocaleString()} connected)</span></div>
                     <div className="gis-kv-row"><span className="gis-k">Avg link quality</span><span className="gis-v">{fmtNum(gw.avgRssi, 'dBm')} · SNR {fmtNum(gw.avgSnr, 'dB')}</span></div>
                     <div className="gis-kv-row"><span className="gis-k">Last frame</span><span className="gis-v">{fmtTime(gw.lastFrameAt)}</span></div>
                   </div>

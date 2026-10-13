@@ -6,8 +6,7 @@ import type { NetworkHealthThresholds } from '../types/commandCenter.types';
 export const DEFAULT_THRESHOLDS: NetworkHealthThresholds = {
   gatewayStaleMinutes: 24 * 60,
   gatewayCriticalMinutes: 48 * 60,
-  meterStaleMinutes: 24 * 60,
-  meterCriticalHours: 48,
+  meterConnectedHours: 7 * 24,
   gatewayTrafficDropWarningPct: 30,
   gatewayTrafficDropCriticalPct: 60,
   rssiWeakDbm: -95,

@@ -5,8 +5,8 @@ import type { NetMeter, NetMeterMapResponse } from '@/services/api/networkApi';
 const map: NetMeterMapResponse = {
   latestFrameAt: null,
   coordinates: { status: 'fresh', fetchedAt: null },
-  summary: { total: 3, withCoordinates: 2, withoutCoordinates: 1, live: 1, stale: 1, silent: 0, never: 1 },
-  statuses: ['live', 'stale', 'silent', 'never'],
+  summary: { total: 3, withCoordinates: 2, withoutCoordinates: 1, connected: 1, disconnected: 1, never: 1 },
+  statuses: ['connected', 'disconnected', 'never'],
   gatewayIds: ['506f980000000342', '506f9800000002a5'],
   columns: [],
   rows: [
@@ -18,8 +18,8 @@ const map: NetMeterMapResponse = {
 describe('decodeMeterRows', () => {
   it('turns the compact rows into points, resolving status and gateway indexes', () => {
     const [a, b] = decodeMeterRows(map);
-    expect(a).toEqual({ meterId: '0000000001', assetId: 11, lat: 20.3, lng: 85.8, status: 'live', gatewayId: '506f9800000002a5', rssi: -90.5, snr: -4 });
-    expect(b.status).toBe('stale');
+    expect(a).toEqual({ meterId: '0000000001', assetId: 11, lat: 20.3, lng: 85.8, status: 'connected', gatewayId: '506f9800000002a5', rssi: -90.5, snr: -4 });
+    expect(b.status).toBe('disconnected');
     expect(b.gatewayId).toBeNull();
     expect(b.rssi).toBeNull();
   });
@@ -77,7 +77,7 @@ describe('gatewayLabel', () => {
 describe('toGisMeter', () => {
   const m: NetMeter = {
     meterId: '0000000001', assetId: 11, devEui: null, consumerName: null, householdId: 'WS/BMC/123', locality: null, ward: null, zone: null, dma: null,
-    siteId: 6394, siteName: 'BHUBANESWAR', lat: 20.3, lng: 85.8, gatewayId: 'g', distanceToGatewayM: null, status: 'stale', rssi: null, snr: null,
+    siteId: 6394, siteName: 'BHUBANESWAR', lat: 20.3, lng: 85.8, gatewayId: 'g', distanceToGatewayM: null, status: 'disconnected', rssi: null, snr: null,
     lastSeen: null, currentReadingKl: null,
   };
   it('keeps unknown values empty and never invents alerts', () => {
@@ -87,7 +87,7 @@ describe('toGisMeter', () => {
     expect(g.distanceMeters).toBeNull();
     expect(g.rssi).toBeNull();
     expect(g.alerts).toEqual([]);
-    expect(g.status).toBe('stale');
+    expect(g.status).toBe('disconnected');
     expect(g.locality).toBe('BHUBANESWAR'); // falls back to the real site name, not a made-up zone
   });
 });

@@ -63,6 +63,13 @@ function daysFor(range: TimeWindow): number {
   return range === '30D' ? 30 : range === '7D' ? 7 : 1; // Today: one day, the day it is now at the site
 }
 
+// the window beyond "the last N days": the last hours of today (1H, 6H) or the chosen dates (Custom); none for the rest
+function rangeFor(range: TimeWindow, custom: CustomRange): CustomRange | undefined {
+  if (range === '1H') return { from: '', to: '', hours: 1 };
+  if (range === '6H') return { from: '', to: '', hours: 6 };
+  return range === 'CUSTOM' ? custom : undefined;
+}
+
 // a day as YYYY-MM-DD on the clock of this browser; only the first guess of the custom range, the server cuts the real days
 function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * 86400000).toLocaleDateString('en-CA');
@@ -116,7 +123,7 @@ export function CommandCenterPage() {
         undefined,
         forceRefresh,
         selectedSiteId,
-        timeRange === 'CUSTOM' ? customRange : undefined
+        rangeFor(timeRange, customRange)
       );
       if (requestId !== summaryRequestId.current) return;
       setSummaryData(live);
@@ -155,10 +162,10 @@ export function CommandCenterPage() {
   // the window and site the per-gateway tabs (Traffic, Radio Health) cover
   const gatewayScope = {
     days: daysFor(timeRange),
-    custom: timeRange === 'CUSTOM' ? customRange : undefined,
+    custom: rangeFor(timeRange, customRange),
     siteId: selectedSiteId,
   };
-  const windowText = timeRange === 'CUSTOM' ? `${customRange.from} → ${customRange.to}` : timeRange === 'TODAY' ? 'Today' : timeRange;
+  const windowText = timeRange === 'CUSTOM' ? `${customRange.from} → ${customRange.to}` : timeRange === 'TODAY' ? 'Today' : timeRange === '1H' ? 'Last hour' : timeRange === '6H' ? 'Last 6 hours' : timeRange;
 
   // Ensure an active gateway is selected once gateways are known
   useEffect(() => {
@@ -205,11 +212,17 @@ export function CommandCenterPage() {
       page: metersPage,
       size: METERS_PAGE_SIZE,
       filter: metersFilter,
-      custom: timeRange === 'CUSTOM' ? customRange : undefined,
+      custom: rangeFor(timeRange, customRange),
       siteId: selectedSiteId,
     })
       .then((res) => {
-        if (!cancelled) setMetersData(res);
+        if (cancelled) return;
+        // the list shrank under the page being looked at (a filter, a refresh): go to the last page that exists
+        if (res.totalPages > 0 && metersPage >= res.totalPages) {
+          setMetersPage(res.totalPages - 1);
+          return;
+        }
+        setMetersData(res);
       })
       .catch((err) => {
         console.warn('[CommandCenter] Could not load gateway meters:', err);
@@ -242,7 +255,7 @@ export function CommandCenterPage() {
     }
     try {
       const found = (
-        await searchMeters(meterId, daysFor(timeRange), timeRange === 'CUSTOM' ? customRange : undefined, selectedSiteId)
+        await searchMeters(meterId, daysFor(timeRange), rangeFor(timeRange, customRange), selectedSiteId)
       ).find((m) => m.meterId === meterId);
       if (found) {
         setSelectedMeter(found);
@@ -281,7 +294,7 @@ export function CommandCenterPage() {
     if (query.length < 3 || findGatewayByQuery(query)) return;
     const timer = setTimeout(async () => {
       try {
-        const found = await searchMeters(query, daysFor(timeRange), timeRange === 'CUSTOM' ? customRange : undefined, selectedSiteId);
+        const found = await searchMeters(query, daysFor(timeRange), rangeFor(timeRange, customRange), selectedSiteId);
         if (found.length > 0) {
           setSelectedGatewayId(found[0].gatewayId);
           setSelectedMeter(found[0]);

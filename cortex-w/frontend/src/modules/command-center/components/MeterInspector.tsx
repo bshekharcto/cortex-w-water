@@ -53,7 +53,7 @@ export function MeterInspector({ meter, onClose, onViewFrames }: Props) {
       </div>
 
       <div className="cc-inspector-badges-row">
-        <span className="cc-chip cc-chip--live">LIVE</span>
+        <span className={`cc-chip cc-chip--${meter.statusChips[0] ?? 'disconnected'}`}>{(meter.statusChips[0] ?? 'disconnected').toUpperCase()}</span>
         <span className="cc-inspector-freshness">Last seen {meter.frameAge}</span>
       </div>
 

@@ -646,8 +646,12 @@
   border-radius: 4px;
   cursor: pointer;
 }
-.cc-subfilter-chip:hover {
+.cc-subfilter-chip:hover:not(:disabled) {
   color: #F8FAFC;
+}
+.cc-subfilter-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .cc-subfilter-chip--active {
   background: #2563EB;
@@ -738,9 +742,8 @@
   text-transform: uppercase;
   white-space: nowrap;
 }
-.cc-chip--live { background: rgba(16, 185, 129, 0.15); color: #34D399; }
-.cc-chip--stale { background: rgba(249, 115, 22, 0.15); color: #FB923C; }
-.cc-chip--silent { background: rgba(239, 68, 68, 0.15); color: #F87171; }
+.cc-chip--connected { background: rgba(16, 185, 129, 0.15); color: #34D399; }
+.cc-chip--disconnected { background: rgba(239, 68, 68, 0.15); color: #F87171; }
 
 .cc-event-badge {
   font-size: 10.5px;

@@ -37,8 +37,8 @@ export function GatewayMetersTable({
         <span className="cc-subfilter-label">Filter Meters:</span>
         {[
           { key: 'ALL', label: 'All' },
-          { key: 'LIVE', label: 'Live' },
-          { key: 'STALE', label: 'Stale' },
+          { key: 'CONNECTED', label: 'Connected' },
+          { key: 'DISCONNECTED', label: 'Disconnected' },
         ].map((f) => (
           <button
             key={f.key}
@@ -127,7 +127,7 @@ export function GatewayMetersTable({
       <div className="cc-subfilter-bar">
         <button
           className="cc-subfilter-chip"
-          disabled={page <= 0 || loading}
+          disabled={page <= 0}
           onClick={() => onPageChange(page - 1)}
         >
           ‹ Prev
@@ -137,11 +137,11 @@ export function GatewayMetersTable({
             ? 'No meters'
             : `${firstRow.toLocaleString()}–${lastRow.toLocaleString()} of ${total.toLocaleString()} · page ${
                 page + 1
-              } of ${totalPages}`}
+              } of ${Math.max(totalPages, 1)}`}
         </span>
         <button
           className="cc-subfilter-chip"
-          disabled={page + 1 >= totalPages || loading}
+          disabled={page + 1 >= totalPages}
           onClick={() => onPageChange(page + 1)}
         >
           Next ›

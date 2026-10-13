@@ -9,10 +9,19 @@ import {
   TrafficSeries,
 } from '@/modules/command-center/types/commandCenter.types';
 
-/** A custom window: days at the site as YYYY-MM-DD, both inclusive. */
+/**
+ * A window other than "the last N days": days at the site as YYYY-MM-DD (both inclusive), or `hours` (1 or 6) for the
+ * last hours of today at the site (then from / to are ignored).
+ */
 export interface CustomRange {
   from: string;
   to: string;
+  hours?: number;
+}
+
+/** The query parameters of a CustomRange. */
+export function rangeQuery(c: CustomRange): Record<string, string | number> {
+  return c.hours ? { hours: c.hours } : { from: c.from, to: c.to };
 }
 
 export interface TelemetrySummaryResponse {
@@ -103,8 +112,7 @@ export async function fetchCommandCenterSummary(
   const query: Record<string, string | number | boolean> = { days };
   if (date) query.date = date; // only to look back from an earlier day; by default it is today at the site
   if (custom) {
-    query.from = custom.from;
-    query.to = custom.to;
+    Object.assign(query, rangeQuery(custom));
   }
   if (refresh) query.refresh = true;
   if (siteId && siteId !== 'ALL') query.siteId = siteId;
@@ -130,7 +138,7 @@ function scopeQuery(scope: GatewayScope): Record<string, string | number> {
   return {
     days: scope.days,
     ...(scope.siteId && scope.siteId !== 'ALL' ? { siteId: scope.siteId } : {}),
-    ...(scope.custom ? { from: scope.custom.from, to: scope.custom.to } : {}),
+    ...(scope.custom ? rangeQuery(scope.custom) : {}),
   };
 }
 
@@ -158,7 +166,7 @@ export async function fetchGatewayHourly(gatewayId: string, scope: GatewayScope)
   });
 }
 
-export type MeterFilterKey = 'ALL' | 'LIVE' | 'STALE';
+export type MeterFilterKey = 'ALL' | 'CONNECTED' | 'DISCONNECTED';
 
 export interface GatewayMetersPage {
   content: MeterTelemetryItem[];
@@ -184,7 +192,7 @@ export async function fetchGatewayMeters(
       size: opts.size,
       filter: opts.filter,
       ...(opts.siteId && opts.siteId !== 'ALL' ? { siteId: opts.siteId } : {}),
-      ...(opts.custom ? { from: opts.custom.from, to: opts.custom.to } : {}),
+      ...(opts.custom ? rangeQuery(opts.custom) : {}),
     },
   });
 }
@@ -202,7 +210,7 @@ export async function searchMeters(
       q,
       days,
       ...(siteId && siteId !== 'ALL' ? { siteId } : {}),
-      ...(custom ? { from: custom.from, to: custom.to } : {}),
+      ...(custom ? rangeQuery(custom) : {}),
     },
   });
 }
@@ -216,7 +224,7 @@ export type WindowParams = GatewayScope;
 
 /** Changes whenever the window or the site does: what a list reloads on. */
 export function windowKey(w: WindowParams): string {
-  return [w.days, w.custom?.from ?? '', w.custom?.to ?? '', w.siteId ?? 'ALL'].join('|');
+  return [w.days, w.custom?.from ?? '', w.custom?.to ?? '', w.custom?.hours ?? '', w.siteId ?? 'ALL'].join('|');
 }
 
 function windowQuery(w: WindowParams, siteId?: string): Record<string, string | number> {
@@ -227,7 +235,7 @@ function windowQuery(w: WindowParams, siteId?: string): Record<string, string | 
   return query;
 }
 
-export type MeterStatusFilter = 'live' | 'stale' | 'silent';
+export type MeterStatusFilter = 'connected' | 'disconnected';
 
 export interface FleetMetersPage {
   total: number;

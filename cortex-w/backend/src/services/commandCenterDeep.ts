@@ -32,7 +32,7 @@ function scope(opts: WindowOpts) {
   const zone = safeZone(opts.zone);
   const { fromDate, toDate } = dateRange(opts.days, opts.referenceDate, opts.custom, zone);
   const params: unknown[] = [fromDate, toDate];
-  let where = `is_history = false AND ${inWindow(zone, '$1', '$2')}`;
+  let where = `is_history = false AND ${inWindow(zone, '$1', '$2', opts.custom?.hours)}`;
   if (opts.siteIds) {
     params.push(opts.siteIds);
     where += siteClause(`$${params.length}`);
@@ -111,11 +111,10 @@ export function gatewaysFromList(list: string | null): Array<{ gatewayId: string
     });
 }
 
-/** The state of a meter by how long it has been silent: the limits of the shared thresholds (live < 24 h, stale < 48 h). */
-export function freshness(decodedAt: string | Date): 'live' | 'stale' | 'silent' {
-  const ageMin = (Date.now() - new Date(decodedAt).getTime()) / 60000;
-  if (ageMin > T.meterCriticalHours * 60) return 'silent';
-  return ageMin > T.meterStaleMinutes ? 'stale' : 'live';
+/** Connected when the last frame arrived within the shared limit (7 days), disconnected otherwise. */
+export function freshness(decodedAt: string | Date): 'connected' | 'disconnected' {
+  const ageHours = (Date.now() - new Date(decodedAt).getTime()) / 3_600_000;
+  return ageHours > T.meterConnectedHours ? 'disconnected' : 'connected';
 }
 
 function meterItem(m: any, heard: Array<{ gatewayId: string; rssi: number | null; snr: number | null }>) {
@@ -219,7 +218,7 @@ export async function getMeterDetail(opts: WindowOpts & { idOrEui: string }) {
   };
 }
 
-export type MeterStatusFilter = 'live' | 'stale' | 'silent';
+export type MeterStatusFilter = 'connected' | 'disconnected';
 
 /**
  * Fleet-wide meter list: each meter's latest frame (through whichever gateway took it), optionally searched and
@@ -247,16 +246,12 @@ export async function listFleetMeters(
 
   const outer: string[] = [];
   const now = Date.now();
-  const liveAfter = new Date(now - T.meterStaleMinutes * 60000).toISOString();
-  const silentBefore = new Date(now - T.meterCriticalHours * 3600000).toISOString();
-  if (opts.status === 'live') {
-    params.push(liveAfter);
+  const connectedAfter = new Date(now - T.meterConnectedHours * 3_600_000).toISOString();
+  if (opts.status === 'connected') {
+    params.push(connectedAfter);
     outer.push(`decoded_at > $${params.length}`);
-  } else if (opts.status === 'stale') {
-    params.push(liveAfter, silentBefore);
-    outer.push(`decoded_at <= $${params.length - 1} AND decoded_at > $${params.length}`);
-  } else if (opts.status === 'silent') {
-    params.push(silentBefore);
+  } else if (opts.status === 'disconnected') {
+    params.push(connectedAfter);
     outer.push(`decoded_at <= $${params.length}`);
   }
   if (opts.dr !== undefined) {
@@ -342,7 +337,8 @@ async function series(
   from: string,
   to: string,
   gatewayId: string | undefined,
-  siteIds: number[] | null | undefined
+  siteIds: number[] | null | undefined,
+  hours?: number
 ): Promise<TrafficPoint[]> {
   const bin = BIN[bucket];
   const params: unknown[] = [from, to];
@@ -365,7 +361,7 @@ async function series(
        SELECT ${bin(`(decoded_at AT TIME ZONE '${zone}')`)} AS t,
               COUNT(*)::int AS frames, COUNT(DISTINCT meter_id)::int AS meters
        FROM ${TABLE}
-       WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${filter}
+       WHERE is_history = false AND ${inWindow(zone, '$1', '$2', hours)}${filter}
        GROUP BY 1
      )
      SELECT to_char(s.t, 'YYYY-MM-DD"T"HH24:MI') AS t, COALESCE(d.frames, 0) AS frames, COALESCE(d.meters, 0) AS meters
@@ -376,7 +372,7 @@ async function series(
   return res.rows.map((r: any) => ({ t: r.t, frames: r.frames, meters: r.meters }));
 }
 
-async function totals(zone: string, from: string, to: string, gatewayId: string | undefined, siteIds: number[] | null | undefined) {
+async function totals(zone: string, from: string, to: string, gatewayId: string | undefined, siteIds: number[] | null | undefined, hours?: number) {
   const params: unknown[] = [from, to];
   let filter = '';
   if (gatewayId) {
@@ -389,7 +385,7 @@ async function totals(zone: string, from: string, to: string, gatewayId: string 
   }
   const res = await pool.query(
     `SELECT COUNT(*)::int AS frames, COUNT(DISTINCT meter_id)::int AS meters
-     FROM ${TABLE} WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${filter}`,
+     FROM ${TABLE} WHERE is_history = false AND ${inWindow(zone, '$1', '$2', hours)}${filter}`,
     params
   );
   return res.rows[0] ?? { frames: 0, meters: 0 };
@@ -406,9 +402,9 @@ export async function getTraffic(opts: WindowOpts & { gatewayId?: string }) {
 
   const earliestParams: unknown[] = opts.siteIds ? [opts.siteIds] : [];
   const [current, previousRaw, cur, prev, earliest] = await Promise.all([
-    series(bucket, zone, fromDate, toDate, opts.gatewayId, opts.siteIds),
+    series(bucket, zone, fromDate, toDate, opts.gatewayId, opts.siteIds, opts.custom?.hours),
     series(bucket, zone, prevFrom, prevTo, opts.gatewayId, opts.siteIds),
-    totals(zone, fromDate, toDate, opts.gatewayId, opts.siteIds),
+    totals(zone, fromDate, toDate, opts.gatewayId, opts.siteIds, opts.custom?.hours),
     totals(zone, prevFrom, prevTo, opts.gatewayId, opts.siteIds),
     // the first day of data of what is shown (the chosen sites), not of the whole table
     pool.query(
@@ -424,7 +420,8 @@ export async function getTraffic(opts: WindowOpts & { gatewayId?: string }) {
     current,
     previous,
     totals: { frames: cur.frames, meters: cur.meters, prevFrames: prev.frames, prevMeters: prev.meters },
-    comparable: earliestDate !== null && prevFrom >= earliestDate,
+    // a 1H / 6H window has no equal period before it
+    comparable: !opts.custom?.hours && earliestDate !== null && prevFrom >= earliestDate,
   };
 }
 

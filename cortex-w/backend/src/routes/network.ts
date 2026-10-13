@@ -8,7 +8,7 @@ const router = Router();
 // The Network Explorer's data (see services/networkService.ts). Every route works for the signed-in client only:
 // a site id that is not theirs answers 404 (so ids cannot be probed), and "ALL" means "all of my sites".
 
-const STATUSES = new Set<string>(['live', 'stale', 'silent', 'never']);
+const STATUSES = new Set<string>(['connected', 'disconnected', 'never']);
 const EUI = /^[0-9a-f]{16}$/i;
 
 /** Validates the query; answers the 4xx itself and returns null when it is not acceptable. */
@@ -89,7 +89,7 @@ router.get('/meters', async (req, res) => {
   const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 64) : '';
   const status = req.query.status;
   if (status !== undefined && (typeof status !== 'string' || !STATUSES.has(status))) {
-    return res.status(400).json({ error: 'status must be live, stale, silent or never' });
+    return res.status(400).json({ error: 'status must be connected, disconnected or never' });
   }
   const gatewayId = req.query.gatewayId;
   if (gatewayId !== undefined && (typeof gatewayId !== 'string' || !EUI.test(gatewayId))) {

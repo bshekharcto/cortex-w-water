@@ -172,7 +172,7 @@ interface HealthRow {
 
 /** How each gateway is doing, from the newest frame of every meter it is the best gateway for (one row per meter). */
 async function loadHealth(siteIds: SiteScope): Promise<Map<string, HealthRow>> {
-  const liveAfter = new Date(Date.now() - T.meterStaleMinutes * 60_000);
+  const liveAfter = new Date(Date.now() - T.meterConnectedHours * 3_600_000);
   const res = await pool.query(
     `SELECT l.gateway_id,
             COUNT(*)::int                                      AS meters_heard,
@@ -301,7 +301,7 @@ export interface MeterMapPayload {
   /** Newest frame among these meters: it only changes when the scheduler loads data, so the response can be cached by ETag. */
   latestFrameAt: string | null;
   coordinates: { status: CoordinatesStatus; fetchedAt: string | null };
-  summary: { total: number; withCoordinates: number; withoutCoordinates: number; live: number; stale: number; silent: number; never: number };
+  summary: { total: number; withCoordinates: number; withoutCoordinates: number; connected: number; disconnected: number; never: number };
   /** status column: an index into this list. */
   statuses: readonly MeterStatus[];
   /** gateway column: an index into this list, or -1 when the meter has no gateway. */
@@ -332,7 +332,7 @@ export function getMeterMap(siteIds: SiteScope): Promise<MeterMapPayload> {
     ]);
 
     const now = Date.now();
-    const counts = { live: 0, stale: 0, silent: 0, never: 0 };
+    const counts = { connected: 0, disconnected: 0, never: 0 };
     const gatewayIds: string[] = [];
     const gwIndex = new Map<string, number>();
     const rows: MeterMapPayload['rows'] = [];
@@ -416,8 +416,7 @@ export async function listMeters(
 ): Promise<{ total: number; limit: number; offset: number; coordinates: { status: CoordinatesStatus; fetchedAt: string | null }; items: NetworkMeter[] }> {
   const ctx = requireClient();
   const now = Date.now();
-  const staleCut = new Date(now - T.meterStaleMinutes * 60_000);
-  const silentCut = new Date(now - T.meterCriticalHours * 3_600_000);
+  const connectedCut = new Date(now - T.meterConnectedHours * 3_600_000);
 
   const params: unknown[] = [clientTenantIds(), siteIds];
   const where: string[] = [
@@ -432,9 +431,8 @@ export async function listMeters(
     where.push(`(m.meter_id ILIKE ${p} OR m.consumer_name ILIKE ${p} OR m.household_custom_id ILIKE ${p} OR m.locality ILIKE ${p})`);
   }
   if (opts.gatewayId) where.push(`l.gateway_id = ${add(opts.gatewayId)}`);
-  if (opts.status === 'live') where.push(`l.decoded_at >= ${add(staleCut)}`);
-  else if (opts.status === 'stale') where.push(`l.decoded_at < ${add(staleCut)} AND l.decoded_at >= ${add(silentCut)}`);
-  else if (opts.status === 'silent') where.push(`l.decoded_at < ${add(silentCut)}`);
+  if (opts.status === 'connected') where.push(`l.decoded_at >= ${add(connectedCut)}`);
+  else if (opts.status === 'disconnected') where.push(`l.decoded_at < ${add(connectedCut)}`);
   else if (opts.status === 'never') where.push('l.decoded_at IS NULL');
 
   const limitP = add(opts.limit);
@@ -637,9 +635,9 @@ export async function getLegacyGisData(siteIds: SiteScope) {
     meters,
     summary: {
       totalMeters: meters.length,
-      activeCount: count('live'),
-      warningCount: count('stale'),
-      problemCount: count('silent') + count('never'),
+      activeCount: count('connected'),
+      warningCount: 0, // there is no in-between state any more: connected, disconnected or never seen
+      problemCount: count('disconnected') + count('never'),
       gatewayCount: gw.gateways.length,
     },
   };

@@ -34,6 +34,13 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
  * at the site).
  */
 function customWindow(query: any, zone: string): DateWindow | undefined | null {
+  // ?hours=1 or 6: today at the site, only its last 1 / 6 hours
+  if (query.hours !== undefined) {
+    const hours = Number(query.hours);
+    if (hours !== 1 && hours !== 6) return null;
+    const today = localDateIn(zone);
+    return { fromDate: today, toDate: today, hours };
+  }
   const from = query.from as string | undefined;
   const to = query.to as string | undefined;
   if (!from && !to) return undefined;
@@ -61,7 +68,7 @@ router.get('/summary', async (req, res) => {
 
     const custom = customWindow(req.query, zone);
     if (custom === null) {
-      return res.status(400).json({ error: `from/to must be YYYY-MM-DD, from <= to, not in the future, at most ${MAX_CUSTOM_DAYS} days` });
+      return res.status(400).json({ error: `from/to must be YYYY-MM-DD (or hours 1 or 6), from <= to, not in the future, at most ${MAX_CUSTOM_DAYS} days` });
     }
 
     const pgSummary = await getPostgresAggregatedSummary(days, date, refresh, siteId, custom, siteIds, zone);
@@ -73,7 +80,7 @@ router.get('/summary', async (req, res) => {
   }
 });
 
-const METER_FILTERS: MeterFilter[] = ['ALL', 'LIVE', 'STALE'];
+const METER_FILTERS: MeterFilter[] = ['ALL', 'CONNECTED', 'DISCONNECTED'];
 
 function intParam(value: unknown, fallback: number, min: number, max: number): number {
   const n = parseInt(String(value ?? ''), 10);
@@ -229,7 +236,7 @@ router.get('/meters', async (req, res) => {
   try {
     const scope = await viewScope(req, res);
     if (!scope) return;
-    const status = ['live', 'stale', 'silent'].includes(req.query.status as string) ? (req.query.status as MeterStatusFilter) : undefined;
+    const status = ['connected', 'disconnected'].includes(req.query.status as string) ? (req.query.status as MeterStatusFilter) : undefined;
     const intOrUndef = (v: unknown) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? undefined : Number(v));
     const confirmed = req.query.confirmed === 'true' ? true : req.query.confirmed === 'false' ? false : undefined;
     const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 64) : undefined;
