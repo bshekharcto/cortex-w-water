@@ -28,13 +28,18 @@ export const GATEWAY_STATUS_LABEL: Record<NetGatewayStatus, string> = {
   'no-traffic': 'No traffic',
 };
 
+/** A status this version knows; anything else (an older or newer server) reads as never seen, not as healthy. */
+function knownStatus(s: string | undefined): NetMeterStatus {
+  return s && s in METER_STATUS_STYLE ? (s as NetMeterStatus) : 'never';
+}
+
 export function decodeMeterRows(map: NetMeterMapResponse): MeterPoint[] {
   return map.rows.map((r) => ({
     meterId: r[0],
     assetId: r[1],
     lat: r[2],
     lng: r[3],
-    status: map.statuses[r[4]] ?? 'never',
+    status: knownStatus(map.statuses[r[4]]),
     gatewayId: r[5] >= 0 ? map.gatewayIds[r[5]] ?? null : null,
     rssi: r[6],
     snr: r[7],
