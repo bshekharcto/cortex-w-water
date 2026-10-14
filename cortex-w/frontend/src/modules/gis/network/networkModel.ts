@@ -12,6 +12,8 @@ export interface MeterPoint {
   gatewayId: string | null;
   rssi: number | null;
   snr: number | null;
+  /** The site the meter belongs to, null when it has none. */
+  siteId: number | null;
 }
 
 /** One scale for the whole page: pin colour, legend, table badge and filter all read from here. */
@@ -43,6 +45,7 @@ export function decodeMeterRows(map: NetMeterMapResponse): MeterPoint[] {
     gatewayId: r[5] >= 0 ? map.gatewayIds[r[5]] ?? null : null,
     rssi: r[6],
     snr: r[7],
+    siteId: r[8] != null && r[8] >= 0 ? r[8] : null,
   }));
 }
 

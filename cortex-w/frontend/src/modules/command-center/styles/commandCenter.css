@@ -1088,7 +1088,7 @@
 }
 
 .cc-feed-stream-container {
-  max-height: 300px;
+  max-height: clamp(440px, 65vh, 720px); /* the feed shows 100 frames: room for about twice as many rows as before */
   overflow-y: auto;
   background: #0A0F1D;
 }

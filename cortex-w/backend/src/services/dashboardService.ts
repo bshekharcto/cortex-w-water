@@ -1,4 +1,4 @@
-import { pool } from '../db/pool.js';
+import { pool, logRouteError } from '../db/pool.js';
 import { proxyUpstream } from './upstreamProxy.js';
 import { tidySiteName } from './siteNames.js';
 import { networkHealthThresholds } from '../config/networkHealth.js';
@@ -262,7 +262,7 @@ function startBuild(): Promise<Snapshot> {
 async function getSnapshot(): Promise<Snapshot> {
   if (!snapshot) return startBuild();
   if (Date.now() - snapshot.builtAt >= SNAPSHOT_TTL_MS) {
-    startBuild().catch((err) => console.warn('[dashboard] Snapshot refresh failed, serving the previous one:', err?.message || err));
+    startBuild().catch((err) => logRouteError('[dashboard] Snapshot refresh failed, serving the previous one:', err));
   }
   return snapshot;
 }

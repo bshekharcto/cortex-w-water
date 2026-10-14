@@ -210,8 +210,8 @@
   position: absolute;
   top: 10px;
   right: 10px;
-  bottom: 10px;
-  width: 340px;
+  width: 300px;
+  max-height: calc(100% - 20px); /* as tall as its content, never taller than the map */
   background: #FFFFFF;
   border: 1px solid #E2E8F0;
   border-radius: 8px;
@@ -1434,81 +1434,94 @@
 @keyframes gis-bar-slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
 .gis-card-skeleton { display: flex; flex-direction: column; gap: 10px; padding: 14px; background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; }
 
-/* ---------- Gateway coverage panel (Network Explorer): radius, nearest / farthest meter, what a radius would cover ---------- */
+/* ---------- Gateway coverage panel (Network Explorer): a narrow card at the top right of the map ---------- */
 .gis-cov-panel {
-  position: absolute;
-  top: 56px; /* below the Map / Satellite switch */
-  left: 10px;
-  width: 300px;
-  max-height: calc(100% - 130px);
-  overflow-y: auto;
-  background: rgba(255, 255, 255, 0.97);
+  position: relative;
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(6px);
   border: 1px solid #E2E8F0;
   border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-  z-index: 9;
-  padding: 12px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+  padding: 8px 30px 8px 10px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
 }
-.gis-cov-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
-.gis-cov-eyebrow { display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #64748B; }
-.gis-cov-name { display: block; font-size: 14px; font-weight: 700; color: #0F172A; word-break: break-all; }
-.gis-cov-hero { display: flex; align-items: baseline; gap: 8px; border-left: 3px solid #2563EB; padding-left: 10px; }
-.gis-cov-hero-num { font-size: 26px; font-weight: 700; color: #0F172A; line-height: 1; }
-.gis-cov-hero-label { font-size: 12px; color: #64748B; }
+.gis-cov-id { display: flex; flex-direction: column; min-width: 0; }
+.gis-cov-name { font-size: 13px; font-weight: 700; color: #0F172A; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gis-cov-count { font-size: 11.5px; color: #64748B; }
+.gis-cov-count b { font-size: 13px; color: #0F172A; }
+.gis-cov-section { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #64748B; }
+.gis-cov-close { position: absolute; top: 6px; right: 7px; background: transparent; border: none; cursor: pointer; color: #64748B; padding: 2px; display: inline-flex; }
+.gis-cov-close:hover { color: #0F172A; }
 
-.gis-cov-range-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.gis-cov-range-card {
-  display: flex; flex-direction: column; gap: 2px; text-align: left;
-  background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; padding: 8px 10px; cursor: pointer; font: inherit;
-}
-.gis-cov-range-card:hover:not(:disabled) { border-color: #93C5FD; background: #EFF6FF; }
-.gis-cov-range-card:disabled { cursor: default; opacity: 0.7; }
-.gis-cov-range-label { font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #64748B; }
-.gis-cov-range-id { font-size: 12px; font-weight: 600; color: #0F172A; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.gis-cov-range-dist { font-size: 13px; font-weight: 700; color: #2563EB; }
-.gis-cov-range-warn { font-size: 10px; color: #B45309; }
-
-.gis-cov-radius { display: flex; flex-direction: column; gap: 8px; background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; padding: 10px; }
-.gis-cov-radius-head { display: flex; justify-content: space-between; align-items: center; }
-.gis-cov-section { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #64748B; }
-.gis-cov-stepper { display: inline-flex; align-items: center; gap: 4px; background: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 6px; padding: 2px; }
-.gis-cov-stepper button { width: 24px; height: 24px; border: none; background: transparent; border-radius: 4px; cursor: pointer; color: #334155; display: inline-flex; align-items: center; justify-content: center; }
+.gis-cov-ctl { display: flex; flex-direction: column; gap: 6px; background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; padding: 6px 8px; }
+.gis-cov-ctl-top { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; }
+.gis-cov-stepper { display: inline-flex; align-items: center; gap: 2px; background: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 6px; padding: 1px; }
+.gis-cov-stepper button { width: 20px; height: 20px; border: none; background: transparent; border-radius: 4px; cursor: pointer; color: #334155; display: inline-flex; align-items: center; justify-content: center; }
 .gis-cov-stepper button:hover:not(:disabled) { background: #EFF6FF; color: #2563EB; }
 .gis-cov-stepper button:disabled { opacity: 0.35; cursor: not-allowed; }
-.gis-cov-stepper input { width: 52px; border: none; outline: none; text-align: right; font-size: 13px; font-weight: 700; color: #0F172A; background: transparent; -moz-appearance: textfield; }
+.gis-cov-stepper input { width: 44px; border: none; outline: none; text-align: right; font-size: 12px; font-weight: 700; color: #0F172A; background: transparent; -moz-appearance: textfield; }
 .gis-cov-stepper input::-webkit-outer-spin-button, .gis-cov-stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.gis-cov-unit { font-size: 12px; color: #64748B; margin-right: 2px; }
+.gis-cov-unit { font-size: 11px; color: #64748B; margin-right: 1px; }
 
-.gis-cov-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 3px; outline: none; cursor: pointer;
+.gis-cov-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 5px; border-radius: 3px; outline: none; cursor: pointer;
   background: linear-gradient(to right, #2563EB var(--pct, 0%), #DBEAFE var(--pct, 0%)); }
-.gis-cov-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #FFFFFF; border: 2px solid #2563EB; box-shadow: 0 1px 4px rgba(37, 99, 235, 0.4); }
-.gis-cov-slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #FFFFFF; border: 2px solid #2563EB; box-shadow: 0 1px 4px rgba(37, 99, 235, 0.4); }
+.gis-cov-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #FFFFFF; border: 2px solid #2563EB; box-shadow: 0 1px 4px rgba(37, 99, 235, 0.4); }
+.gis-cov-slider::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: #FFFFFF; border: 2px solid #2563EB; box-shadow: 0 1px 4px rgba(37, 99, 235, 0.4); }
 .gis-cov-slider:focus-visible { outline: 2px solid #93C5FD; outline-offset: 3px; }
-.gis-cov-scale { display: flex; justify-content: space-between; align-items: center; font-size: 10.5px; color: #94A3B8; }
-.gis-cov-reset { display: inline-flex; align-items: center; gap: 4px; border: none; background: transparent; color: #2563EB; font-size: 10.5px; font-weight: 600; cursor: pointer; }
+.gis-cov-reset { display: inline-flex; align-items: center; gap: 3px; border: none; background: transparent; color: #2563EB; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .gis-cov-reset:disabled { color: #94A3B8; cursor: default; }
-
-.gis-cov-result { display: flex; flex-direction: column; gap: 6px; }
-.gis-cov-result-num { font-size: 24px; font-weight: 700; color: #0F172A; line-height: 1; }
-.gis-cov-result-label { font-size: 12px; color: #64748B; }
-.gis-cov-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: #E2E8F0; }
-.gis-cov-bar-seg { display: block; height: 100%; transition: width 0.12s ease; }
-.gis-cov-breakdown { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: #475569; }
-.gis-cov-breakdown i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
-.gis-cov-split-title { font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #64748B; margin-top: 2px; }
-.gis-cov-split { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.gis-cov-split li { display: flex; align-items: center; gap: 10px; background: #F1F5F9; border-radius: 6px; padding: 6px 10px; }
-.gis-cov-split b { min-width: 40px; font-size: 16px; color: #0F172A; text-align: right; }
-.gis-cov-split span { display: flex; flex-direction: column; }
-.gis-cov-split strong { font-size: 12px; color: #0F172A; }
-.gis-cov-split em { font-size: 10.5px; font-style: normal; color: #64748B; }
-@media (max-width: 900px) { .gis-cov-panel { width: 260px; } }
-
-.gis-cov-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 10.5px; color: #475569; }
-.gis-cov-key { display: inline-block; width: 14px; height: 0; margin-right: 5px; vertical-align: middle; }
+.gis-cov-legend { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: #475569; white-space: nowrap; margin-left: auto; }
+.gis-cov-key { display: inline-block; width: 12px; height: 0; vertical-align: middle; margin-left: 4px; }
+.gis-cov-key:first-child { margin-left: 0; }
 .gis-cov-key--stored { border-top: 2px solid #F59E0B; }
 .gis-cov-key--chosen { border-top: 2px solid #2563EB; }
+
+.gis-cov-result-wrap { display: flex; flex-direction: column; gap: 5px; }
+.gis-cov-result { font-size: 11.5px; color: #64748B; }
+.gis-cov-result b { font-size: 15px; color: #0F172A; }
+.gis-cov-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: #E2E8F0; }
+.gis-cov-bar-seg { display: block; height: 100%; transition: width 0.12s ease; }
+.gis-cov-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; font-size: 11px; color: #475569; }
+.gis-cov-chip { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: default; }
+.gis-cov-chip i { width: 7px; height: 7px; border-radius: 50%; }
+.gis-cov-chip b { color: #0F172A; }
+.gis-cov-sep { flex-basis: 100%; height: 0; }
+
+/* Top right of the map: a narrow column with the coverage card, and right below it the gateway card */
+.gis-map-top { position: absolute; top: 10px; right: 10px; width: 300px; z-index: 9; display: flex; flex-direction: column; align-items: stretch; gap: 8px; pointer-events: none; max-height: calc(100% - 20px); }
+.gis-map-top > * { pointer-events: auto; }
+.gis-map-top .gis-inspector-drawer { position: static; width: auto; min-height: 0; flex: 0 1 auto; }
+@media (max-width: 900px) { .gis-map-top { top: 52px; width: 260px; } }
+
+/* Sending range: nearest / farthest meter of the open gateway, bottom-left above the legend */
+.gis-map-bottom-left { position: absolute; bottom: 20px; left: 20px; z-index: 5; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.gis-range { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(8px); border: 1px solid #E2E8F0; border-radius: 8px; padding: 8px 10px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); display: flex; flex-direction: column; gap: 6px; }
+.gis-range-title { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #64748B; }
+.gis-range-cards { display: flex; gap: 8px; }
+.gis-range-card { display: flex; flex-direction: column; gap: 1px; text-align: left; min-width: 128px; background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
+.gis-range-card:hover:not(:disabled) { border-color: #93C5FD; background: #EFF6FF; }
+.gis-range-card:disabled { cursor: default; opacity: 0.7; }
+.gis-range-label { font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #64748B; }
+.gis-range-id { font-size: 12px; font-weight: 600; color: #0F172A; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.gis-range-dist { font-size: 13px; font-weight: 700; color: #2563EB; }
+.gis-range-warn { font-size: 10px; color: #B45309; }
+
+/* Full screen */
+.gis-container:fullscreen { background: #F8FAFC; padding: 10px; }
+
+/* Search suggestions (Network Explorer) */
+.gis-search-clear { position: absolute; right: 6px; background: transparent; border: none; cursor: pointer; color: #94A3B8; padding: 2px; display: inline-flex; }
+.gis-search-clear:hover { color: #0F172A; }
+.gis-search-wrap .gis-search-input { padding-right: 24px; }
+.gis-suggest { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; min-width: 280px; margin: 0; padding: 4px; list-style: none;
+  background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16); }
+.gis-suggest-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.gis-suggest-item--active { background: #EFF6FF; }
+.gis-suggest-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.gis-suggest-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.gis-suggest-id { font-size: 12.5px; font-weight: 600; color: #0F172A; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.gis-suggest-sub { font-size: 11px; color: #64748B; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gis-suggest-tag { font-size: 10px; color: #B45309; background: #FEF3C7; border-radius: 10px; padding: 1px 6px; white-space: nowrap; }

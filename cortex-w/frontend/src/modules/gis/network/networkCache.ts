@@ -13,8 +13,8 @@ const DB_NAME = 'cortex_w_network_cache';
 const STORE = 'snapshots';
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 // Bump when the shape of the saved data changes: an older copy (e.g. with the live / stale / silent meter statuses) is
-// thrown away instead of drawn. v2: meter statuses are connected / disconnected / never.
-const SCHEMA = 2;
+// thrown away instead of drawn. v2: meter statuses are connected / disconnected / never. v3: map rows carry the site, and the unpositioned counts.
+const SCHEMA = 3;
 
 export interface NetworkSnapshot {
   schema?: number;

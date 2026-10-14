@@ -5,7 +5,7 @@ import type { MeterPoint } from '../networkModel';
 const gw = { gatewayId: 'g1', lat: 20, lng: 85 };
 // about 111 m per 0.001 degree of latitude
 const meter = (id: string, dLat: number, status: MeterPoint['status'], gatewayId: string | null): MeterPoint => ({
-  meterId: id, assetId: 1, lat: 20 + dLat, lng: 85, status, gatewayId, rssi: null, snr: null,
+  meterId: id, assetId: 1, lat: 20 + dLat, lng: 85, status, gatewayId, rssi: null, snr: null, siteId: 1,
 });
 
 describe('computeGatewayReach', () => {

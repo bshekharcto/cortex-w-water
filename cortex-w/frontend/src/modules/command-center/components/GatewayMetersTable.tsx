@@ -1,5 +1,6 @@
 import { MeterTelemetryItem } from '../types/commandCenter.types';
 import type { MeterFilterKey } from '@/services/api/commandCenterApi';
+import { TableSkeleton } from './TableSkeleton';
 
 interface Props {
   meters: MeterTelemetryItem[];
@@ -8,6 +9,9 @@ interface Props {
   pageSize: number;
   totalPages: number;
   loading: boolean;
+  /** Why the list could not be loaded (shown with a Retry instead of an empty table). */
+  error?: string | null;
+  onRetry?: () => void;
   filter: MeterFilterKey;
   onFilterChange: (filter: MeterFilterKey) => void;
   onPageChange: (page: number) => void;
@@ -22,6 +26,8 @@ export function GatewayMetersTable({
   pageSize,
   totalPages,
   loading,
+  error,
+  onRetry,
   filter,
   onFilterChange,
   onPageChange,
@@ -49,7 +55,7 @@ export function GatewayMetersTable({
           </button>
         ))}
         <span className="cc-subfilter-count">
-          {loading ? '(loading…)' : `(${total.toLocaleString()} meters)`}
+          {loading ? '(loading…)' : error ? '(could not load)' : `(${total.toLocaleString()} meters)`}
         </span>
       </div>
 
@@ -74,6 +80,19 @@ export function GatewayMetersTable({
             </tr>
           </thead>
           <tbody>
+            {loading && meters.length === 0 && <TableSkeleton rows={8} label="Loading meters" />}
+            {!loading && error && (
+              <tr>
+                <td colSpan={14} className="cc-card-alert" role="alert">
+                  {error}{' '}
+                  {onRetry && (
+                    <button className="cc-subfilter-chip" onClick={onRetry}>
+                      Retry
+                    </button>
+                  )}
+                </td>
+              </tr>
+            )}
             {meters.map((m) => {
               const isSelected = selectedMeterId === m.meterId;
               const isWeak = m.lastRssi < -95;

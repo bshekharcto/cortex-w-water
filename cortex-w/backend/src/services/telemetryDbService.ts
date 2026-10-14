@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { pool } from '../db/pool.js';
+import { pool, logRouteError } from '../db/pool.js';
 import { networkHealthThresholds as T } from '../config/networkHealth.js';
 
 export interface TelemetrySummary {
@@ -539,7 +539,7 @@ export async function getPostgresAggregatedSummary(
       ON CONFLICT (cache_key) DO UPDATE SET summary_json = $4, updated_at = NOW()
     `, [cacheKey, fromDate, toDate, summary]);
   } catch (err: any) {
-    console.warn('[telemetryDb] Cache save note:', err.message);
+    logRouteError('[telemetryDb] Cache save note:', err);
   }
 
   return summary;

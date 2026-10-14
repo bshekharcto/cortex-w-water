@@ -94,7 +94,7 @@ try {
   check('summary adds up: with + without coordinates = total', s && s.withCoordinates + s.withoutCoordinates === s.total);
   check('rows = meters with coordinates', map?.rows?.length === s?.withCoordinates);
   check('coordinates came from upstream', map?.coordinates?.status === 'fresh', map?.coordinates?.status);
-  check('every row is drawable and well-formed', map.rows.every((r: any[]) => r.length === map.columns.length && Math.abs(r[2]) <= 90 && Math.abs(r[3]) <= 180 && !(r[2] === 0 && r[3] === 0) && r[4] >= 0 && r[4] < 4 && r[5] >= -1 && r[5] < map.gatewayIds.length));
+  check('every row is drawable and well-formed', map.rows.every((r: any[]) => r.length === map.columns.length && Math.abs(r[2]) <= 90 && Math.abs(r[3]) <= 180 && !(r[2] === 0 && r[3] === 0) && r[4] >= 0 && r[4] < 3 && r[5] >= -1 && r[5] < map.gatewayIds.length));
   console.log(`      payload: ${(m1.rawBytes / 1024).toFixed(0)} KB raw, ${(m1.wireBytes / 1024).toFixed(0)} KB gzipped, ${s?.total} meters, ${map?.rows?.length} drawn`);
   const m2 = await get('/api/network/meters/map?siteId=ALL', A.token);
   check('warm map is fast (<300 ms)', m2.status === 200 && m2.ms < 300, `${m2.ms} ms`);

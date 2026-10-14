@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { logRouteError } from '../db/pool.js';
 import {
   getPostgresAggregatedSummary,
   getGatewayMeters,
@@ -75,7 +76,7 @@ router.get('/summary', async (req, res) => {
     return res.json(pgSummary);
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.error('[commandCenter] Error generating telemetry summary:', err);
+    logRouteError('[commandCenter] Error generating telemetry summary:', err);
     res.status(500).json({ error: 'Failed to aggregate telemetry' });
   }
 });
@@ -111,7 +112,7 @@ router.get('/gateways/:gatewayId/meters', async (req, res) => {
     res.json(result);
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.error('[commandCenter] Error getting gateway meters:', err);
+    logRouteError('[commandCenter] Error getting gateway meters:', err);
     res.status(500).json({ error: 'Failed to get gateway meters' });
   }
 });
@@ -148,7 +149,7 @@ router.get('/gateways/:gatewayId/radio-health', async (req, res) => {
     if (scope) res.json(await getGatewayRadioHealth(scope));
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.error('[commandCenter] Error getting radio health:', err);
+    logRouteError('[commandCenter] Error getting radio health:', err);
     res.status(500).json({ error: 'Failed to get radio health' });
   }
 });
@@ -159,7 +160,7 @@ router.get('/gateways/:gatewayId/hourly', async (req, res) => {
     if (scope) res.json(await getGatewayHourly(scope));
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.error('[commandCenter] Error getting hourly activity:', err);
+    logRouteError('[commandCenter] Error getting hourly activity:', err);
     res.status(500).json({ error: 'Failed to get hourly activity' });
   }
 });
@@ -179,7 +180,7 @@ router.get('/meters/search', async (req, res) => {
     );
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.error('[commandCenter] Error searching meters:', err);
+    logRouteError('[commandCenter] Error searching meters:', err);
     res.status(500).json({ error: 'Failed to search meters' });
   }
 });
@@ -205,7 +206,7 @@ async function viewScope(req: any, res: any) {
 
 function failed(res: any, what: string, err: any) {
   if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-  console.error(`[commandCenter] Error ${what}:`, err);
+  logRouteError(`[commandCenter] Error ${what}:`, err);
   return res.status(500).json({ error: `Failed ${what}` });
 }
 

@@ -10,21 +10,23 @@ const map: NetMeterMapResponse = {
   gatewayIds: ['506f980000000342', '506f9800000002a5'],
   columns: [],
   rows: [
-    ['0000000001', 11, 20.3, 85.8, 0, 1, -90.5, -4],
-    ['0000000002', 12, 20.4, 85.9, 1, -1, null, null],
+    ['0000000001', 11, 20.3, 85.8, 0, 1, -90.5, -4, 7],
+    ['0000000002', 12, 20.4, 85.9, 1, -1, null, null, -1],
   ],
+  unpositioned: [],
 };
 
 describe('decodeMeterRows', () => {
   it('turns the compact rows into points, resolving status and gateway indexes', () => {
     const [a, b] = decodeMeterRows(map);
-    expect(a).toEqual({ meterId: '0000000001', assetId: 11, lat: 20.3, lng: 85.8, status: 'connected', gatewayId: '506f9800000002a5', rssi: -90.5, snr: -4 });
+    expect(a).toEqual({ meterId: '0000000001', assetId: 11, lat: 20.3, lng: 85.8, status: 'connected', gatewayId: '506f9800000002a5', rssi: -90.5, snr: -4, siteId: 7 });
     expect(b.status).toBe('disconnected');
     expect(b.gatewayId).toBeNull();
     expect(b.rssi).toBeNull();
+    expect(b.siteId).toBeNull();
   });
   it('an unknown status index is treated as never seen, not as healthy', () => {
-    const [p] = decodeMeterRows({ ...map, rows: [['x', 1, 1, 1, 9, -1, null, null]] });
+    const [p] = decodeMeterRows({ ...map, rows: [['x', 1, 1, 1, 9, -1, null, null, -1]] });
     expect(p.status).toBe('never');
   });
 });

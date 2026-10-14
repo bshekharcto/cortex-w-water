@@ -42,3 +42,29 @@ export async function retryTransient<T>(fn: () => Promise<T>): Promise<T> {
     return fn();
   }
 }
+
+const CONNECTION_PROBLEM = /timeout exceeded when trying to connect|Connection terminated|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE/i;
+const lastConnectionLog = new Map<string, { at: number; hidden: number }>();
+const CONNECTION_LOG_EVERY_MS = 15_000;
+
+/**
+ * console.error for a failed request. When the database cannot be reached every request fails the same way and each one
+ * would print a stack trace: those are printed once per 15 s per message, as one line, with a count of the ones left out.
+ * Any other error is printed in full, as before.
+ */
+export function logRouteError(message: string, err: any): void {
+  const text = `${err?.message ?? ''} ${err?.cause?.message ?? ''}`;
+  if (!CONNECTION_PROBLEM.test(text)) {
+    console.error(message, err);
+    return;
+  }
+  const now = Date.now();
+  const seen = lastConnectionLog.get(message);
+  if (seen && now - seen.at < CONNECTION_LOG_EVERY_MS) {
+    seen.hidden++;
+    return;
+  }
+  const hidden = seen?.hidden ?? 0;
+  lastConnectionLog.set(message, { at: now, hidden: 0 });
+  console.error(`${message} the database could not be reached (${String(err?.message ?? err)})${hidden ? ` — ${hidden} more like it in the last ${CONNECTION_LOG_EVERY_MS / 1000} s` : ''}`);
+}

@@ -50,7 +50,6 @@ export function NetworkKpiStrip({ kpis, loading, windowText = 'Today' }: Props) 
         </div>
         <div className="cc-kpi-value-row">
           <span className="cc-kpi-val">{kpis.uniqueMetersSeen.toLocaleString()}</span>
-          <span className="cc-kpi-sub">/ {kpis.configuredMeters.toLocaleString()} config</span>
         </div>
       </div>
 

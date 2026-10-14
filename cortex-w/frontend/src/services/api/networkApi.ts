@@ -47,8 +47,18 @@ export interface NetMeterMapResponse {
   /** `gateway` column: an index into this list, or -1. */
   gatewayIds: string[];
   columns: string[];
-  /** [meterId, assetId, lat, lng, status, gateway, rssi, snr] */
-  rows: Array<[string, number, number, number, number, number, number | null, number | null]>;
+  /** [meterId, assetId, lat, lng, status, gateway, rssi, snr, site (-1: none)] */
+  rows: Array<[string, number, number, number, number, number, number | null, number | null, number]>;
+  /** The meters without a position, per site and status: [site (-1: none), status index, count]. */
+  unpositioned: Array<[number, number, number]>;
+}
+
+export interface NetMeterSuggestion {
+  meterId: string;
+  assetId: number;
+  consumerId: string | null;
+  consumerName: string | null;
+  siteId: number | null;
 }
 
 export interface NetMeter {
@@ -108,6 +118,9 @@ export const networkApi = {
 
   listMeters: (q: NetMeterQuery, signal?: AbortSignal) =>
     apiRequest<NetMeterPage>('/network/meters', { query: { ...q }, signal }),
+
+  suggestMeters: (siteId: string, q: string, signal?: AbortSignal) =>
+    apiRequest<{ items: NetMeterSuggestion[] }>('/network/meters/suggest', { query: { siteId, q }, signal }),
 
   listSites: (signal?: AbortSignal) => apiRequest<NetSiteOption[]>('/sites', { signal }),
 };

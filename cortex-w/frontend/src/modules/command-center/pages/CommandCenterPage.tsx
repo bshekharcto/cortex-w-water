@@ -18,6 +18,7 @@ import { GatewayRadioHealth } from '../components/GatewayRadioHealth';
 import { AllGatewayComparison } from '../components/AllGatewayComparison';
 import { MeterInspector } from '../components/MeterInspector';
 import { LiveNetworkFeed } from '../components/LiveNetworkFeed';
+import { describeError } from '../utils/errors';
 
 // Live API & Types
 import {
@@ -193,6 +194,8 @@ export function CommandCenterPage() {
   const [metersFilter, setMetersFilter] = useState<MeterFilterKey>('ALL');
   const [metersData, setMetersData] = useState<GatewayMetersPage>(EMPTY_METERS_PAGE);
   const [metersLoading, setMetersLoading] = useState(false);
+  const [metersError, setMetersError] = useState<string | null>(null);
+  const [metersReload, setMetersReload] = useState(0);
 
   // a different gateway, filter, window or site starts again at the first page
   useEffect(() => {
@@ -207,6 +210,7 @@ export function CommandCenterPage() {
     }
     let cancelled = false;
     setMetersLoading(true);
+    setMetersError(null);
     fetchGatewayMeters(selectedGatewayId, {
       days: daysFor(timeRange),
       page: metersPage,
@@ -226,7 +230,9 @@ export function CommandCenterPage() {
       })
       .catch((err) => {
         console.warn('[CommandCenter] Could not load gateway meters:', err);
-        if (!cancelled) setMetersData(EMPTY_METERS_PAGE);
+        if (cancelled) return;
+        setMetersData(EMPTY_METERS_PAGE);
+        setMetersError(describeError(err, 'The meters could not be loaded.'));
       })
       .finally(() => {
         if (!cancelled) setMetersLoading(false);
@@ -235,7 +241,7 @@ export function CommandCenterPage() {
       cancelled = true;
     };
     // summaryStamp: the table refreshes together with the 45 s summary refresh
-  }, [selectedGatewayId, metersPage, metersFilter, timeRange, customRange, selectedSiteId, summaryStamp]);
+  }, [selectedGatewayId, metersPage, metersFilter, timeRange, customRange, selectedSiteId, summaryStamp, metersReload]);
 
   // Handle selecting a meter from table or feed
   const handleSelectMeter = (meter: MeterTelemetryItem) => {
@@ -402,6 +408,8 @@ export function CommandCenterPage() {
                   pageSize={METERS_PAGE_SIZE}
                   totalPages={metersData.totalPages}
                   loading={metersLoading}
+                  error={metersError}
+                  onRetry={() => setMetersReload((n) => n + 1)}
                   filter={metersFilter}
                   onFilterChange={setMetersFilter}
                   onPageChange={setMetersPage}

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, LogOut } from 'lucide-react';
 import { CORTEX_ICONS } from '@/theme/cortexTheme';
 import { useAuth } from '@/modules/auth/hooks/useAuth';
@@ -47,6 +47,21 @@ const NAV_GROUPS: NavGroup[] = [
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
+  const { pathname } = useLocation();
+  const autoCollapsed = useRef(false);
+  // The Network Explorer wants the room for the map: the menu tucks in when it opens (it can be expanded again) and comes
+  // back when leaving, unless the user set it themselves.
+  useEffect(() => {
+    const onMap = pathname.startsWith('/app/gis/network');
+    if (onMap && !collapsed && !autoCollapsed.current) {
+      autoCollapsed.current = true;
+      setCollapsed(true);
+    } else if (!onMap && autoCollapsed.current) {
+      autoCollapsed.current = false;
+      setCollapsed(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
   const user = useAuth((s) => s.user);
   const logout = useAuth((s) => s.logout);
   const navigate = useNavigate();
@@ -108,7 +123,10 @@ export function Sidebar() {
             <LogOut size={16} />
           </button>
         </div>
-        <button className="cw-sidebar-collapse-btn" onClick={() => setCollapsed((v) => !v)} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+        <button className="cw-sidebar-collapse-btn" onClick={() => {
+          autoCollapsed.current = false; // a choice of the user's own
+          setCollapsed((v) => !v);
+        }} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
           {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
         </button>
       </div>
