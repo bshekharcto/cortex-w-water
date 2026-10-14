@@ -32,8 +32,7 @@ export function useNodeChildren(parentId: string | null, searchQuery: string = '
     }
     try {
       const data = await fetchNodeChildren(parentId);
-      // fetchNodeChildren answers [] when the request failed: a quiet reload must not blank what is on screen
-      setNodes((prev) => (silent && data.length === 0 && prev.length > 0 ? prev : data));
+      setNodes(data);
     } catch (err: any) {
       if (silent) return;
       console.error('[useNodeChildren] Failed to load node children:', err);

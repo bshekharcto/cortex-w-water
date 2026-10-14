@@ -1,19 +1,24 @@
 // Single source of truth for Command Center health thresholds (Cortex-W spec §16).
 // The summary response carries these to the frontend so both sides always agree.
-// Cadence-aware freshness. This fleet's meters transmit once a day, so "fresh" means "reported within the
-// last day": live < 24h, stale 24-48h (missed one expected report), silent > 48h (missed two or more).
-// Gateways aggregate the same daily meters, so they use the same limits.
+// Cadence-aware freshness. This fleet's meters transmit once a day. A METER is "connected" when its last frame arrived
+// within meterConnectedHours (7 days), "disconnected" when it arrived earlier, and "never seen" when it has no frame at
+// all. Every page (Dashboard, Command Center, Network Explorer) reads this one number.
+// A GATEWAY aggregates the same daily meters: live < 24h, stale 24-48h, no-traffic when it sent nothing in the window.
 export const networkHealthThresholds = {
   gatewayStaleMinutes: 24 * 60,
   gatewayCriticalMinutes: 48 * 60,
-  meterStaleMinutes: 24 * 60,
-  meterCriticalHours: 48,
+  meterConnectedHours: 7 * 24,
   gatewayTrafficDropWarningPct: 30,
   gatewayTrafficDropCriticalPct: 60,
   rssiWeakDbm: -95,
   rssiCriticalDbm: -105,
   snrWeakDb: -10,
   snrCriticalDb: -18,
+  // A gateway whose average over the window is this bad is "degraded" (looser than the per-frame weak limits above).
+  avgRssiDegradedDbm: -105,
+  avgSnrDegradedDb: -15,
+  // A gateway that sent a frame within this many days is "known": it is listed, as "no traffic" when it is silent.
+  knownGatewayDays: 30,
   // A trend needs at least this many frames in the previous period, or tiny samples read as huge swings.
   trendMinPrevFrames: 20,
   // Frame-count trends compare a window with the one before it. Right now that is not trustworthy: the stored
@@ -33,3 +38,9 @@ export type NetworkHealthThresholds = typeof networkHealthThresholds;
  * mean the same thing to everyone looking at the page (India has no daylight saving).
  */
 export const OPERATIONAL_TZ = 'Asia/Kolkata';
+
+/**
+ * The 12 hex characters the gateway EUIs of this fleet share: the ingestion keeps only the last 4 in gateway_list.
+ * Set GATEWAY_EUI_PREFIX for another vendor or tenant.
+ */
+export const GATEWAY_EUI_PREFIX = (process.env.GATEWAY_EUI_PREFIX ?? '506f98000000').toLowerCase();

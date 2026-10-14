@@ -1,4 +1,5 @@
 import { apiRequest } from './httpClient';
+import { getAuthToken } from '@/modules/auth/repository/authTokenStore';
 import {
   GatewayItem,
   MeterTelemetryItem,
@@ -8,10 +9,19 @@ import {
   TrafficSeries,
 } from '@/modules/command-center/types/commandCenter.types';
 
-/** A custom window: days at the site as YYYY-MM-DD, both inclusive. */
+/**
+ * A window other than "the last N days": days at the site as YYYY-MM-DD (both inclusive), or `hours` (1 or 6) for the
+ * last hours of today at the site (then from / to are ignored).
+ */
 export interface CustomRange {
   from: string;
   to: string;
+  hours?: number;
+}
+
+/** The query parameters of a CustomRange. */
+export function rangeQuery(c: CustomRange): Record<string, string | number> {
+  return c.hours ? { hours: c.hours } : { from: c.from, to: c.to };
 }
 
 export interface TelemetrySummaryResponse {
@@ -27,8 +37,8 @@ export interface TelemetrySummaryResponse {
   recentFrames: RawFrameItem[];
   hourlyActivity: Array<{ hour: string; count: number }>;
   radioHealth: {
-    avgRssi: number;
-    avgSnr: number;
+    avgRssi: number | null;
+    avgSnr: number | null;
     rssiBuckets: { excellent: number; good: number; fair: number; poor: number };
     snrBuckets: { excellent: number; good: number; fair: number; poor: number };
   };
@@ -36,12 +46,23 @@ export interface TelemetrySummaryResponse {
 
 const LOCAL_STORAGE_CACHE_KEY_PREFIX = 'cortex_w_cc_summary_cache';
 
+// The saved summary belongs to the login that fetched it: the key carries a short hash of the token, so a different
+// login on this browser (an expired session signed in again as someone else) never starts from the previous one's data.
+function cacheKey(days: number, siteId: string): string | null {
+  const token = getAuthToken();
+  if (!token) return null;
+  let h = 0;
+  for (let i = 0; i < token.length; i++) h = (Math.imul(31, h) + token.charCodeAt(i)) | 0;
+  return `${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${(h >>> 0).toString(36)}_${days}_${siteId}`;
+}
+
 /**
  * Retrieves cached summary from localStorage for 0ms initial render
  */
 export function getLocalCachedSummary(days: number = 7, date?: string, siteId: string = 'ALL'): TelemetrySummaryResponse | null {
   try {
-    const key = `${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${days}_${siteId}`;
+    const key = cacheKey(days, siteId);
+    if (!key) return null;
     const raw = localStorage.getItem(key);
     if (!raw) return null;
     const parsed: TelemetrySummaryResponse = JSON.parse(raw);
@@ -57,8 +78,8 @@ export function getLocalCachedSummary(days: number = 7, date?: string, siteId: s
  */
 export function setLocalCachedSummary(summary: TelemetrySummaryResponse, days: number = 7, siteId: string = 'ALL'): void {
   try {
-    const key = `${LOCAL_STORAGE_CACHE_KEY_PREFIX}_${days}_${siteId}`;
-    localStorage.setItem(key, JSON.stringify(summary));
+    const key = cacheKey(days, siteId);
+    if (key) localStorage.setItem(key, JSON.stringify(summary));
   } catch (err) {
     // In case localStorage is full or restricted, gracefully ignore
     console.warn('[commandCenterApi] LocalStorage cache write failed:', err);
@@ -91,8 +112,7 @@ export async function fetchCommandCenterSummary(
   const query: Record<string, string | number | boolean> = { days };
   if (date) query.date = date; // only to look back from an earlier day; by default it is today at the site
   if (custom) {
-    query.from = custom.from;
-    query.to = custom.to;
+    Object.assign(query, rangeQuery(custom));
   }
   if (refresh) query.refresh = true;
   if (siteId && siteId !== 'ALL') query.siteId = siteId;
@@ -102,22 +122,9 @@ export async function fetchCommandCenterSummary(
     query,
   });
 
-  // Save to client cache keyed by days and siteId
-  setLocalCachedSummary(data, days, siteId);
+  // Save to client cache keyed by days and siteId (a custom window is not the plain N-day view)
+  if (!custom) setLocalCachedSummary(data, days, siteId);
   return data;
-}
-
-/**
- * Fetches the latest live frame feed
- */
-export async function fetchLiveTelemetryFeed(
-  date?: string,
-  limit: number = 100
-): Promise<RawFrameItem[]> {
-  return apiRequest<RawFrameItem[]>('/command-center/feed', {
-    method: 'GET',
-    query: { ...(date ? { date } : {}), limit },
-  });
 }
 
 /** The window and site a per-gateway request covers. */
@@ -131,7 +138,7 @@ function scopeQuery(scope: GatewayScope): Record<string, string | number> {
   return {
     days: scope.days,
     ...(scope.siteId && scope.siteId !== 'ALL' ? { siteId: scope.siteId } : {}),
-    ...(scope.custom ? { from: scope.custom.from, to: scope.custom.to } : {}),
+    ...(scope.custom ? rangeQuery(scope.custom) : {}),
   };
 }
 
@@ -159,7 +166,7 @@ export async function fetchGatewayHourly(gatewayId: string, scope: GatewayScope)
   });
 }
 
-export type MeterFilterKey = 'ALL' | 'LIVE' | 'STALE';
+export type MeterFilterKey = 'ALL' | 'CONNECTED' | 'DISCONNECTED';
 
 export interface GatewayMetersPage {
   content: MeterTelemetryItem[];
@@ -185,7 +192,7 @@ export async function fetchGatewayMeters(
       size: opts.size,
       filter: opts.filter,
       ...(opts.siteId && opts.siteId !== 'ALL' ? { siteId: opts.siteId } : {}),
-      ...(opts.custom ? { from: opts.custom.from, to: opts.custom.to } : {}),
+      ...(opts.custom ? rangeQuery(opts.custom) : {}),
     },
   });
 }
@@ -203,7 +210,7 @@ export async function searchMeters(
       q,
       days,
       ...(siteId && siteId !== 'ALL' ? { siteId } : {}),
-      ...(custom ? { from: custom.from, to: custom.to } : {}),
+      ...(custom ? rangeQuery(custom) : {}),
     },
   });
 }
@@ -217,7 +224,7 @@ export type WindowParams = GatewayScope;
 
 /** Changes whenever the window or the site does: what a list reloads on. */
 export function windowKey(w: WindowParams): string {
-  return [w.days, w.custom?.from ?? '', w.custom?.to ?? '', w.siteId ?? 'ALL'].join('|');
+  return [w.days, w.custom?.from ?? '', w.custom?.to ?? '', w.custom?.hours ?? '', w.siteId ?? 'ALL'].join('|');
 }
 
 function windowQuery(w: WindowParams, siteId?: string): Record<string, string | number> {
@@ -228,7 +235,7 @@ function windowQuery(w: WindowParams, siteId?: string): Record<string, string | 
   return query;
 }
 
-export type MeterStatusFilter = 'live' | 'stale' | 'silent';
+export type MeterStatusFilter = 'connected' | 'disconnected';
 
 export interface FleetMetersPage {
   total: number;

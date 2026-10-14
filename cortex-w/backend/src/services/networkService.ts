@@ -172,7 +172,7 @@ interface HealthRow {
 
 /** How each gateway is doing, from the newest frame of every meter it is the best gateway for (one row per meter). */
 async function loadHealth(siteIds: SiteScope): Promise<Map<string, HealthRow>> {
-  const liveAfter = new Date(Date.now() - T.meterStaleMinutes * 60_000);
+  const liveAfter = new Date(Date.now() - T.meterConnectedHours * 3_600_000);
   const res = await pool.query(
     `SELECT l.gateway_id,
             COUNT(*)::int                                      AS meters_heard,
@@ -295,20 +295,25 @@ export function getGateways(siteIds: SiteScope): Promise<GatewaysPayload> {
 // Meters: the compact payload that draws the map
 // ---------------------------------------------------------------------------------------------------------------------
 
-export const MAP_COLUMNS = ['meterId', 'assetId', 'lat', 'lng', 'status', 'gateway', 'rssi', 'snr'] as const;
+export const MAP_COLUMNS = ['meterId', 'assetId', 'lat', 'lng', 'status', 'gateway', 'rssi', 'snr', 'site'] as const;
 
 export interface MeterMapPayload {
   /** Newest frame among these meters: it only changes when the scheduler loads data, so the response can be cached by ETag. */
   latestFrameAt: string | null;
   coordinates: { status: CoordinatesStatus; fetchedAt: string | null };
-  summary: { total: number; withCoordinates: number; withoutCoordinates: number; live: number; stale: number; silent: number; never: number };
+  summary: { total: number; withCoordinates: number; withoutCoordinates: number; connected: number; disconnected: number; never: number };
   /** status column: an index into this list. */
   statuses: readonly MeterStatus[];
   /** gateway column: an index into this list, or -1 when the meter has no gateway. */
   gatewayIds: string[];
   columns: typeof MAP_COLUMNS;
-  /** Only meters with a usable position (the others are counted in summary.withoutCoordinates). */
-  rows: Array<[string, number, number, number, number, number, number | null, number | null]>;
+  /** Only meters with a usable position (the others are counted in summary.withoutCoordinates). site: the meter's site id, -1 when it has none. */
+  rows: Array<[string, number, number, number, number, number, number | null, number | null, number]>;
+  /**
+   * The meters without a position, counted per site and status: [siteId (-1 = none), status index, count]. With the
+   * site column of `rows` this lets the page work out the totals of any site below the ones loaded, without asking again.
+   */
+  unpositioned: Array<[number, number, number]>;
 }
 
 const mapStore: Store<MeterMapPayload> = new Map();
@@ -319,7 +324,7 @@ export function getMeterMap(siteIds: SiteScope): Promise<MeterMapPayload> {
   return cached(mapStore, mapFlights, scopeKey(ctx, siteIds), CACHE_TTL_MS, async () => {
     const [res, pos] = await Promise.all([
       pool.query(
-        `SELECT m.meter_id, m.asset_id, l.decoded_at, l.gateway_id, l.rssi, l.snr
+        `SELECT m.meter_id, m.asset_id, m.site_id, l.decoded_at, l.gateway_id, l.rssi, l.snr
            FROM meter_metadata m
            LEFT JOIN water_meter_latest l ON l.meter_id = m.meter_id
           WHERE m.is_active
@@ -332,10 +337,11 @@ export function getMeterMap(siteIds: SiteScope): Promise<MeterMapPayload> {
     ]);
 
     const now = Date.now();
-    const counts = { live: 0, stale: 0, silent: 0, never: 0 };
+    const counts = { connected: 0, disconnected: 0, never: 0 };
     const gatewayIds: string[] = [];
     const gwIndex = new Map<string, number>();
     const rows: MeterMapPayload['rows'] = [];
+    const unpositioned = new Map<string, [number, number, number]>();
     let latest = 0;
 
     for (const r of res.rows) {
@@ -343,8 +349,16 @@ export function getMeterMap(siteIds: SiteScope): Promise<MeterMapPayload> {
       counts[status]++;
       if (r.decoded_at) latest = Math.max(latest, new Date(r.decoded_at).getTime());
       const assetId = Number(r.asset_id);
+      const siteId = r.site_id == null ? -1 : Number(r.site_id);
       const xy = pos.coords?.get(assetId);
-      if (!xy) continue;
+      if (!xy) {
+        const statusIdx = METER_STATUS_CODES.indexOf(status);
+        const key = `${siteId}|${statusIdx}`;
+        const row = unpositioned.get(key);
+        if (row) row[2]++;
+        else unpositioned.set(key, [siteId, statusIdx, 1]);
+        continue;
+      }
       let gw = -1;
       if (r.gateway_id) {
         const id = String(r.gateway_id).toLowerCase();
@@ -355,7 +369,7 @@ export function getMeterMap(siteIds: SiteScope): Promise<MeterMapPayload> {
           gatewayIds.push(id);
         }
       }
-      rows.push([r.meter_id, assetId, round(xy[0], 6)!, round(xy[1], 6)!, METER_STATUS_CODES.indexOf(status), gw, round(r.rssi, 1), round(r.snr, 1)]);
+      rows.push([r.meter_id, assetId, round(xy[0], 6)!, round(xy[1], 6)!, METER_STATUS_CODES.indexOf(status), gw, round(r.rssi, 1), round(r.snr, 1), siteId]);
     }
 
     return {
@@ -371,6 +385,7 @@ export function getMeterMap(siteIds: SiteScope): Promise<MeterMapPayload> {
       gatewayIds,
       columns: MAP_COLUMNS,
       rows,
+      unpositioned: [...unpositioned.values()],
     };
   });
 }
@@ -410,14 +425,55 @@ export interface NetworkMeter {
   currentReadingKl: number | null;
 }
 
+export interface MeterSuggestion {
+  meterId: string;
+  assetId: number;
+  consumerId: string | null;
+  consumerName: string | null;
+  siteId: number | null;
+}
+
+const suggestStore: Store<MeterSuggestion[]> = new Map();
+const suggestFlights = new Map<string, Promise<MeterSuggestion[]>>();
+const SUGGEST_TTL_MS = 30_000;
+
+/**
+ * Up to `limit` meters whose meter id or consumer id (the household's custom id) matches what has been typed so far:
+ * the ones that start with it first, then the ones that contain it. Meant for a search box (one small query, answered
+ * from memory for 30 s when the same text is asked again), not for paging.
+ */
+export function suggestMeters(siteIds: SiteScope, text: string, limit = 5): Promise<MeterSuggestion[]> {
+  const ctx = requireClient();
+  const q = text.trim().slice(0, 64).toLowerCase();
+  return cached(suggestStore, suggestFlights, `${scopeKey(ctx, siteIds)}|${limit}|${q}`, SUGGEST_TTL_MS, async () => {
+    const res = await pool.query(
+      `SELECT m.meter_id, m.asset_id, m.site_id, m.household_custom_id, m.consumer_name
+         FROM meter_metadata m
+        WHERE m.is_active
+          AND ($1::bigint[] IS NULL OR m.tenant_id = ANY($1::bigint[]))
+          AND ($2::bigint[] IS NULL OR m.site_id = ANY($2::bigint[]))
+          AND (m.meter_id ILIKE $3 OR m.household_custom_id ILIKE $3)
+        ORDER BY (m.meter_id ILIKE $4 OR m.household_custom_id ILIKE $4) DESC, m.meter_id
+        LIMIT $5`,
+      [clientTenantIds(), siteIds, likePattern(q), likePattern(q).slice(1), limit]
+    );
+    return res.rows.map((r: any) => ({
+      meterId: r.meter_id,
+      assetId: Number(r.asset_id),
+      consumerId: r.household_custom_id ?? null,
+      consumerName: r.consumer_name ?? null,
+      siteId: r.site_id == null ? null : Number(r.site_id),
+    }));
+  });
+}
+
 export async function listMeters(
   siteIds: SiteScope,
   opts: MeterListOpts
 ): Promise<{ total: number; limit: number; offset: number; coordinates: { status: CoordinatesStatus; fetchedAt: string | null }; items: NetworkMeter[] }> {
   const ctx = requireClient();
   const now = Date.now();
-  const staleCut = new Date(now - T.meterStaleMinutes * 60_000);
-  const silentCut = new Date(now - T.meterCriticalHours * 3_600_000);
+  const connectedCut = new Date(now - T.meterConnectedHours * 3_600_000);
 
   const params: unknown[] = [clientTenantIds(), siteIds];
   const where: string[] = [
@@ -432,9 +488,8 @@ export async function listMeters(
     where.push(`(m.meter_id ILIKE ${p} OR m.consumer_name ILIKE ${p} OR m.household_custom_id ILIKE ${p} OR m.locality ILIKE ${p})`);
   }
   if (opts.gatewayId) where.push(`l.gateway_id = ${add(opts.gatewayId)}`);
-  if (opts.status === 'live') where.push(`l.decoded_at >= ${add(staleCut)}`);
-  else if (opts.status === 'stale') where.push(`l.decoded_at < ${add(staleCut)} AND l.decoded_at >= ${add(silentCut)}`);
-  else if (opts.status === 'silent') where.push(`l.decoded_at < ${add(silentCut)}`);
+  if (opts.status === 'connected') where.push(`l.decoded_at >= ${add(connectedCut)}`);
+  else if (opts.status === 'disconnected') where.push(`l.decoded_at < ${add(connectedCut)}`);
   else if (opts.status === 'never') where.push('l.decoded_at IS NULL');
 
   const limitP = add(opts.limit);
@@ -637,9 +692,9 @@ export async function getLegacyGisData(siteIds: SiteScope) {
     meters,
     summary: {
       totalMeters: meters.length,
-      activeCount: count('live'),
-      warningCount: count('stale'),
-      problemCount: count('silent') + count('never'),
+      activeCount: count('connected'),
+      warningCount: 0, // there is no in-between state any more: connected, disconnected or never seen
+      problemCount: count('disconnected') + count('never'),
       gatewayCount: gw.gateways.length,
     },
   };

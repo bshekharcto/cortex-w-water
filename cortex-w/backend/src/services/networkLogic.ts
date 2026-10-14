@@ -3,28 +3,22 @@ import { networkHealthThresholds as T } from '../config/networkHealth.js';
 // Pure rules for the Network Explorer (no database, no network), so they can be tested on their own.
 // The limits are the Command Center's (config/networkHealth.ts), so a meter or gateway reads the same on every page.
 
-export type MeterStatus = 'live' | 'stale' | 'silent' | 'never';
+export type MeterStatus = 'connected' | 'disconnected' | 'never';
 export type GatewayStatus = 'reporting' | 'degraded' | 'stale' | 'no-traffic';
 
 /** Compact codes used in the map payload (an array index is far smaller than a string on 28,000 rows). */
-export const METER_STATUS_CODES: readonly MeterStatus[] = ['live', 'stale', 'silent', 'never'];
+export const METER_STATUS_CODES: readonly MeterStatus[] = ['connected', 'disconnected', 'never'];
 
 /**
- * Live < 24 h since the last frame, stale up to 48 h (one missed daily report), silent beyond that. A meter that has
- * never sent a frame is `never`, not silent: nothing is known about it.
+ * Connected when the last frame arrived within the last 7 days (T.meterConnectedHours), disconnected when it arrived
+ * earlier. A meter that has never sent a frame is `never`, not disconnected: nothing is known about it.
  */
 export function meterStatus(lastFrame: Date | string | null | undefined, now: number = Date.now()): MeterStatus {
   if (lastFrame == null) return 'never';
   const ts = new Date(lastFrame).getTime();
   if (!Number.isFinite(ts)) return 'never';
-  const ageMin = (now - ts) / 60000;
-  if (ageMin > T.meterCriticalHours * 60) return 'silent';
-  return ageMin > T.meterStaleMinutes ? 'stale' : 'live';
+  return now - ts > T.meterConnectedHours * 3_600_000 ? 'disconnected' : 'connected';
 }
-
-// The gateway rail in the Command Center calls a gateway degraded when its averages are this bad.
-const DEGRADED_AVG_RSSI = -105;
-const DEGRADED_AVG_SNR = -15;
 
 /** Same labels as the Command Center gateway rail, judged from the newest frames of the meters the gateway hears. */
 export function gatewayStatus(
@@ -35,7 +29,7 @@ export function gatewayStatus(
   const ts = new Date(g.lastFrame).getTime();
   if (!Number.isFinite(ts)) return 'no-traffic';
   if ((now - ts) / 60000 > T.gatewayStaleMinutes) return 'stale';
-  if ((g.avgRssi != null && g.avgRssi < DEGRADED_AVG_RSSI) || (g.avgSnr != null && g.avgSnr < DEGRADED_AVG_SNR)) return 'degraded';
+  if ((g.avgRssi != null && g.avgRssi < T.avgRssiDegradedDbm) || (g.avgSnr != null && g.avgSnr < T.avgSnrDegradedDb)) return 'degraded';
   return 'reporting';
 }
 

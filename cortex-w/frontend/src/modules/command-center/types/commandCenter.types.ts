@@ -1,8 +1,8 @@
 export type GatewayState = 'reporting' | 'degraded' | 'stale' | 'no-traffic' | 'never-observed';
-/** How recently a meter reported: live (< 24 h), stale (< 48 h) or silent. */
-export type MeterState = 'live' | 'stale' | 'silent';
+/** Connected when the last frame arrived within 7 days, disconnected otherwise. */
+export type MeterState = 'connected' | 'disconnected';
 export type GatewayTabType = 'METERS' | 'FRAMES' | 'TRAFFIC' | 'RADIO';
-export type TimeWindow = '1H' | '6H' | '24H' | '7D' | '30D' | 'CUSTOM';
+export type TimeWindow = '1H' | '6H' | 'TODAY' | '7D' | '30D' | 'CUSTOM';
 
 export interface GatewayItem {
   gatewayId: string;
@@ -92,21 +92,23 @@ export interface NetworkKpiData {
   framesReceived: number;
   framesTrend: string;
   lastFrameAge: string;
-  avgRssi: number;
-  avgSnr: number;
+  avgRssi: number | null; // null: no frame in the window
+  avgSnr: number | null;
 }
 
 export interface NetworkHealthThresholds {
   gatewayStaleMinutes: number;
   gatewayCriticalMinutes: number;
-  meterStaleMinutes: number;
-  meterCriticalHours: number;
+  meterConnectedHours: number;
   gatewayTrafficDropWarningPct: number;
   gatewayTrafficDropCriticalPct: number;
   rssiWeakDbm: number;
   rssiCriticalDbm: number;
   snrWeakDb: number;
   snrCriticalDb: number;
+  avgRssiDegradedDbm: number;
+  avgSnrDegradedDb: number;
+  knownGatewayDays: number;
   trendMinPrevFrames: number;
   trendsEnabled: boolean;
   rssiBands: { strong: number; good: number; weak: number };

@@ -110,7 +110,7 @@ export function GatewayRail({
                   <span className="cc-badge cc-badge--fresh">{gw.lastFrameText}</span>
                 )}
                 {gw.status === 'degraded' && (
-                  <span className="cc-badge cc-badge--warn">{gw.trendText}</span>
+                  <span className="cc-badge cc-badge--warn">Weak signal</span>
                 )}
                 {gw.status === 'stale' && (
                   <span className="cc-badge cc-badge--stale">{gw.lastFrameText}</span>

@@ -6,7 +6,7 @@ interface Props {
   windowText?: string;
 }
 
-export function NetworkKpiStrip({ kpis, loading, windowText = '24H' }: Props) {
+export function NetworkKpiStrip({ kpis, loading, windowText = 'Today' }: Props) {
   if (loading && !kpis) {
     return (
       <div className="cc-kpi-grid">
@@ -50,7 +50,6 @@ export function NetworkKpiStrip({ kpis, loading, windowText = '24H' }: Props) {
         </div>
         <div className="cc-kpi-value-row">
           <span className="cc-kpi-val">{kpis.uniqueMetersSeen.toLocaleString()}</span>
-          <span className="cc-kpi-sub">/ {kpis.configuredMeters.toLocaleString()} config</span>
         </div>
       </div>
 
@@ -62,7 +61,9 @@ export function NetworkKpiStrip({ kpis, loading, windowText = '24H' }: Props) {
         </div>
         <div className="cc-kpi-value-row">
           <span className="cc-kpi-val">{kpis.framesReceived.toLocaleString()}</span>
-          <span className="cc-kpi-trend cc-kpi-trend--up">{kpis.framesTrend}</span>
+          {kpis.framesTrend && (
+            <span className={`cc-kpi-trend cc-kpi-trend--${trendDirection(kpis.framesTrend)}`}>{kpis.framesTrend}</span>
+          )}
         </div>
       </div>
 
@@ -84,11 +85,18 @@ export function NetworkKpiStrip({ kpis, loading, windowText = '24H' }: Props) {
           <span className="cc-kpi-label">AVG RSSI / SNR</span>
         </div>
         <div className="cc-kpi-value-row">
-          <span className="cc-kpi-val cc-kpi-val--sm">{kpis.avgRssi}</span>
+          <span className="cc-kpi-val cc-kpi-val--sm">{kpis.avgRssi ?? '—'}</span>
           <span className="cc-kpi-unit">dBm</span>
-          <span className="cc-kpi-sub">· {kpis.avgSnr} dB</span>
+          <span className="cc-kpi-sub">· {kpis.avgSnr ?? '—'} dB</span>
         </div>
       </div>
     </div>
   );
+}
+
+// framesTrend is text from the server: "+12.0% vs prev 7d", "-3.1% vs prev 7d" or "no earlier data"
+function trendDirection(text: string): 'up' | 'down' | 'flat' {
+  if (text.startsWith('+')) return 'up';
+  if (text.startsWith('-')) return 'down';
+  return 'flat';
 }

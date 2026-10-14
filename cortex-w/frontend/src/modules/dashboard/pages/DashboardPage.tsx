@@ -42,7 +42,7 @@ function meterRowToGisMeter(row: MeterRow, locality: string): GisMeter {
     distanceMeters: null,
     rssi: null,
     snr: null,
-    status: row.connectivityStatus === 'CONNECTED' ? 'active' : row.connectivityStatus === 'DISCONNECTED' ? 'weak' : 'silent',
+    status: row.connectivityStatus === 'CONNECTED' ? 'connected' : row.connectivityStatus === 'DISCONNECTED' ? 'disconnected' : 'never',
     lastSeen: row.latestReadingLocal ?? (row.latestReadingAt ? new Date(row.latestReadingAt).toLocaleString() : null),
     pipeDiameter: row.meterSize || null,
     connectionType: row.meterType || null,

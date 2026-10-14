@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
+import { logRouteError } from '../db/pool.js';
 import { requireClient } from '../services/clientContext.js';
-import { getGateways, getMeterMap, listMeters, resolveSiteScope, type SiteScope } from '../services/networkService.js';
+import { getGateways, getMeterMap, listMeters, resolveSiteScope, suggestMeters, type SiteScope } from '../services/networkService.js';
 import type { MeterStatus } from '../services/networkLogic.js';
 
 const router = Router();
@@ -8,7 +9,7 @@ const router = Router();
 // The Network Explorer's data (see services/networkService.ts). Every route works for the signed-in client only:
 // a site id that is not theirs answers 404 (so ids cannot be probed), and "ALL" means "all of my sites".
 
-const STATUSES = new Set<string>(['live', 'stale', 'silent', 'never']);
+const STATUSES = new Set<string>(['connected', 'disconnected', 'never']);
 const EUI = /^[0-9a-f]{16}$/i;
 
 /** Validates the query; answers the 4xx itself and returns null when it is not acceptable. */
@@ -27,7 +28,7 @@ function scopeOrReject(req: Request, res: Response): { scope: SiteScope } | null
 }
 
 function fail(res: Response, what: string, err: any) {
-  console.error(`[network] Error ${what}:`, err?.message || err);
+  logRouteError(`[network] Error ${what}:`, err);
   res.status(500).json({ error: `Failed to ${what}` });
 }
 
@@ -69,6 +70,24 @@ router.get('/meters/map', async (req, res) => {
 });
 
 /**
+ * GET /api/network/meters/suggest?siteId=<id|ALL>&q=<text>
+ * Up to 5 meters whose meter id or consumer id matches the text typed so far (search-box suggestions).
+ */
+router.get('/meters/suggest', async (req, res) => {
+  const ok = scopeOrReject(req, res);
+  if (!ok) return;
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 64) : '';
+  if (q.length < 2) return res.json({ items: [] });
+  try {
+    res.set('Cache-Control', 'private, max-age=30');
+    res.set('Vary', 'Authorization');
+    res.json({ items: await suggestMeters(ok.scope, q, 5) });
+  } catch (err) {
+    fail(res, 'search meters', err);
+  }
+});
+
+/**
  * GET /api/network/meters?siteId=&limit=&offset=&search=&status=live|stale|silent|never&gatewayId=
  * One page of the meter table, with the details the map payload leaves out.
  */
@@ -89,7 +108,7 @@ router.get('/meters', async (req, res) => {
   const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 64) : '';
   const status = req.query.status;
   if (status !== undefined && (typeof status !== 'string' || !STATUSES.has(status))) {
-    return res.status(400).json({ error: 'status must be live, stale, silent or never' });
+    return res.status(400).json({ error: 'status must be connected, disconnected or never' });
   }
   const gatewayId = req.query.gatewayId;
   if (gatewayId !== undefined && (typeof gatewayId !== 'string' || !EUI.test(gatewayId))) {

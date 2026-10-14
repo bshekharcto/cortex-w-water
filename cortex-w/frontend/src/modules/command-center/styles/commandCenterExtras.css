@@ -117,3 +117,21 @@
 .cc-radio-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
 
 .cc-radio-grid { align-items: start; }
+
+/* A new filter is loading: slim progress bar under the toolbar, the numbers on screen dimmed until the new ones arrive */
+.cc-progress { position: relative; height: 3px; overflow: hidden; border-radius: 2px; background: rgba(56, 189, 248, 0.15); }
+.cc-progress-bar { position: absolute; top: 0; bottom: 0; width: 35%; border-radius: 2px; background: #38bdf8; animation: cc-progress-slide 1.1s infinite ease-in-out; }
+@keyframes cc-progress-slide { 0% { left: -35%; } 100% { left: 100%; } }
+.cc-container--busy .cc-kpi-grid,
+.cc-container--busy .cc-main-workspace-layout { opacity: 0.45; pointer-events: none; transition: opacity 0.15s ease; }
+@media (prefers-reduced-motion: reduce) { .cc-progress-bar { animation: none; width: 100%; opacity: 0.6; } }
+
+/* Live feed refreshing by itself: only this panel shows it */
+.cc-feed-refresh { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.cc-feed-refresh-state { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: #64748B; }
+.cc-live-feed-panel--refreshing .cc-feed-refresh-state { color: #38bdf8; }
+.cc-spin { animation: cc-spin 0.9s linear infinite; }
+@keyframes cc-spin { to { transform: rotate(360deg); } }
+.cc-feed-stream-container--dim { opacity: 0.5; transition: opacity 0.15s ease; }
+.cc-feed-error { font-size: 12px; padding: 6px 12px; color: #FB923C; }
+@media (prefers-reduced-motion: reduce) { .cc-spin { animation: none; } }

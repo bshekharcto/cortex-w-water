@@ -2,7 +2,7 @@ import { apiRequest } from './httpClient';
 
 /** Contract of the backend's /api/network/* routes (backend/src/services/networkService.ts). */
 
-export type NetMeterStatus = 'live' | 'stale' | 'silent' | 'never';
+export type NetMeterStatus = 'connected' | 'disconnected' | 'never';
 export type NetGatewayStatus = 'reporting' | 'degraded' | 'stale' | 'no-traffic';
 export type CoordinatesStatus = 'fresh' | 'stale' | 'unavailable';
 
@@ -41,14 +41,24 @@ export interface NetGatewaysResponse {
 export interface NetMeterMapResponse {
   latestFrameAt: string | null;
   coordinates: { status: CoordinatesStatus; fetchedAt: string | null };
-  summary: { total: number; withCoordinates: number; withoutCoordinates: number; live: number; stale: number; silent: number; never: number };
+  summary: { total: number; withCoordinates: number; withoutCoordinates: number; connected: number; disconnected: number; never: number };
   /** `status` column: an index into this list. */
   statuses: NetMeterStatus[];
   /** `gateway` column: an index into this list, or -1. */
   gatewayIds: string[];
   columns: string[];
-  /** [meterId, assetId, lat, lng, status, gateway, rssi, snr] */
-  rows: Array<[string, number, number, number, number, number, number | null, number | null]>;
+  /** [meterId, assetId, lat, lng, status, gateway, rssi, snr, site (-1: none)] */
+  rows: Array<[string, number, number, number, number, number, number | null, number | null, number]>;
+  /** The meters without a position, per site and status: [site (-1: none), status index, count]. */
+  unpositioned: Array<[number, number, number]>;
+}
+
+export interface NetMeterSuggestion {
+  meterId: string;
+  assetId: number;
+  consumerId: string | null;
+  consumerName: string | null;
+  siteId: number | null;
 }
 
 export interface NetMeter {
@@ -108,6 +118,9 @@ export const networkApi = {
 
   listMeters: (q: NetMeterQuery, signal?: AbortSignal) =>
     apiRequest<NetMeterPage>('/network/meters', { query: { ...q }, signal }),
+
+  suggestMeters: (siteId: string, q: string, signal?: AbortSignal) =>
+    apiRequest<{ items: NetMeterSuggestion[] }>('/network/meters/suggest', { query: { siteId, q }, signal }),
 
   listSites: (signal?: AbortSignal) => apiRequest<NetSiteOption[]>('/sites', { signal }),
 };

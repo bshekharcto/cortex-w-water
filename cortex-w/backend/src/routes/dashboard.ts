@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { logRouteError } from '../db/pool.js';
 import {
   getNodeChildren,
   getNodeMeters,
@@ -26,7 +27,7 @@ router.get('/freshness', async (_req, res) => {
   try {
     return res.json(await getDataFreshness());
   } catch (err: any) {
-    console.error('[dashboard] Error reading the data freshness:', err);
+    logRouteError('[dashboard] Error reading the data freshness:', err);
     return res.status(500).json({ error: 'Failed to read when the data was last updated' });
   }
 });
@@ -46,8 +47,8 @@ router.get('/nodes', async (req, res) => {
     return res.json(await getNodeChildren(parentIdParam, req.headers.authorization));
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.warn('[dashboard] Error fetching nodes:', err?.message || err);
-    return res.json([]);
+    logRouteError('[dashboard] Error fetching nodes:', err);
+    return res.status(500).json({ error: 'Failed to load the sites' });
   }
 });
 
@@ -61,8 +62,8 @@ router.get('/nodes/:nodeId/ancestors', async (req, res) => {
     return res.json(chain.map((n) => ({ id: n.ref, name: n.name, level: n.level })));
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.warn('[dashboard] Error resolving ancestors:', err?.message || err);
-    return res.json([]);
+    logRouteError('[dashboard] Error resolving ancestors:', err);
+    return res.status(500).json({ error: 'Failed to resolve the path' });
   }
 });
 
@@ -102,7 +103,7 @@ router.get('/nodes/:nodeId/meters', async (req, res) => {
         consumerId: m.consumerId ?? undefined,
         consumerName: m.consumerName ?? undefined,
         address: m.address ?? undefined,
-        totalizerM3: m.totalizerKl, // 1 KL = 1 m3
+        totalizerM3: m.totalizerKl ?? undefined, // 1 KL = 1 m3; undefined = no reading yet
         latestReadingAt: m.decodedAt ?? undefined,
         latestReadingLocal: m.decodedLocal ?? undefined,
         connectivityStatus: m.connectivity,
@@ -115,7 +116,7 @@ router.get('/nodes/:nodeId/meters', async (req, res) => {
     });
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.error('[dashboard] Error fetching node meters:', err);
+    logRouteError('[dashboard] Error fetching node meters:', err);
     return res.status(500).json({ error: 'Failed to load the meters' });
   }
 });
@@ -133,7 +134,7 @@ router.get('/nodes/:nodeId/trend', async (req, res) => {
     return res.json(points);
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.error('[dashboard] Error building the consumption trend:', err);
+    logRouteError('[dashboard] Error building the consumption trend:', err);
     return res.status(500).json({ error: 'Failed to build the consumption trend', message: err?.message });
   }
 });
@@ -149,7 +150,7 @@ router.get('/nodes/:nodeId/boundaries', async (req, res) => {
     return res.json(boundaries);
   } catch (err: any) {
     if (err instanceof SessionExpiredError) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
-    console.error('[dashboard] Error loading boundaries:', err);
+    logRouteError('[dashboard] Error loading boundaries:', err);
     return res.status(500).json({ error: 'Failed to load the boundaries', message: err?.message });
   }
 });

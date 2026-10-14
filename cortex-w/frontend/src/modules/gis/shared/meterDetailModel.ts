@@ -34,7 +34,7 @@ export function consumerHeadline(p: { name: string | null; ward: string | null; 
 
 export type ShownStatus = { label: string; cssKey: string };
 
-/** The badge for a meter: the Network Explorer's live / stale / silent / never, or the older active / weak / silent. */
+/** The badge for a meter: the Network Explorer's connected / disconnected / never. */
 export function statusBadge(status: string | null | undefined): ShownStatus {
   const key = (status || '').toLowerCase();
   if (!key) return { label: '—', cssKey: 'never' };

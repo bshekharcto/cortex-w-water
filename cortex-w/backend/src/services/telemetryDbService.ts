@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { pool } from '../db/pool.js';
+import { pool, logRouteError } from '../db/pool.js';
 import { networkHealthThresholds as T } from '../config/networkHealth.js';
 
 export interface TelemetrySummary {
@@ -14,8 +14,8 @@ export interface TelemetrySummary {
     framesReceived: number;
     framesTrend: string;
     lastFrameAge: string;
-    avgRssi: number;
-    avgSnr: number;
+    avgRssi: number | null; // null: no frame in the window
+    avgSnr: number | null;
     reverseFlowCount: number;
   };
   gateways: Array<{
@@ -34,8 +34,8 @@ export interface TelemetrySummary {
   recentFrames: any[];
   hourlyActivity: Array<{ hour: string; count: number }>;
   radioHealth: {
-    avgRssi: number;
-    avgSnr: number;
+    avgRssi: number | null;
+    avgSnr: number | null;
     rssiBuckets: { excellent: number; good: number; fair: number; poor: number };
     snrBuckets: { excellent: number; good: number; fair: number; poor: number };
   };
@@ -57,9 +57,12 @@ export function formatRelativeTime(dateStr: string | null): string {
 
 export function getGatewayAlias(id: string): string {
   if (!id) return 'GW-UNK';
-  const suffix = id.slice(-3).toUpperCase();
+  const suffix = id.slice(-4).toUpperCase(); // the id is all there is to name it by; 4 characters keep two gateways apart
   return `GW-${suffix}`;
 }
+
+/** Text for an ILIKE '%...%' search: the characters LIKE treats as wildcards are matched as themselves. */
+export const escapeLike = (text: string) => text.replace(/[\\%_]/g, (c) => `\\${c}`);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -86,21 +89,20 @@ export function localDateIn(zone: string, instant: Date = new Date()): string {
 }
 
 /** The frames from the start of day `from` to the end of day `to`, days of the zone. */
-export const inWindow = (zone: string, from: string, to: string) =>
-  `time >= (${from}::date)::timestamp AT TIME ZONE '${zone}' AND time < ((${to}::date + 1)::timestamp AT TIME ZONE '${zone}')`;
+export const inWindow = (zone: string, from: string, to: string, hours?: number) =>
+  `time >= (${from}::date)::timestamp AT TIME ZONE '${zone}' AND time < ((${to}::date + 1)::timestamp AT TIME ZONE '${zone}')${recentClause(hours)}`;
 
-const KNOWN_GATEWAY_DAYS = 30;                  // a gateway that sent a frame in this many days is "known"
 const STALE_GATEWAY_AFTER_MS = T.gatewayStaleMinutes * 60 * 1000; // 24 h: these meters report once a day (config/networkHealth.ts)
-const DEGRADED_AVG_RSSI = -105;
-const DEGRADED_AVG_SNR = -15;
 
 function shiftDate(date: string, days: number): string {
   return new Date(Date.parse(date) + days * DAY_MS).toISOString().slice(0, 10);
 }
 
 /** "+6.5% vs prev 7d"; "no earlier data" when the window before had no frames. */
+// "" = no trend to show: they are switched off (config/networkHealth.ts trendsEnabled) and a window before this one with
+// too few frames would read as a huge swing.
 function trendText(current: number, previous: number, days: number): string {
-  if (!previous) return 'no earlier data';
+  if (!T.trendsEnabled || previous < T.trendMinPrevFrames) return '';
   const pct = ((current - previous) / previous) * 100;
   return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% vs prev ${days}d`;
 }
@@ -108,7 +110,13 @@ function trendText(current: number, previous: number, days: number): string {
 export interface DateWindow {
   fromDate: string;
   toDate: string;
+  /** Today at the site, but only the last 1 or 6 hours of it (the "1H" / "6H" windows). */
+  hours?: number;
 }
+
+/** AND-clause keeping the frames of the last `hours` hours (1H / 6H); empty for a window of whole days. */
+export const recentClause = (hours?: number) =>
+  hours === 1 || hours === 6 ? ` AND decoded_at >= NOW() - INTERVAL '${hours} hours'` : '';
 
 /** The last `days` days ending today at the zone's site (or at `referenceDate`, never later than today), or a custom window. */
 export function dateRange(days: number, referenceDate?: string, custom?: DateWindow, zone: string = 'UTC'): DateWindow {
@@ -118,17 +126,17 @@ export function dateRange(days: number, referenceDate?: string, custom?: DateWin
   return { fromDate: shiftDate(toDate, -(days - 1)), toDate };
 }
 
-export type MeterFilter = 'ALL' | 'LIVE' | 'STALE';
+export type MeterFilter = 'ALL' | 'CONNECTED' | 'DISCONNECTED';
 
-// The status of a meter is only how recently it reported: live (within 24 h) or stale. The filter below uses the same limit,
+// The status of a meter is only how recently it reported: connected (within 7 days) or disconnected. The filter below uses the same limit,
 // so a filter and the chip on the row always agree.
-const STALE_AFTER_MS = DAY_MS;
+const CONNECTED_WITHIN_MS = T.meterConnectedHours * 3_600_000;
 export const WEAK_RSSI_DBM = -95;
 export const POOR_SNR_DB = -10;
 
 function meterStatusChips(m: { decoded_at: string }): string[] {
-  const stale = Date.now() - new Date(m.decoded_at).getTime() > STALE_AFTER_MS;
-  return [stale ? 'stale' : 'live'];
+  const disconnected = Date.now() - new Date(m.decoded_at).getTime() > CONNECTED_WITHIN_MS;
+  return [disconnected ? 'disconnected' : 'connected'];
 }
 
 /** The status of a gateway from its newest frame and how it is doing: the labels the rail shows. */
@@ -138,7 +146,7 @@ export function gatewayFreshnessStatus(
 ): 'reporting' | 'degraded' | 'stale' | 'no-traffic' {
   if (g.frameCount === 0 || g.latestDecodedAt == null) return 'no-traffic';
   if (now - new Date(g.latestDecodedAt).getTime() > STALE_GATEWAY_AFTER_MS) return 'stale';
-  if ((g.avgRssi != null && g.avgRssi < DEGRADED_AVG_RSSI) || (g.avgSnr != null && g.avgSnr < DEGRADED_AVG_SNR)) return 'degraded';
+  if ((g.avgRssi != null && g.avgRssi < T.avgRssiDegradedDbm) || (g.avgSnr != null && g.avgSnr < T.avgSnrDegradedDb)) return 'degraded';
   return 'reporting';
 }
 
@@ -194,7 +202,7 @@ function toMeterItem(m: any, gatewayId: string) {
         isLatest: true,
       },
     ],
-    forwardFlowL: m.forward_flow_kl,
+    forwardFlowKl: m.forward_flow_kl,
     reverseFlow: m.reverse_flow_m3,
   };
 }
@@ -202,21 +210,21 @@ function toMeterItem(m: any, gatewayId: string) {
 // Each filter as a SQL condition on the per-meter row built in getGatewayMeters (same limit as meterStatusChips).
 const FILTER_SQL: Record<MeterFilter, string> = {
   ALL: 'TRUE',
-  LIVE: `decoded_at >= NOW() - INTERVAL '24 hours'`,
-  STALE: `decoded_at < NOW() - INTERVAL '24 hours'`,
+  CONNECTED: `decoded_at >= NOW() - INTERVAL '${T.meterConnectedHours} hours'`,
+  DISCONNECTED: `decoded_at < NOW() - INTERVAL '${T.meterConnectedHours} hours'`,
 };
 
 // Limits a query to the meters of some sites; `param` is the placeholder holding the site ids (a bigint[]).
 export const siteClause = (param: string) =>
   ` AND meter_id IN (SELECT meter_id FROM meter_metadata WHERE site_id = ANY(${param}::bigint[]))`;
 
-const framesCte = (zone: string, sitesParam?: string) => `
+const framesCte = (zone: string, sitesParam?: string, hours?: number) => `
   WITH frames AS (
     SELECT meter_id, gateway_id, dev_eui, decoded_at, rssi, snr, f_cnt, f_port, frequency, dr, adr, confirmed,
            forward_flow_kl, reverse_flow_m3,
            to_char(decoded_at AT TIME ZONE '${zone}', 'YYYY-MM-DD HH24:MI:SS') AS local_time
     FROM water_meter_readings_v2
-    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${sitesParam ? siteClause(sitesParam) : ''}
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2', hours)}${sitesParam ? siteClause(sitesParam) : ''}
   )`;
 
 /**
@@ -238,9 +246,9 @@ export async function getGatewayMeters(opts: {
 }) {
   const zone = safeZone(opts.zone);
   const { fromDate, toDate } = dateRange(opts.days, opts.referenceDate, opts.custom, zone);
-  const search = (opts.q || '').trim();
+  const search = escapeLike((opts.q || '').trim());
   const res = await pool.query(
-    `${framesCte(zone, opts.siteIds ? '$7' : undefined)},
+    `${framesCte(zone, opts.siteIds ? '$7' : undefined, opts.custom?.hours)},
     mine AS (
       SELECT DISTINCT ON (meter_id) *
       FROM frames
@@ -291,11 +299,11 @@ export async function searchMeters(
   zone = safeZone(zone);
   const { fromDate, toDate } = dateRange(days, referenceDate, custom, zone);
   const res = await pool.query(
-    `${framesCte(zone, siteIds ? '$5' : undefined)},
+    `${framesCte(zone, siteIds ? '$5' : undefined, custom?.hours)},
     latest AS (
       SELECT DISTINCT ON (meter_id) *
       FROM frames
-      WHERE meter_id ILIKE '%' || $3 || '%' OR dev_eui ILIKE '%' || $3 || '%'
+      WHERE strpos(lower(meter_id), lower($3)) > 0 OR strpos(lower(dev_eui), lower($3)) > 0 -- a plain substring: no LIKE wildcards
       ORDER BY meter_id, decoded_at DESC
     ),
     stats AS (
@@ -336,9 +344,13 @@ export async function getPostgresAggregatedSummary(
     days = Math.round((Date.parse(toDate) - Date.parse(fromDate)) / DAY_MS) + 1;
   }
 
-  // a list of sites would make a long key (the column holds 100 characters): a short hash stands for it
-  const siteKey = !siteId || siteId === 'ALL' ? 'ALL' : siteId.length > 24 ? createHash('md5').update(siteId).digest('hex') : siteId;
-  const cacheKey = custom
+  // the cache is shared by users, so the key stands for the sites the numbers cover (a hash: the column holds 100
+  // characters), never for the filter the caller typed
+  const siteKey = siteIds ? 's' + createHash('md5').update([...siteIds].sort((a, b) => a - b).join(',')).digest('hex') : 'ALL';
+  const hours = custom?.hours;
+  const cacheKey = hours
+    ? `${hours}h_summary_${toDate}_site_${siteKey}`
+    : custom
     ? `custom_${fromDate}_${toDate}_site_${siteKey}`
     : `${days}d_summary_${toDate}_site_${siteKey}`;
 
@@ -372,12 +384,12 @@ export async function getPostgresAggregatedSummary(
       COUNT(DISTINCT gateway_id)::int as gateways_with_traffic,
       COUNT(DISTINCT meter_id)::int as unique_meters_seen,
       COUNT(*)::int as frames_received,
-      COALESCE(AVG(rssi)::numeric(10,1), -90)::float as avg_rssi,
-      COALESCE(AVG(snr)::numeric(10,1), -10)::float as avg_snr,
+      (AVG(rssi)::numeric(10,1))::float as avg_rssi,
+      (AVG(snr)::numeric(10,1))::float as avg_snr,
       COUNT(*) FILTER (WHERE reverse_flow_m3 > 0.05)::int as reverse_flow_count,
       MAX(decoded_at) as latest_frame_at
     FROM water_meter_readings_v2
-    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${SITE}
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2', hours)}${SITE}
   `, RANGE_ARGS);
 
   const kpiRow = kpiRes.rows[0] || {};
@@ -389,20 +401,20 @@ export async function getPostgresAggregatedSummary(
   );
   const configuredMeters = configuredRes.rows[0]?.count || (kpiRow.unique_meters_seen ?? 0);
 
-  // 5. Gateways: every gateway heard in the last KNOWN_GATEWAY_DAYS days, with its frames in the window and in the
+  // 5. Gateways: every gateway heard in the last T.knownGatewayDays days, with its frames in the window and in the
   //    window just before it (for the trend). One that sent nothing in the window shows as "no traffic".
   const prevToDate = shiftDate(fromDate, -1);
   const prevFromDate = shiftDate(prevToDate, -(days - 1));
-  const knownFromDate = shiftDate(toDate, -(KNOWN_GATEWAY_DAYS - 1));
+  const knownFromDate = shiftDate(toDate, -(T.knownGatewayDays - 1));
   const gwRes = await pool.query(`
     SELECT
       gateway_id,
-      COUNT(DISTINCT meter_id) FILTER (WHERE ${inWindow(zone, '$1', '$2')})::int AS unique_meters,
-      COUNT(*) FILTER (WHERE ${inWindow(zone, '$1', '$2')})::int AS frame_count,
+      COUNT(DISTINCT meter_id) FILTER (WHERE ${inWindow(zone, '$1', '$2', hours)})::int AS unique_meters,
+      COUNT(*) FILTER (WHERE ${inWindow(zone, '$1', '$2', hours)})::int AS frame_count,
       COUNT(*) FILTER (WHERE ${inWindow(zone, '$3', '$4')})::int AS prev_frame_count,
       MAX(decoded_at) AS latest_decoded_at,
-      COALESCE((AVG(rssi) FILTER (WHERE ${inWindow(zone, '$1', '$2')}))::numeric(10,1), 0)::float AS avg_rssi,
-      COALESCE((AVG(snr) FILTER (WHERE ${inWindow(zone, '$1', '$2')}))::numeric(10,1), 0)::float AS avg_snr
+      COALESCE((AVG(rssi) FILTER (WHERE ${inWindow(zone, '$1', '$2', hours)}))::numeric(10,1), 0)::float AS avg_rssi,
+      COALESCE((AVG(snr) FILTER (WHERE ${inWindow(zone, '$1', '$2', hours)}))::numeric(10,1), 0)::float AS avg_snr
     FROM water_meter_readings_v2
     WHERE is_history = false AND gateway_id IS NOT NULL
       AND time >= (LEAST($3::date, $5::date))::timestamp AT TIME ZONE '${zone}'
@@ -428,6 +440,8 @@ export async function getPostgresAggregatedSummary(
     };
   });
   const previousFrames = gwRes.rows.reduce((sum: number, r: any) => sum + r.prev_frame_count, 0);
+  // the same frames on both sides of the comparison: the gateways' (frames without a gateway are in neither)
+  const currentGatewayFrames = gwRes.rows.reduce((sum: number, r: any) => sum + r.frame_count, 0);
 
   // 7. Hourly Activity distribution across the 7 days (or 24 hours aggregated)
   const hourlyRes = await pool.query(`
@@ -435,7 +449,7 @@ export async function getPostgresAggregatedSummary(
       TO_CHAR(decoded_at AT TIME ZONE '${zone}', 'HH24:00') as hour_str,
       COUNT(*)::int as count
     FROM water_meter_readings_v2
-    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${SITE}
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2', hours)}${SITE}
     GROUP BY hour_str
     ORDER BY hour_str ASC
   `, RANGE_ARGS);
@@ -464,7 +478,7 @@ export async function getPostgresAggregatedSummary(
       COUNT(*) FILTER (WHERE snr < -5 AND snr >= -12)::int as snr_fair,
       COUNT(*) FILTER (WHERE snr < -12)::int as snr_poor
     FROM water_meter_readings_v2
-    WHERE is_history = false AND ${inWindow(zone, '$1', '$2')}${SITE}
+    WHERE is_history = false AND ${inWindow(zone, '$1', '$2', hours)}${SITE}
   `, RANGE_ARGS);
   const radioRow = radioRes.rows[0] || {};
 
@@ -489,10 +503,10 @@ export async function getPostgresAggregatedSummary(
       uniqueMetersSeen: kpiRow.unique_meters_seen ?? 0,
       configuredMeters,
       framesReceived: kpiRow.frames_received ?? 0,
-      framesTrend: trendText(kpiRow.frames_received ?? 0, previousFrames, days),
+      framesTrend: trendText(currentGatewayFrames, previousFrames, days),
       lastFrameAge: formatRelativeTime(kpiRow.latest_frame_at),
-      avgRssi: kpiRow.avg_rssi ?? -90,
-      avgSnr: kpiRow.avg_snr ?? -10,
+      avgRssi: kpiRow.avg_rssi ?? null,
+      avgSnr: kpiRow.avg_snr ?? null,
       reverseFlowCount: kpiRow.reverse_flow_count ?? 0,
     },
     gateways,
@@ -500,8 +514,8 @@ export async function getPostgresAggregatedSummary(
     recentFrames,
     hourlyActivity,
     radioHealth: {
-      avgRssi: kpiRow.avg_rssi ?? -90,
-      avgSnr: kpiRow.avg_snr ?? -10,
+      avgRssi: kpiRow.avg_rssi ?? null,
+      avgSnr: kpiRow.avg_snr ?? null,
       rssiBuckets: {
         excellent: radioRow.rssi_excellent ?? 0,
         good: radioRow.rssi_good ?? 0,
@@ -525,7 +539,7 @@ export async function getPostgresAggregatedSummary(
       ON CONFLICT (cache_key) DO UPDATE SET summary_json = $4, updated_at = NOW()
     `, [cacheKey, fromDate, toDate, summary]);
   } catch (err: any) {
-    console.warn('[telemetryDb] Cache save note:', err.message);
+    logRouteError('[telemetryDb] Cache save note:', err);
   }
 
   return summary;
@@ -534,7 +548,7 @@ export async function getPostgresAggregatedSummary(
 function windowArgs(opts: { days: number; referenceDate?: string; custom?: DateWindow; siteIds?: number[] | null; zone?: string }) {
   const zone = safeZone(opts.zone);
   const { fromDate, toDate } = dateRange(opts.days, opts.referenceDate, opts.custom, zone);
-  return { zone, fromDate, toDate, site: opts.siteIds ? siteClause('$4') : '', extra: opts.siteIds ? [opts.siteIds] : [] };
+  return { zone, fromDate, toDate, hours: opts.custom?.hours, site: opts.siteIds ? siteClause('$4') : '', extra: opts.siteIds ? [opts.siteIds] : [] };
 }
 
 /** How the frames one gateway received split into signal-quality bands (the Radio Health tab). */
@@ -546,7 +560,7 @@ export async function getGatewayRadioHealth(opts: {
   siteIds?: number[] | null;
   zone?: string;
 }) {
-  const { zone, fromDate, toDate, site, extra } = windowArgs(opts);
+  const { zone, fromDate, toDate, hours, site, extra } = windowArgs(opts);
   const res = await pool.query(
     `SELECT
        COUNT(*)::int AS frames,
@@ -559,7 +573,7 @@ export async function getGatewayRadioHealth(opts: {
        COUNT(*) FILTER (WHERE snr < 0 AND snr >= -10)::int           AS snr_marginal,
        COUNT(*) FILTER (WHERE snr < -10)::int                        AS snr_poor
      FROM water_meter_readings_v2
-     WHERE is_history = false AND gateway_id = $3 AND ${inWindow(zone, '$1', '$2')}${site}`,
+     WHERE is_history = false AND gateway_id = $3 AND ${inWindow(zone, '$1', '$2', hours)}${site}`,
     [fromDate, toDate, opts.gatewayId, ...extra]
   );
   const r = res.rows[0] || {};
@@ -579,7 +593,7 @@ export async function getGatewayHourly(opts: {
   siteIds?: number[] | null;
   zone?: string;
 }) {
-  const { zone, fromDate, toDate, site, extra } = windowArgs(opts);
+  const { zone, fromDate, toDate, hours, site, extra } = windowArgs(opts);
   const res = await pool.query(
     `SELECT TO_CHAR(decoded_at AT TIME ZONE '${zone}', 'HH24:00') AS hour,
             COUNT(*)::int AS total,

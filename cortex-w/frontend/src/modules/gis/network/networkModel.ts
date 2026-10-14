@@ -12,13 +12,14 @@ export interface MeterPoint {
   gatewayId: string | null;
   rssi: number | null;
   snr: number | null;
+  /** The site the meter belongs to, null when it has none. */
+  siteId: number | null;
 }
 
 /** One scale for the whole page: pin colour, legend, table badge and filter all read from here. */
 export const METER_STATUS_STYLE: Record<NetMeterStatus, { color: string; label: string; hint: string }> = {
-  live: { color: '#047857', label: 'Live', hint: 'Reported in the last 24 hours' },
-  stale: { color: '#F59E0B', label: 'Stale', hint: 'Last report 24 to 48 hours ago (missed one daily report)' },
-  silent: { color: '#DC2626', label: 'Silent', hint: 'No report for more than 48 hours' },
+  connected: { color: '#047857', label: 'Connected', hint: 'Reported in the last 7 days' },
+  disconnected: { color: '#DC2626', label: 'Disconnected', hint: 'No report for more than 7 days' },
   never: { color: '#94A3B8', label: 'Never seen', hint: 'No frame received yet' },
 };
 
@@ -29,16 +30,22 @@ export const GATEWAY_STATUS_LABEL: Record<NetGatewayStatus, string> = {
   'no-traffic': 'No traffic',
 };
 
+/** A status this version knows; anything else (an older or newer server) reads as never seen, not as healthy. */
+function knownStatus(s: string | undefined): NetMeterStatus {
+  return s && s in METER_STATUS_STYLE ? (s as NetMeterStatus) : 'never';
+}
+
 export function decodeMeterRows(map: NetMeterMapResponse): MeterPoint[] {
   return map.rows.map((r) => ({
     meterId: r[0],
     assetId: r[1],
     lat: r[2],
     lng: r[3],
-    status: map.statuses[r[4]] ?? 'never',
+    status: knownStatus(map.statuses[r[4]]),
     gatewayId: r[5] >= 0 ? map.gatewayIds[r[5]] ?? null : null,
     rssi: r[6],
     snr: r[7],
+    siteId: r[8] != null && r[8] >= 0 ? r[8] : null,
   }));
 }
 

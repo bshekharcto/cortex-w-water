@@ -65,7 +65,7 @@ router.get('/meters', async (req, res) => {
     const data = await getLiveGisData(req.headers.authorization, siteId);
     let filtered = data.meters.filter((m) => m.lat != null && m.lng != null);
     if (gatewayId && gatewayId !== 'all') filtered = filtered.filter((m) => m.gatewayId === gatewayId);
-    if (problemsOnly) filtered = filtered.filter((m) => m.status !== 'live');
+    if (problemsOnly) filtered = filtered.filter((m) => m.status !== 'connected');
     if (search) {
       filtered = filtered.filter(
         (m) =>

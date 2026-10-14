@@ -116,7 +116,7 @@ export function FleetMetersTable({ win, siteId, selectedMeterId, onSelectMeter, 
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
-        {(['ALL', 'live', 'stale', 'silent'] as const).map((s) => (
+        {(['ALL', 'connected', 'disconnected'] as const).map((s) => (
           <button
             key={s}
             className={`cc-subfilter-chip ${status === s ? 'cc-subfilter-chip--active' : ''}`}

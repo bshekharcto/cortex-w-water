@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Radio,
-  Search,
   X,
   Table as TableIcon,
   Map as MapIcon,
@@ -11,6 +10,8 @@ import {
   Info,
   ChevronUp,
   ChevronDown,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { runtimeConfig } from '@/config/runtimeConfig';
 import { useGoogleMaps } from '../../shared/useGoogleMaps';
@@ -32,6 +33,10 @@ import { getGatewayMapMarkerIcon, getGatewaySvg } from '../../shared/gatewayIcon
 import { formatStamp, isUnauthorized } from '../../shared/meterDetailModel';
 import { SiteTreeSelect } from '@/modules/command-center/components/SiteTreeSelect';
 import { useNetworkData } from '../hooks/useNetworkData';
+import { GatewayCoveragePanel, defaultRadius } from '../components/GatewayCoveragePanel';
+import { GatewayRangeCards } from '../components/GatewayRangeCards';
+import { MeterSearchBox } from '../components/MeterSearchBox';
+import { computeGatewayReach } from '../coverage';
 import {
   GATEWAY_STATUS_LABEL,
   METER_STATUS_STYLE,
@@ -51,7 +56,7 @@ const INITIAL_VIEW = { center: { lat: 22.5, lng: 80 }, zoom: 5 };
 type SelectedEntity = { type: 'gateway'; data: NetGateway } | { type: 'meter'; data: GisMeter } | null;
 type StatusFilter = 'ALL' | NetMeterStatus;
 
-const STATUS_ORDER: NetMeterStatus[] = ['live', 'stale', 'silent', 'never'];
+const STATUS_ORDER: NetMeterStatus[] = ['connected', 'disconnected', 'never'];
 const dash = '—';
 const fmtTime = formatStamp;
 const fmtNum = (n: number | null | undefined, unit: string) => (n == null ? dash : `${n} ${unit}`);
@@ -64,7 +69,7 @@ function gatewayBadgeClass(s: NetGateway['status']): string {
   return 'cw-badge--muted';
 }
 function meterBadgeClass(s: NetMeterStatus): string {
-  return s === 'live' ? 'cw-badge--green' : s === 'stale' ? 'cw-badge--orange' : s === 'silent' ? 'cw-badge--red' : 'cw-badge--muted';
+  return s === 'connected' ? 'cw-badge--green' : s === 'disconnected' ? 'cw-badge--red' : 'cw-badge--muted';
 }
 
 /** What the map is waiting for, step by step, so a slow load never looks like a frozen page. */
@@ -130,6 +135,8 @@ export function NetworkExplorerPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  // what the map is narrowed to: set when a search is submitted (Enter), not on every keystroke, so typing only shows suggestions
+  const [mapSearch, setMapSearch] = useState('');
   const [showMeters, setShowMeters] = useState(true);
   const [showGateways, setShowGateways] = useState(true);
   const [showCircles, setShowCircles] = useState(false); // coverage circles start hidden; the toggle turns them on
@@ -146,15 +153,22 @@ export function NetworkExplorerPage() {
   const [tableError, setTableError] = useState<string | null>(null);
 
   const [perfVisibleCount, setPerfVisibleCount] = useState(8);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [selectedEntity, setSelectedEntity] = useState<SelectedEntity>(null);
+  // the gateway whose coverage is open (circle + panel), and the radius it is drawn at: set by clicking a gateway or choosing one
+  const [coverageGatewayId, setCoverageGatewayId] = useState<string | null>(null);
+  const [radiusM, setRadiusM] = useState<number>(500);
 
-  const data = useNetworkData(siteId);
+  const data = useNetworkData(siteId, sites);
   const { gateways, unplaced, points, summary, coordinates } = data;
 
+  const pageRef = useRef<HTMLDivElement>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const circlesRef = useRef<any[]>([]);
+  const focusCircleRef = useRef<any>(null);
+  const storedCircleRef = useRef<any>(null); // the gateway's actual (stored) radius: stays put while the slider moves the other circle
   const meterLayerRef = useRef<MeterLayer<MeterPoint> | null>(null);
   const infoWindowRef = useRef<any>(null);
   const debouncedIdleRef = useRef<any>(null);
@@ -188,6 +202,7 @@ export function NetworkExplorerPage() {
   useEffect(() => {
     setSelectedGatewayId('ALL');
     setSelectedEntity(null);
+    setCoverageGatewayId(null);
   }, [siteId]);
 
   useEffect(() => {
@@ -195,27 +210,41 @@ export function NetworkExplorerPage() {
   }, [debouncedSearch, siteId, selectedGatewayId, statusFilter, tableTab, tablePageSize]);
 
   const gatewayById = useMemo(() => new Map(gateways.map((g) => [g.gatewayId, g])), [gateways]);
+  const focusGateway = coverageGatewayId ? gatewayById.get(coverageGatewayId) ?? null : null;
+  const focusId = focusGateway?.gatewayId ?? null;
+  // what the open gateway reaches, from every meter with a position (the page's filters do not narrow it)
+  const reach = useMemo(() => (focusGateway ? computeGatewayReach(points, focusGateway) : null), [points, focusGateway]);
+  // choosing a gateway in the picker opens its coverage too
+  useEffect(() => {
+    if (selectedGatewayId !== 'ALL') setCoverageGatewayId(selectedGatewayId);
+  }, [selectedGatewayId]);
+  // each gateway starts at the radius stored for it; the slider only changes what is drawn and counted
+  useEffect(() => {
+    const gw = focusId ? gatewayById.get(focusId) : null;
+    if (gw) setRadiusM(defaultRadius(gw));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId]);
   const gatewayName = useCallback((id: string | null) => (id ? (gatewayById.has(id) ? gatewayLabel(gatewayById.get(id)!) : id) : dash), [gatewayById]);
   const siteName = useMemo(() => new Map(sites.map((s) => [Number(s.id), s.name])), [sites]);
 
   // ---- what is shown ----
   const filteredGateways = useMemo(() => {
-    const q = debouncedSearch.toLowerCase();
+    const q = mapSearch.toLowerCase();
     return gateways.filter((g) => {
       if (selectedGatewayId !== 'ALL' && g.gatewayId !== selectedGatewayId) return false;
       if (!q) return true;
       return g.gatewayId.includes(q) || gatewayLabel(g).toLowerCase().includes(q);
     });
-  }, [gateways, selectedGatewayId, debouncedSearch]);
+  }, [gateways, selectedGatewayId, mapSearch]);
 
   const filteredPoints = useMemo(
     () =>
       points.filter((p) => {
         if (selectedGatewayId !== 'ALL' && p.gatewayId !== selectedGatewayId) return false;
         if (statusFilter !== 'ALL' && p.status !== statusFilter) return false;
-        return matchesSearch(p, debouncedSearch);
+        return matchesSearch(p, mapSearch);
       }),
-    [points, selectedGatewayId, statusFilter, debouncedSearch]
+    [points, selectedGatewayId, statusFilter, mapSearch]
   );
 
   // ---- opening a meter: instantly from what the map knows, then completed from the server ----
@@ -294,7 +323,7 @@ export function NetworkExplorerPage() {
       mapTypeId: 'roadmap',
       mapTypeControl: true,
       streetViewControl: false,
-      fullscreenControl: true,
+      fullscreenControl: false, // the toolbar has its own full screen button (it keeps the toolbar and panels)
       zoomControl: true,
       gestureHandling: 'greedy',
       styles: [
@@ -340,6 +369,21 @@ export function NetworkExplorerPage() {
     });
   }, [isLoaded]);
 
+  // Full screen: the whole explorer (toolbar, map and panels), not only the map canvas
+  useEffect(() => {
+    const onChange = () => {
+      setIsFullscreen(document.fullscreenElement === pageRef.current);
+      const google = (window as any).google;
+      if (mapInstanceRef.current && google?.maps) setTimeout(() => google.maps.event.trigger(mapInstanceRef.current, 'resize'), 120);
+    };
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void pageRef.current?.requestFullscreen?.().catch(() => undefined);
+  };
+
   // Redraw the canvas when the map tab comes back
   useEffect(() => {
     if (activeView === 'map' && mapInstanceRef.current && (window as any).google?.maps) {
@@ -375,14 +419,14 @@ export function NetworkExplorerPage() {
   const lastSearchRef = useRef('');
   useEffect(() => {
     const previous = lastSearchRef.current;
-    lastSearchRef.current = debouncedSearch;
-    if (!isLoaded || !mapInstanceRef.current || previous === debouncedSearch) return;
+    lastSearchRef.current = mapSearch;
+    if (!isLoaded || !mapInstanceRef.current || previous === mapSearch) return;
     const r = shownRef.current;
-    const box = debouncedSearch
+    const box = mapSearch
       ? unionBounds(trimmedBounds(r.filteredPoints, 0), trimmedBounds(r.filteredGateways, 0))
       : unionBounds(trimmedBounds(r.points), trimmedBounds(r.gateways));
     if (box) fitMapTo(box);
-  }, [debouncedSearch, isLoaded, fitMapTo]);
+  }, [mapSearch, isLoaded, fitMapTo]);
 
   // Gateways and their coverage
   useEffect(() => {
@@ -406,12 +450,13 @@ export function NetworkExplorerPage() {
       });
       marker.addListener('click', () => {
         setSelectedEntity({ type: 'gateway', data: gw });
+        setCoverageGatewayId(gw.gatewayId);
         infoWindowRef.current?.close();
       });
       markersRef.current.push(marker);
 
       // The circle is the gateway's stored coverage radius, drawn at its true size
-      if (showCircles && gw.radiusM) {
+      if (showCircles && gw.radiusM && gw.gatewayId !== coverageGatewayId) {
         const degraded = gw.status === 'degraded';
         const circle = new google.maps.Circle({
           strokeColor: degraded ? '#F59E0B' : '#2563EB',
@@ -425,12 +470,76 @@ export function NetworkExplorerPage() {
         });
         circle.addListener('click', () => {
           setSelectedEntity({ type: 'gateway', data: gw });
+          setCoverageGatewayId(gw.gatewayId);
           infoWindowRef.current?.close();
         });
         circlesRef.current.push(circle);
       }
     });
-  }, [isLoaded, filteredGateways, showGateways, showCircles]);
+  }, [isLoaded, filteredGateways, showGateways, showCircles, coverageGatewayId]);
+
+  // The open gateway's radius circle: drawn at the chosen radius, redrawn as the slider moves, and the map goes to it once
+  // when a gateway is opened (not on every slider step, which would fight the user's own panning)
+  useEffect(() => {
+    const google = (window as any).google;
+    if (!isLoaded || !mapInstanceRef.current || !google?.maps) return;
+    if (!focusGateway) {
+      focusCircleRef.current?.setMap(null);
+      focusCircleRef.current = null;
+      storedCircleRef.current?.setMap(null);
+      storedCircleRef.current = null;
+      return;
+    }
+    // the actual radius: a fixed dashed ring, there as long as the gateway is open (none when no radius is stored for it)
+    if (focusGateway.radiusM) {
+      if (!storedCircleRef.current) {
+        storedCircleRef.current = new google.maps.Circle({
+          strokeColor: '#F59E0B',
+          strokeOpacity: 0.95,
+          strokeWeight: 2,
+          fillOpacity: 0,
+          map: mapInstanceRef.current,
+          clickable: false,
+          zIndex: 2,
+        });
+      }
+      storedCircleRef.current.setCenter({ lat: focusGateway.lat, lng: focusGateway.lng });
+      storedCircleRef.current.setRadius(focusGateway.radiusM);
+    } else {
+      storedCircleRef.current?.setMap(null);
+      storedCircleRef.current = null;
+    }
+    if (!focusCircleRef.current) {
+      focusCircleRef.current = new google.maps.Circle({
+        strokeColor: '#2563EB',
+        strokeOpacity: 0.9,
+        strokeWeight: 2,
+        fillColor: '#3B82F6',
+        fillOpacity: 0.1,
+        map: mapInstanceRef.current,
+        clickable: false,
+        zIndex: 1,
+      });
+    }
+    focusCircleRef.current.setCenter({ lat: focusGateway.lat, lng: focusGateway.lng });
+    focusCircleRef.current.setRadius(radiusM);
+  }, [isLoaded, focusGateway, radiusM, activeView]);
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const gw = focusId ? gatewayById.get(focusId) : null;
+    if (!gw || !map) return;
+    // the box around the gateway's stored radius (a degree is about 111 km); computed here, as the radius state is still
+    // being reset to this gateway's own value when this effect runs
+    const r = defaultRadius(gw);
+    const dLat = r / 111320;
+    const dLng = r / (111320 * Math.max(0.1, Math.cos((gw.lat * Math.PI) / 180)));
+    map.fitBounds({ north: gw.lat + dLat, south: gw.lat - dLat, east: gw.lng + dLng, west: gw.lng - dLng }, 40);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId]);
+  useEffect(() => () => {
+    focusCircleRef.current?.setMap(null);
+    storedCircleRef.current?.setMap(null);
+  }, []);
 
   // Meters: one canvas layer (no marker per meter), so the map stays smooth at any zoom
   const meterItems = useMemo<LayerItem<MeterPoint>[]>(
@@ -463,6 +572,7 @@ export function NetworkExplorerPage() {
 
   const placeGateway = (id: string) => {
     setSelectedGatewayId(id);
+    setCoverageGatewayId(id);
     const gw = gateways.find((g) => g.gatewayId === id);
     if (gw && mapInstanceRef.current) {
       mapInstanceRef.current.panTo({ lat: gw.lat, lng: gw.lng });
@@ -473,44 +583,42 @@ export function NetworkExplorerPage() {
   const siteLabel = (id: number | null) => (id == null ? null : siteName.get(id) ?? null);
 
   return (
-    <div className="gis-container">
+    <div className="gis-container" ref={pageRef}>
       {/* Top Floating Control Bar */}
       <div className="gis-toolbar">
         <div className="gis-toolbar-left">
           <div className="gis-title-badge">
             <Radio size={16} className="gis-title-icon" />
             <span>Network Explorer</span>
-            {summary ? (
-              <span
-                style={{
-                  fontSize: 10,
-                  fontWeight: 600,
-                  background: 'rgba(16, 185, 129, 0.12)',
-                  color: '#059669',
-                  border: '1px solid rgba(16, 185, 129, 0.3)',
-                  padding: '2px 7px',
-                  borderRadius: 12,
-                  letterSpacing: '0.04em',
-                }}
-                title={data.latestFrameAt ? `Newest frame received ${fmtTime(data.latestFrameAt)}` : 'No frames received yet'}
-              >
-                {summary.total.toLocaleString()} METERS
-              </span>
-            ) : data.isLoading ? (
+            {!summary && data.isLoading ? (
               <span style={{ fontSize: 10, color: '#64748B', background: '#F1F5F9', padding: '2px 6px', borderRadius: 10 }}>Loading…</span>
             ) : null}
           </div>
 
-          <div className="gis-search-wrap">
-            <Search size={13} className="gis-search-icon" />
-            <input
-              type="text"
-              className="gis-search-input"
-              placeholder={activeView === 'table' ? 'Search meter, consumer, locality…' : 'Search meter ID or gateway…'}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
+          <MeterSearchBox
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder={activeView === 'table' ? 'Search meter, consumer, locality…' : 'Search meter ID or consumer ID…'}
+            siteId={siteId}
+            points={points}
+            onSubmit={setMapSearch}
+            onPick={(sg) => {
+              setSearchQuery(sg.meterId);
+              setMapSearch('');
+              const p = points.find((x) => x.meterId === sg.meterId);
+              if (!p) {
+                setActiveView('table'); // no position: the table lists it (and the server search finds it)
+                return;
+              }
+              setActiveView('map');
+              const map = mapInstanceRef.current;
+              if (map) {
+                map.panTo({ lat: p.lat, lng: p.lng });
+                map.setZoom(Math.max(map.getZoom() ?? 0, 18));
+              }
+              void openMeter(p);
+            }}
+          />
 
           <SiteTreeSelect sites={sites} value={siteId} onChange={setSiteId} />
 
@@ -568,6 +676,15 @@ export function NetworkExplorerPage() {
               Performance
             </button>
           </div>
+          <button
+            className="gis-layer-btn gis-fullscreen-btn"
+            onClick={toggleFullscreen}
+            title={isFullscreen ? 'Leave full screen (Esc)' : 'Show the explorer full screen'}
+            aria-pressed={isFullscreen}
+          >
+            {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            <span>{isFullscreen ? 'Exit full screen' : 'Full screen'}</span>
+          </button>
         </div>
       </div>
 
@@ -611,8 +728,21 @@ export function NetworkExplorerPage() {
           )}
         </div>
 
+        {/* Bottom left: the open gateway's nearest / farthest meter, above the legend */}
+        <div className="gis-map-bottom-left">
+          {focusGateway && reach && (
+            <GatewayRangeCards
+              reach={reach}
+              onOpenMeter={(id) => {
+                const p = points.find((x) => x.meterId === id);
+                if (!p) return;
+                mapInstanceRef.current?.panTo({ lat: p.lat, lng: p.lng });
+                void openMeter(p);
+              }}
+            />
+          )}
         {/* Legend */}
-        <div style={{ position: 'absolute', bottom: 20, left: 20, zIndex: 5 }}>
+        <div>
           {!isLegendOpen ? (
             <button
               onClick={() => setIsLegendOpen(true)}
@@ -681,6 +811,7 @@ export function NetworkExplorerPage() {
             </div>
           )}
         </div>
+        </div>
 
         {/* What the map is showing right now */}
         <div className="gis-map-perf-pill">
@@ -691,6 +822,19 @@ export function NetworkExplorerPage() {
           <span className="gis-perf-divider">•</span>
           <span>Zoom {mapZoom}</span>
         </div>
+
+        {/* What the open gateway reaches: radius, nearest / farthest meter, what a radius would cover */}
+        {/* Top of the map: the coverage strip, and right below it the gateway card */}
+        <div className="gis-map-top">
+        {focusGateway && reach && (
+          <GatewayCoveragePanel
+            gateway={focusGateway}
+            reach={reach}
+            radiusM={radiusM}
+            onRadiusChange={setRadiusM}
+            onClose={() => setCoverageGatewayId(null)}
+          />
+        )}
 
         {/* Gateway Inspector Drawer */}
         {selectedEntity?.type === 'gateway' && (
@@ -718,7 +862,7 @@ export function NetworkExplorerPage() {
               <div className="gis-kv-row">
                 <span className="gis-k">Meters heard</span>
                 <span className="gis-v">
-                  {selectedEntity.data.metersHeard.toLocaleString()} ({selectedEntity.data.liveMeters.toLocaleString()} live)
+                  {selectedEntity.data.metersHeard.toLocaleString()} ({selectedEntity.data.liveMeters.toLocaleString()} connected)
                 </span>
               </div>
               <div className="gis-kv-row">
@@ -752,6 +896,7 @@ export function NetworkExplorerPage() {
             </button>
           </div>
         )}
+        </div>
 
         {/* Nothing could be loaded: say so instead of showing an empty map */}
         {!loadError && failedCompletely && (
@@ -966,7 +1111,7 @@ export function NetworkExplorerPage() {
                 <div className="gis-kv-row"><span className="gis-k">Gateway ID</span><span className="gis-v">{gw.gatewayId}</span></div>
                 <div className="gis-kv-row"><span className="gis-k">Location</span><span className="gis-v">{gw.lat.toFixed(4)}, {gw.lng.toFixed(4)}</span></div>
                 <div className="gis-kv-row"><span className="gis-k">Coverage radius</span><span className="gis-v">{gw.radiusM ? `${gw.radiusM} m` : dash}</span></div>
-                <div className="gis-kv-row"><span className="gis-k">Meters heard</span><span className="gis-v">{gw.metersHeard.toLocaleString()} ({gw.liveMeters.toLocaleString()} live)</span></div>
+                <div className="gis-kv-row"><span className="gis-k">Meters heard</span><span className="gis-v">{gw.metersHeard.toLocaleString()} ({gw.liveMeters.toLocaleString()} connected)</span></div>
                 <div className="gis-kv-row"><span className="gis-k">Avg link quality</span><span className="gis-v">{fmtNum(gw.avgRssi, 'dBm')} · SNR {fmtNum(gw.avgSnr, 'dB')}</span></div>
                 <div className="gis-kv-row"><span className="gis-k">Last frame</span><span className="gis-v">{fmtTime(gw.lastFrameAt)}</span></div>
                 <button
@@ -1005,7 +1150,7 @@ export function NetworkExplorerPage() {
                       <span className={`cw-badge ${gatewayBadgeClass(gw.status)}`}>{GATEWAY_STATUS_LABEL[gw.status]}</span>
                     </div>
                     <div className="gis-kv-row"><span className="gis-k">Why</span><span className="gis-v">{gw.reason === 'no-geofence' ? 'No location stored' : 'Stored location unusable'}</span></div>
-                    <div className="gis-kv-row"><span className="gis-k">Meters heard</span><span className="gis-v">{gw.metersHeard.toLocaleString()} ({gw.liveMeters.toLocaleString()} live)</span></div>
+                    <div className="gis-kv-row"><span className="gis-k">Meters heard</span><span className="gis-v">{gw.metersHeard.toLocaleString()} ({gw.liveMeters.toLocaleString()} connected)</span></div>
                     <div className="gis-kv-row"><span className="gis-k">Avg link quality</span><span className="gis-v">{fmtNum(gw.avgRssi, 'dBm')} · SNR {fmtNum(gw.avgSnr, 'dB')}</span></div>
                     <div className="gis-kv-row"><span className="gis-k">Last frame</span><span className="gis-v">{fmtTime(gw.lastFrameAt)}</span></div>
                   </div>

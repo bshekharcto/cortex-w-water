@@ -12,8 +12,12 @@ import type { NetGatewaysResponse, NetMeterMapResponse } from '@/services/api/ne
 const DB_NAME = 'cortex_w_network_cache';
 const STORE = 'snapshots';
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// Bump when the shape of the saved data changes: an older copy (e.g. with the live / stale / silent meter statuses) is
+// thrown away instead of drawn. v2: meter statuses are connected / disconnected / never. v3: map rows carry the site, and the unpositioned counts.
+const SCHEMA = 3;
 
 export interface NetworkSnapshot {
+  schema?: number;
   owner: string;
   savedAt: number;
   siteId: string;
@@ -71,7 +75,7 @@ export async function loadSnapshot(siteId: string): Promise<NetworkSnapshot | nu
   try {
     const snap = (await run<NetworkSnapshot>(db, 'readonly', (s) => s.get(siteId))) ?? null;
     if (!snap) return null;
-    if (snap.owner !== owner || Date.now() - snap.savedAt > MAX_AGE_MS) {
+    if (snap.schema !== SCHEMA || snap.owner !== owner || Date.now() - snap.savedAt > MAX_AGE_MS) {
       await run(db, 'readwrite', (s) => s.delete(siteId));
       return null;
     }
@@ -87,7 +91,7 @@ export async function saveSnapshot(siteId: string, gateways: NetGatewaysResponse
   const db = await open();
   if (!db) return;
   try {
-    await run(db, 'readwrite', (s) => s.put({ owner, savedAt: Date.now(), siteId, gateways, map } satisfies NetworkSnapshot));
+    await run(db, 'readwrite', (s) => s.put({ schema: SCHEMA, owner, savedAt: Date.now(), siteId, gateways, map } satisfies NetworkSnapshot));
   } finally {
     db.close();
   }

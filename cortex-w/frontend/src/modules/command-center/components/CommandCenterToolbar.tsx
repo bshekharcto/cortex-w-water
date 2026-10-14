@@ -77,13 +77,13 @@ export function CommandCenterToolbar({
           </div>
 
           <div className="cc-time-group">
-            {(['1H', '6H', '24H', '7D', '30D', 'CUSTOM'] as TimeWindow[]).map((t) => (
+            {(['1H', '6H', 'TODAY', '7D', '30D', 'CUSTOM'] as TimeWindow[]).map((t) => (
               <button
                 key={t}
                 className={`cc-time-btn ${timeRange === t ? 'cc-time-btn--active' : ''}`}
                 onClick={() => onTimeRangeChange(t)}
               >
-                {t}
+                {t === 'TODAY' ? 'Today' : t === 'CUSTOM' ? 'Custom' : t}
               </button>
             ))}
           </div>

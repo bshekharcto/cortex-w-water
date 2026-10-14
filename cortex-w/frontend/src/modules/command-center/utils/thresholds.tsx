@@ -6,14 +6,16 @@ import type { NetworkHealthThresholds } from '../types/commandCenter.types';
 export const DEFAULT_THRESHOLDS: NetworkHealthThresholds = {
   gatewayStaleMinutes: 24 * 60,
   gatewayCriticalMinutes: 48 * 60,
-  meterStaleMinutes: 24 * 60,
-  meterCriticalHours: 48,
+  meterConnectedHours: 7 * 24,
   gatewayTrafficDropWarningPct: 30,
   gatewayTrafficDropCriticalPct: 60,
   rssiWeakDbm: -95,
   rssiCriticalDbm: -105,
   snrWeakDb: -10,
   snrCriticalDb: -18,
+  avgRssiDegradedDbm: -105,
+  avgSnrDegradedDb: -15,
+  knownGatewayDays: 30,
   trendMinPrevFrames: 20,
   trendsEnabled: false,
   rssiBands: { strong: -80, good: -90, weak: -100 },
@@ -35,7 +37,7 @@ export const isWeakRssi = (t: NetworkHealthThresholds | null, v: number | null |
 export const isPoorSnr = (t: NetworkHealthThresholds | null, v: number | null | undefined) =>
   !!t && v != null && v < t.snrWeakDb;
 
-// Human label for the selected window ("6H", "today", "Custom range"), so headings never claim the wrong window when it isn't.
+// Human label for the selected window ("Today", "7D", "Custom range"), so headings never claim the wrong window when it isn't.
 const WindowLabelContext = createContext<string>('selected window');
 
 export function WindowLabelProvider({ value, children }: { value: string; children: ReactNode }) {
