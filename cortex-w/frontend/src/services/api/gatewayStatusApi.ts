@@ -58,14 +58,24 @@ export interface GatewayTimeline {
   status: GatewayState | null;
   lastSeenAt: string | null;
   historyAvailableFrom: string | null;
-  shortInterruptions: number | null;
   range: GatewayRange & { startAt: string; endAt: string };
   generatedAt: string;
   segments: TimelineSegment[];
   heartbeatDays: Array<{ date: string; received: number; expected: number }>;
 }
 
+/** The four quick ranges, all from one call, so switching between them needs no wait. */
+export type PresetKey = '1D' | '3D' | '7D' | '14D';
+export interface PresetBundle<T> {
+  generatedAt: string;
+  ranges: Record<PresetKey, T>;
+}
+
 export const gatewayStatusApi = {
+  presets: (endDate: string, timeZone: string, signal?: AbortSignal) =>
+    apiRequest<PresetBundle<ConnectivityReport>>('/gateway-status/presets', { query: { endDate, timeZone }, signal }),
+  timelinePresets: (gatewayId: string, endDate: string, timeZone: string, signal?: AbortSignal) =>
+    apiRequest<PresetBundle<GatewayTimeline>>(`/gateway-status/${encodeURIComponent(gatewayId)}/timeline-presets`, { query: { endDate, timeZone }, signal }),
   report: (range: GatewayRange, signal?: AbortSignal) =>
     apiRequest<ConnectivityReport>('/gateway-status', { query: { ...range }, signal }),
   timeline: (gatewayId: string, range: GatewayRange, signal?: AbortSignal) =>

@@ -4,7 +4,7 @@ import { RadioTower, RefreshCw, Search } from 'lucide-react';
 import clsx from 'clsx';
 import { gatewayStatusApi, type GatewayConnectivity, type GatewayRange, type GatewayState } from '@/services/api/gatewayStatusApi';
 import { useGatewayLoad } from '../useGatewayLoad';
-import { filterGateways, fmtDateTime, rangeFromParams, rangeToParams } from '../gatewayStatusModel';
+import { filterGateways, fmtDateTime, presetOf, rangeFromParams, rangeToParams, todayIn } from '../gatewayStatusModel';
 import { GatewayStatusTable } from '../components/GatewayStatusTable';
 import { GatewayMapDialog } from '../components/GatewayMapDialog';
 import { RangeControls } from '../components/RangeControls';
@@ -29,8 +29,20 @@ export function GatewayStatusPage() {
   const [search, setSearch] = useState('');
   const [mapFor, setMapFor] = useState<GatewayConnectivity | null>(null);
 
-  const key = `${range.startDate}|${range.endDate}`;
-  const { data, loading, refreshing, error, reload } = useGatewayLoad(key, (signal) => gatewayStatusApi.report(range, signal), REFRESH_MS);
+  // 1D / 3D / 7D / 14D are all fetched together the moment the page opens (one upstream call), so switching between
+  // them is instant; only a hand-picked range has to be asked for.
+  const preset = presetOf(range);
+  const today = todayIn(range.timeZone);
+  const bundle = useGatewayLoad(`presets|${today}`, (signal) => gatewayStatusApi.presets(today, range.timeZone, signal), REFRESH_MS);
+  const custom = useGatewayLoad(`${range.startDate}|${range.endDate}`, (signal) => gatewayStatusApi.report(range, signal), REFRESH_MS, preset === null);
+  const active = preset ? bundle : custom;
+  const data = preset ? bundle.data?.ranges[preset] ?? null : custom.data;
+  const { loading, error } = active;
+  const refreshing = bundle.refreshing || custom.refreshing;
+  const reload = () => {
+    bundle.reload();
+    custom.reload();
+  };
 
   const rows = useMemo(() => filterGateways(data?.gateways ?? [], state, search), [data, state, search]);
 

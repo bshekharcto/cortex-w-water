@@ -3,6 +3,7 @@ import type { GatewayConnectivity, GatewayTimeline } from '@/services/api/gatewa
 import {
   addMonths,
   axisTicks,
+  DATA_AVAILABLE_FROM,
   clampView,
   computeTimelineStats,
   dataExtent,
@@ -40,6 +41,17 @@ describe('ranges', () => {
     expect(presetRange('1D', Date.parse('2026-10-14T23:00:00Z')).endDate).toBe('2026-10-15');
   });
 
+  it('never reaches back before the data begins (1 Oct 2026)', () => {
+    expect(DATA_AVAILABLE_FROM).toBe('2026-10-01');
+    const early = Date.parse('2026-10-04T05:00:00Z');
+    expect(presetRange('14D', early)).toMatchObject({ startDate: '2026-10-01', endDate: '2026-10-04' });
+    expect(presetRange('3D', early)).toMatchObject({ startDate: '2026-10-02', endDate: '2026-10-04' });
+    // (on those first days 7D and 14D are the same shortened range, so the buttons cannot tell them apart; not a concern from 14 Oct on)
+    // an address reaching further back is cut to the data; one wholly before it is ignored
+    expect(rangeFromParams(new URLSearchParams('start=2026-09-20&end=2026-10-05'), NOW)).toMatchObject({ startDate: '2026-10-01', endDate: '2026-10-05' });
+    expect(rangeFromParams(new URLSearchParams('start=2026-09-01&end=2026-09-20'), NOW)).toEqual(presetRange('1D', NOW));
+  });
+
   it('a range that matches a preset lights it up; a hand-picked one does not', () => {
     expect(presetOf(presetRange('7D', NOW), NOW)).toBe('7D');
     expect(presetOf({ startDate: '2026-10-01', endDate: '2026-10-09', timeZone: 'Asia/Kolkata' }, NOW)).toBeNull();
@@ -50,7 +62,7 @@ describe('ranges', () => {
       const r = presetRange(p, NOW);
       expect(rangeFromParams(new URLSearchParams(rangeToParams(r, NOW)), NOW)).toEqual(r);
     }
-    const custom = { startDate: '2026-09-01', endDate: '2026-09-09', timeZone: 'Asia/Kolkata' };
+    const custom = { startDate: '2026-10-02', endDate: '2026-10-09', timeZone: 'Asia/Kolkata' };
     expect(rangeFromParams(new URLSearchParams(rangeToParams(custom, NOW)), NOW)).toEqual(custom);
     expect(rangeToParams(presetRange('1D', NOW), NOW)).toEqual({});
     expect(rangeFromParams(new URLSearchParams('start=nope&end=2026-10-01'), NOW)).toEqual(presetRange('1D', NOW));
@@ -131,7 +143,6 @@ const timeline = (over: Partial<GatewayTimeline> = {}): GatewayTimeline => ({
   status: 'online',
   lastSeenAt: '2026-10-15T03:15:29.557Z',
   historyAvailableFrom: null,
-  shortInterruptions: 0,
   range: { startDate: '2026-10-15', endDate: '2026-10-15', timeZone: 'Asia/Kolkata', startAt: '2026-10-14T18:30:00.000Z', endAt: '2026-10-15T18:30:00.000Z' },
   generatedAt: '2026-10-15T03:17:03.000Z',
   segments: [
@@ -257,12 +268,19 @@ describe('calendar', () => {
     expect(pickDay({ start: '2026-10-02', end: '2026-10-09' }, '2026-10-12')).toEqual({ start: '2026-10-12', end: null });
   });
 
+  it('days before the data begins cannot be picked', () => {
+    expect(dayPickable('2026-09-30', null, '2026-10-15')).toBe(false);
+    expect(dayPickable('2026-10-01', null, '2026-10-15')).toBe(true);
+    expect(dayPickable('2026-09-30', { start: '2026-10-05', end: null }, '2026-10-15')).toBe(false);
+  });
+
   it('future days and days that would make the range too long cannot be picked', () => {
     expect(dayPickable('2026-10-16', null, '2026-10-15')).toBe(false);
     expect(dayPickable('2026-10-15', null, '2026-10-15')).toBe(true);
     const half = { start: '2026-10-15', end: null };
-    expect(dayPickable('2026-07-16', half, '2026-10-15')).toBe(true); // exactly 92 days
-    expect(dayPickable('2026-07-15', half, '2026-10-15')).toBe(false); // 93
-    expect(dayPickable('2026-07-01', { start: '2026-10-15', end: '2026-10-15' }, '2026-10-15')).toBe(true); // a finished range: any day starts a new one
+    const anyTime = '2000-01-01'; // the limit is tested apart from the start of the data
+    expect(dayPickable('2026-07-16', half, '2026-10-15', anyTime)).toBe(true); // exactly 92 days
+    expect(dayPickable('2026-07-15', half, '2026-10-15', anyTime)).toBe(false); // 93
+    expect(dayPickable('2026-10-05', { start: '2026-10-15', end: '2026-10-15' }, '2026-10-15')).toBe(true); // a finished range: any day starts a new one
   });
 });

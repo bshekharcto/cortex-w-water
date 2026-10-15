@@ -14,9 +14,11 @@ import {
   fmtInt,
   fmtPercent,
   offlinePeriods,
+  presetOf,
   rangeFromParams,
   rangeToParams,
   reasonLabel,
+  todayIn,
   viewAround,
   type View,
 } from '../gatewayStatusModel';
@@ -40,11 +42,24 @@ export function GatewayTimelinePage() {
   const validId = EUI.test(gatewayId);
 
   const key = `${gatewayId}|${range.startDate}|${range.endDate}`;
-  const { data, loading, error, reload } = useGatewayLoad(
-    key,
-    (signal) => (validId ? gatewayStatusApi.timeline(gatewayId, range, signal) : Promise.reject({ status: 404, operatorMessage: 'That is not a gateway id.' })),
-    REFRESH_MS
+  // Like the list: the four quick ranges of this gateway come together in one call, so switching needs no wait.
+  const preset = presetOf(range);
+  const today = todayIn(range.timeZone);
+  const bundle = useGatewayLoad(
+    `${gatewayId}|presets|${today}`,
+    (signal) => gatewayStatusApi.timelinePresets(gatewayId, today, range.timeZone, signal),
+    REFRESH_MS,
+    validId
   );
+  const custom = useGatewayLoad(key, (signal) => gatewayStatusApi.timeline(gatewayId, range, signal), REFRESH_MS, validId && preset === null);
+  const active = preset ? bundle : custom;
+  const data = preset ? bundle.data?.ranges[preset] ?? null : custom.data;
+  const loading = validId && active.loading;
+  const error = active.error;
+  const reload = () => {
+    bundle.reload();
+    custom.reload();
+  };
 
   const full: View | null = useMemo(
     () => (data ? { from: Date.parse(data.range.startAt), to: Date.parse(data.range.endAt) } : null),

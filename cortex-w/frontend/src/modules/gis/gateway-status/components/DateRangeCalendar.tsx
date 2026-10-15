@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
-import { addMonths, dayPickable, daysBetween, monthGrid, monthLabel, monthOf, pickDay, type DayPick } from '../gatewayStatusModel';
+import { DATA_AVAILABLE_FROM, addMonths, dayPickable, daysBetween, monthGrid, monthLabel, monthOf, pickDay, type DayPick } from '../gatewayStatusModel';
 
 interface DateRangeCalendarProps {
   /** The range in force: it is shown highlighted until a new one is started. */
@@ -26,11 +26,12 @@ export function DateRangeCalendar({ value, today, pick, onChange }: DateRangeCal
     : value;
 
   const canNext = addMonths(month, 1) <= monthOf(today);
+  const canPrev = month > monthOf(DATA_AVAILABLE_FROM);
 
   return (
     <div className="gs-cal">
       <div className="gs-cal-head">
-        <button type="button" className="cw-icon-btn" onClick={() => setMonth(addMonths(month, -1))} aria-label="Previous month"><ChevronLeft size={16} /></button>
+        <button type="button" className="cw-icon-btn" onClick={() => setMonth(addMonths(month, -1))} disabled={!canPrev} aria-label="Previous month"><ChevronLeft size={16} /></button>
         <span className="gs-cal-month" aria-live="polite">{monthLabel(month)}</span>
         <button type="button" className="cw-icon-btn" onClick={() => setMonth(addMonths(month, 1))} disabled={!canNext} aria-label="Next month"><ChevronRight size={16} /></button>
       </div>

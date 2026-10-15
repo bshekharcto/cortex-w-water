@@ -6,8 +6,11 @@ import {
   BadRangeError,
   fetchConnectivityReport,
   fetchGatewayTimeline,
+  fetchReportPresets,
+  fetchTimelinePresets,
   parseRange,
   type ConnectivityReport,
+  type PresetBundle,
 } from '../services/gatewayConnectivity.js';
 import { UpstreamError } from '../services/upstreamProxy.js';
 
@@ -19,6 +22,7 @@ const router = Router();
 const EUI = /^[0-9a-f]{16}$/i;
 
 const reportsInFlight = new Map<string, Promise<ConnectivityReport>>();
+const presetsInFlight = new Map<string, Promise<PresetBundle<ConnectivityReport>>>();
 
 function fail(res: Response, what: string, err: unknown) {
   if (err instanceof BadRangeError) return res.status(400).json({ error: err.message });
@@ -45,6 +49,24 @@ function liveClient(res: Response) {
 }
 
 /**
+ * GET /api/gateway-status/presets?endDate=YYYY-MM-DD&timeZone=Asia/Kolkata
+ * The report for 1D, 3D, 7D and 14D ending on endDate (normally today), from one upstream call, so the page can switch
+ * between them without waiting.
+ */
+router.get('/presets', async (req, res) => {
+  const client = liveClient(res);
+  if (!client) return;
+  try {
+    const { endDate, timeZone } = parseRange(req.query.endDate, req.query.endDate, req.query.timeZone);
+    const key = `${client.key}|${endDate}|${timeZone}`;
+    privateNoCache(res);
+    res.json(await singleFlight(presetsInFlight, key, () => fetchReportPresets(client.token, endDate, timeZone)));
+  } catch (err) {
+    fail(res, 'load gateway status', err);
+  }
+});
+
+/**
  * GET /api/gateway-status?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&timeZone=Asia/Kolkata
  * Every gateway with its current state and connectivity over the days asked for.
  */
@@ -58,6 +80,27 @@ router.get('/', async (req, res) => {
     res.json(await singleFlight(reportsInFlight, key, () => fetchConnectivityReport(client.token, range)));
   } catch (err) {
     fail(res, 'load gateway status', err);
+  }
+});
+
+/**
+ * GET /api/gateway-status/:gatewayId/timeline-presets?endDate=&timeZone=
+ * One gateway's timeline for 1D, 3D, 7D and 14D, from one upstream call.
+ */
+router.get('/:gatewayId/timeline-presets', async (req, res) => {
+  const client = liveClient(res);
+  if (!client) return;
+  const gatewayId = req.params.gatewayId;
+  if (!EUI.test(gatewayId)) return res.status(400).json({ error: 'gatewayId must be a 16-character gateway id' });
+  try {
+    const { endDate, timeZone } = parseRange(req.query.endDate, req.query.endDate, req.query.timeZone);
+    privateNoCache(res);
+    res.json(await fetchTimelinePresets(client.token, gatewayId.toLowerCase(), endDate, timeZone));
+  } catch (err) {
+    if (err instanceof UpstreamError && (err.upstreamStatus === 403 || err.upstreamStatus === 404)) {
+      return res.status(404).json({ error: 'Unknown gateway' });
+    }
+    fail(res, 'load the gateway timeline', err);
   }
 });
 

@@ -8,6 +8,8 @@ export const RANGE_PRESETS: RangePreset[] = ['1D', '3D', '7D', '14D'];
 const PRESET_DAYS: Record<RangePreset, number> = { '1D': 1, '3D': 3, '7D': 7, '14D': 14 };
 /** The backend refuses anything longer. */
 export const MAX_RANGE_DAYS = 92;
+/** The first day there is any data for: earlier days cannot be picked (and the backend refuses them). */
+export const DATA_AVAILABLE_FROM = '2026-10-01';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY_MS = 86_400_000;
@@ -27,10 +29,11 @@ export function daysBetween(startDate: string, endDate: string): number {
   return Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / DAY_MS) + 1;
 }
 
-/** 1D is today so far; 3D / 7D / 14D end today as well. */
+/** 1D is today so far; 3D / 7D / 14D end today as well, and never reach back before the data begins. */
 export function presetRange(preset: RangePreset, now = Date.now(), timeZone = GATEWAY_TIME_ZONE): GatewayRange {
   const endDate = todayIn(timeZone, now);
-  return { startDate: addDays(endDate, 1 - PRESET_DAYS[preset]), endDate, timeZone };
+  const startDate = addDays(endDate, 1 - PRESET_DAYS[preset]);
+  return { startDate: startDate < DATA_AVAILABLE_FROM ? DATA_AVAILABLE_FROM : startDate, endDate, timeZone };
 }
 
 /** The preset a range happens to be (so its button lights up), or null for a hand-picked one. */
@@ -49,8 +52,8 @@ function validDate(s: string | null): s is string {
 export function rangeFromParams(params: URLSearchParams, now = Date.now()): GatewayRange {
   const start = params.get('start');
   const end = params.get('end');
-  if (validDate(start) && validDate(end) && start <= end && daysBetween(start, end) <= MAX_RANGE_DAYS) {
-    return { startDate: start, endDate: end, timeZone: GATEWAY_TIME_ZONE };
+  if (validDate(start) && validDate(end) && start <= end && end >= DATA_AVAILABLE_FROM && daysBetween(start, end) <= MAX_RANGE_DAYS) {
+    return { startDate: start < DATA_AVAILABLE_FROM ? DATA_AVAILABLE_FROM : start, endDate: end, timeZone: GATEWAY_TIME_ZONE };
   }
   const preset = (params.get('range') ?? '').toUpperCase() as RangePreset;
   return presetRange(RANGE_PRESETS.includes(preset) ? preset : '1D', now);
@@ -101,9 +104,9 @@ export function pickDay(pick: DayPick | null, day: string): DayPick {
   return day < pick.start ? { start: day, end: pick.start } : { start: pick.start, end: day };
 }
 
-/** A day can be picked unless it is in the future or would stretch a half-made range past the limit. */
-export function dayPickable(day: string, pick: DayPick | null, today: string): boolean {
-  if (day > today) return false;
+/** A day can be picked unless it is in the future, before the data begins, or would stretch a half-made range past the limit. */
+export function dayPickable(day: string, pick: DayPick | null, today: string, min = DATA_AVAILABLE_FROM): boolean {
+  if (day > today || day < min) return false;
   if (pick && pick.end === null) return daysBetween(day < pick.start ? day : pick.start, day < pick.start ? pick.start : day) <= MAX_RANGE_DAYS;
   return true;
 }
