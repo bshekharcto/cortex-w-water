@@ -7,7 +7,7 @@
 import {
   LayoutDashboard, Activity, Map, RadioTower, MapPin, Users,
   ReceiptIndianRupee, BrainCircuit, BellRing, Waves, Settings, Plug,
-  ShieldCheck, Database, Gauge, Radio, Wifi,
+  ShieldCheck, Database, Gauge, Radio, Wifi, SignalHigh,
 } from 'lucide-react';
 
 export const CORTEX_ICONS = {
@@ -15,6 +15,7 @@ export const CORTEX_ICONS = {
   commandCenter: Activity,
   gis: Map,
   networkExplorer: RadioTower,
+  gatewayStatus: SignalHigh,
   gatewayPlacement: MapPin,
   households: Users,
   billing: ReceiptIndianRupee,
