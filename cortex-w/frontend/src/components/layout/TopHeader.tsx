@@ -7,6 +7,7 @@ const ROUTE_TITLES: Record<string, string> = {
   '/app/dashboard': 'Dashboard',
   '/app/command-center': 'Command Center',
   '/app/gis/network': 'Network Explorer',
+  '/app/gis/gateway-status': 'Gateway Status',
   '/app/gis/gateway-placement': 'Gateway Placement',
   '/app/consumer/households': 'Households',
   '/app/consumer/billing': 'Billing',

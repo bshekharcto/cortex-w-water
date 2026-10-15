@@ -9,6 +9,8 @@ const LoginPage = lazy(() => import('@/modules/auth/pages/LoginPage').then(m => 
 const DashboardPage = lazy(() => import('@/modules/dashboard/pages/DashboardPage').then(m => ({ default: m.DashboardPage })));
 const CommandCenterPage = lazy(() => import('@/modules/command-center/pages/CommandCenterPage').then(m => ({ default: m.CommandCenterPage })));
 const NetworkExplorerPage = lazy(() => import('@/modules/gis/network/pages/NetworkExplorerPage').then(m => ({ default: m.NetworkExplorerPage })));
+const GatewayStatusPage = lazy(() => import('@/modules/gis/gateway-status/pages/GatewayStatusPage').then(m => ({ default: m.GatewayStatusPage })));
+const GatewayTimelinePage = lazy(() => import('@/modules/gis/gateway-status/pages/GatewayTimelinePage').then(m => ({ default: m.GatewayTimelinePage })));
 const GatewayPlacementPage = lazy(() => import('@/modules/gis/gateway-placement/pages/GatewayPlacementPage').then(m => ({ default: m.GatewayPlacementPage })));
 const HouseholdListPage = lazy(() => import('@/modules/consumer/households/pages/HouseholdListPage').then(m => ({ default: m.HouseholdListPage })));
 const HouseholdDetailPage = lazy(() => import('@/modules/consumer/households/pages/HouseholdDetailPage').then(m => ({ default: m.HouseholdDetailPage })));
@@ -57,6 +59,8 @@ export function AppRouter() {
 
             {/* GIS */}
             <Route path="/app/gis/network" element={<NetworkExplorerPage />} />
+            <Route path="/app/gis/gateway-status" element={<GatewayStatusPage />} />
+            <Route path="/app/gis/gateway-status/:gatewayId" element={<GatewayTimelinePage />} />
             <Route path="/app/gis/gateway-placement" element={<GatewayPlacementPage />} />
 
             {/* CONSUMER */}

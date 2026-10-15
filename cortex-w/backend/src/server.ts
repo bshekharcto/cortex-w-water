@@ -21,6 +21,7 @@ import alarmsRoutes from "./routes/alarms.js";
 import sitesRoutes from "./routes/sites.js";
 import gisRoutes from "./routes/gis.js";
 import networkRoutes from "./routes/network.js";
+import gatewayStatusRoutes from "./routes/gatewayStatus.js";
 import dashboardRoutes from "./routes/dashboard.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -145,6 +146,9 @@ app.use("/api/gis", gisRoutes);
 
 // Network Explorer (Postgres-backed)
 app.use("/api/network", networkRoutes);
+
+// Gateway Status (live from the upstream gateway-health service)
+app.use("/api/gateway-status", gatewayStatusRoutes);
 
 // Dashboard
 app.use("/api/dashboard", dashboardRoutes);

@@ -20,6 +20,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'GIS',
     items: [
       { label: 'Network Explorer', path: '/app/gis/network', icon: 'networkExplorer' },
+      { label: 'Gateway Status', path: '/app/gis/gateway-status', icon: 'gatewayStatus' },
       { label: 'Gateway Placement', path: '/app/gis/gateway-placement', icon: 'gatewayPlacement' },
     ],
   },
