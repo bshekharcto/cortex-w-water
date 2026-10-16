@@ -89,3 +89,65 @@ export interface GatewayPlacementResult {
   gateways: GatewayCandidate[];
   computeMs?: number;
 }
+
+export type RelocationVerdict = 'keep' | 'move' | 'remove' | 'locked';
+export type RelocationStopReason =
+  | 'no-meters'
+  | 'nothing-movable'
+  | 'already-covered'
+  | 'all-covered'
+  | 'no-worthwhile-move'
+  | 'max-moves'
+  | 'all-moved';
+
+/** One existing gateway and what to do with it (see backend services/gatewayRelocation.ts). */
+export interface RelocationItem {
+  id: string;
+  lat: number;
+  lng: number;
+  working: boolean;
+  verdict: RelocationVerdict;
+  moveTo: { lat: number; lng: number; distanceM: number } | null;
+  /** Move: meters it newly reaches in the new place. */
+  newlyReached: number | null;
+  /** Move / remove: meters only this gateway reached where it stands. */
+  lost: number | null;
+  net: number | null;
+  /** The order to make the changes in (1 = the most valuable). */
+  order: number | null;
+  /** Keep / locked: meters only this gateway reaches (what the network would lose without it). */
+  onlyThisOne: number | null;
+  siteId: number | null;
+  /** Why it is locked: by the user, it stands in a site outside the selection, or it also serves meters of one. */
+  lockedReason: 'you' | 'other-site' | 'serves-other-sites' | null;
+}
+
+export interface RelocationResult {
+  siteId: string;
+  coverageRadiusM: number;
+  existingMode: 'all' | 'working';
+  metersInSelection: number;
+  totalMeters: number;
+  excludedMeterCount: number;
+  coordinatesStatus?: 'fresh' | 'stale' | 'unavailable';
+  coveredBefore: number;
+  coveredAfter: number;
+  coverageBeforePercent: number | null;
+  coverageAfterPercent: number | null;
+  uncovered: number;
+  existingCounted: number;
+  movable: number;
+  locked: number;
+  moves: number;
+  removals: number;
+  /** Meters no longer reached because of the removals, all together (kept at most the minimum gain). */
+  removalLoss?: number;
+  minGainUsed: number;
+  stopReason: RelocationStopReason;
+  /** What the best change that was not made would have added (null: none). */
+  nextNet: number | null;
+  steps: Array<{ order: number; action: 'move' | 'remove'; id: string; covered: number; percent: number }>;
+  unplacedGatewaysCount?: number;
+  items: RelocationItem[];
+  computeMs?: number;
+}

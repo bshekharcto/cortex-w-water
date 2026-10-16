@@ -1,4 +1,7 @@
 import { haversineM } from './networkLogic.js';
+import { buildSpace, cellKey, validPosition } from './coverageSpace.js';
+
+export { validPosition };
 
 /**
  * Gateway placement: where to put new gateways so that as many meters as possible are within reach of one.
@@ -119,21 +122,13 @@ export interface PlanResult {
   gatewaysFor: Record<'90' | '95' | '99' | '100', number | null>;
 }
 
-const M_PER_DEG = 111_320;
-const CANDIDATE_CELLS_PER_RADIUS = 4;
 const MAX_REFINE_PASSES = 4;
 const MAX_ROUNDS = 4;
 const PAIR_MOVE_TRIES = 8;
-/** At most this many (candidate, meter) pairs are remembered: about 30 MB. */
-const MAX_CACHED_REACH = 8_000_000;
 const DEFAULT_CURVE_LIMIT = 100;
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
-
-export function validPosition(lat: number, lng: number): boolean {
-  return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !(lat === 0 && lng === 0);
-}
 
 /** About 0.5% of the meters (at most 100), but never below 5 for a site of a few hundred, and never more than there are. */
 export function autoMinNewMeters(meterCount: number): number {
@@ -142,9 +137,6 @@ export function autoMinNewMeters(meterCount: number): number {
   const floor = Math.min(5, Math.ceil(meterCount * 0.02));
   return Math.max(1, share, floor);
 }
-
-/** A numeric key for a grid cell (cells stay well within +-2^20 for any real area). */
-const cellKey = (cx: number, cy: number) => (cx + 1_048_576) * 2_097_152 + (cy + 1_048_576);
 
 class MaxHeap {
   private gain: number[] = [];
@@ -198,29 +190,16 @@ class MaxHeap {
 }
 
 export function planGateways(input: PlanInput): PlanResult {
-  const R = input.radiusM;
-  const K = Math.max(0, Math.floor(input.maxGateways));
-  const target = Math.min(100, Math.max(1, input.targetCoveragePercent ?? 100));
+  // inputs that are not numbers fall back to safe values (the route validates; this keeps the planner safe on its own)
+  const finite = (v: number | null | undefined): v is number => typeof v === 'number' && Number.isFinite(v);
+  const R = finite(input.radiusM) ? input.radiusM : 0;
+  const K = finite(input.maxGateways) ? Math.max(0, Math.floor(input.maxGateways)) : 0;
+  const target = finite(input.targetCoveragePercent) ? Math.min(100, Math.max(1, input.targetCoveragePercent)) : 100;
   const mode: ExistingMode = input.existingMode ?? 'all';
 
-  // ---- meters: drop unusable positions, merge meters at the very same spot (a block of flats) into one weighted point
-  let invalid = 0;
-  const spots = new Map<string, { lat: number; lng: number; w: number }>();
-  for (const m of input.meters) {
-    if (!validPosition(m.lat, m.lng)) {
-      invalid++;
-      continue;
-    }
-    const key = `${m.lat.toFixed(6)},${m.lng.toFixed(6)}`;
-    const s = spots.get(key);
-    if (s) s.w++;
-    else spots.set(key, { lat: m.lat, lng: m.lng, w: 1 });
-  }
-  // sorted, so the answer does not depend on the order the meters came in
-  const pts = [...spots.values()].sort((a, b) => a.lat - b.lat || a.lng - b.lng);
-  const P = pts.length;
-  const N = pts.reduce((s, p) => s + p.w, 0);
-  const minGain = Math.max(1, Math.floor(input.minNewMeters ?? autoMinNewMeters(N)));
+  const sp = buildSpace(input.meters, R);
+  const { N, invalid } = sp;
+  const minGain = Math.max(1, Math.floor(finite(input.minNewMeters) ? input.minNewMeters : autoMinNewMeters(N)));
   const targetCount = Math.ceil((target / 100) * N);
   const existingAll = input.existing.filter((e) => validPosition(e.lat, e.lng));
   const counted = mode === 'none' ? [] : existingAll.filter((e) => mode === 'all' || e.working);
@@ -246,126 +225,11 @@ export function planGateways(input: PlanInput): PlanResult {
   });
   if (N === 0 || !(R > 0)) return empty('no-meters');
 
-  // ---- flat coordinates in metres around the middle of the meters (exact enough for distances of a few km)
-  const lat0 = pts[P >> 1].lat;
-  const lngs = pts.map((p) => p.lng).sort((a, b) => a - b);
-  const lng0 = lngs[P >> 1];
-  const kx = M_PER_DEG * Math.cos((lat0 * Math.PI) / 180);
-  const toX = (lng: number) => (lng - lng0) * kx;
-  const toY = (lat: number) => (lat - lat0) * M_PER_DEG;
-  const px = new Float64Array(P);
-  const py = new Float64Array(P);
-  const w = new Int32Array(P);
-  for (let i = 0; i < P; i++) {
-    px[i] = toX(pts[i].lng);
-    py[i] = toY(pts[i].lat);
-    w[i] = pts[i].w;
-  }
-
-  // ---- points on a grid of cell = R, so "everything within R" only looks at 3 x 3 cells
-  const grid = new Map<number, number[]>();
-  for (let i = 0; i < P; i++) {
-    const k = cellKey(Math.floor(px[i] / R), Math.floor(py[i] / R));
-    const list = grid.get(k);
-    if (list) list.push(i);
-    else grid.set(k, [i]);
-  }
-  const R2 = R * R;
-  const forEachInRange = (x: number, y: number, fn: (i: number) => void) => {
-    const cx = Math.floor(x / R);
-    const cy = Math.floor(y / R);
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        const list = grid.get(cellKey(cx + dx, cy + dy));
-        if (!list) continue;
-        for (const i of list) {
-          const ddx = px[i] - x;
-          const ddy = py[i] - y;
-          if (ddx * ddx + ddy * ddy <= R2) fn(i);
-        }
-      }
-    }
-  };
+  const { P, pts, px, py, w, cov, cx, cy, C, candGrid, R2, toX, toY, forEachInRange, forEachReached, freeGain, place, unplace } = sp;
 
   // ---- how many gateways reach each point: the existing ones counted first
-  const cov = new Int32Array(P);
-  for (const e of counted) forEachInRange(toX(e.lng), toY(e.lat), (i) => cov[i]++);
-  let coveredW = 0;
-  for (let i = 0; i < P; i++) if (cov[i] > 0) coveredW += w[i];
-  const coveredByExisting = coveredW;
-
-  // ---- candidates: the centre of the meters in each occupied cell of a fine grid
-  const s = R / CANDIDATE_CELLS_PER_RADIUS;
-  const fine = new Map<number, { sx: number; sy: number; sw: number }>();
-  for (let i = 0; i < P; i++) {
-    const k = cellKey(Math.floor(px[i] / s), Math.floor(py[i] / s));
-    const c = fine.get(k);
-    if (c) {
-      c.sx += px[i] * w[i];
-      c.sy += py[i] * w[i];
-      c.sw += w[i];
-    } else fine.set(k, { sx: px[i] * w[i], sy: py[i] * w[i], sw: w[i] });
-  }
-  const cands = [...fine.values()].map((c) => ({ x: c.sx / c.sw, y: c.sy / c.sw })).sort((a, b) => a.y - b.y || a.x - b.x);
-  const C = cands.length;
-  // Positions by index: first the C candidates, then any free positions the local search finds (see refine).
-  const cx: number[] = cands.map((c) => c.x);
-  const cy: number[] = cands.map((c) => c.y);
-  // candidates on a grid of cell = R too, for "the candidates near this gateway"
-  const candGrid = new Map<number, number[]>();
-  for (let j = 0; j < C; j++) {
-    const k = cellKey(Math.floor(cx[j] / R), Math.floor(cy[j] / R));
-    const list = candGrid.get(k);
-    if (list) list.push(j);
-    else candGrid.set(k, [j]);
-  }
-
-  /** The meters a gateway at (x, y) would newly reach (nothing else reaches them yet). */
-  const gainAt = (x: number, y: number) => {
-    let g = 0;
-    forEachInRange(x, y, (i) => {
-      if (cov[i] === 0) g += w[i];
-    });
-    return g;
-  };
-  // The meters in reach of each candidate, kept once worked out: the searches below ask about the same candidates over
-  // and over. Capped, so a huge radius over a dense city cannot use unbounded memory (beyond it, lists are recomputed).
-  const reach: Array<Int32Array | undefined> = new Array(C);
-  let cachedEntries = 0;
-  const reachOf = (j: number): Int32Array | null => {
-    if (j >= C) return null;
-    let list = reach[j];
-    if (list) return list;
-    if (cachedEntries >= MAX_CACHED_REACH) return null;
-    const tmp: number[] = [];
-    forEachInRange(cx[j], cy[j], (i) => tmp.push(i));
-    list = Int32Array.from(tmp);
-    reach[j] = list;
-    cachedEntries += list.length;
-    return list;
-  };
-  const forEachReached = (j: number, fn: (i: number) => void) => {
-    const list = reachOf(j);
-    if (list) for (let k = 0; k < list.length; k++) fn(list[k]);
-    else forEachInRange(cx[j], cy[j], fn);
-  };
-  const freeGain = (j: number) => {
-    const list = reachOf(j);
-    if (!list) return gainAt(cx[j], cy[j]);
-    let g = 0;
-    for (let k = 0; k < list.length; k++) if (cov[list[k]] === 0) g += w[list[k]];
-    return g;
-  };
-  const place = (j: number) =>
-    forEachReached(j, (i) => {
-      if (cov[i] === 0) coveredW += w[i];
-      cov[i]++;
-    });
-  const unplace = (j: number) =>
-    forEachReached(j, (i) => {
-      cov[i]--;
-      if (cov[i] === 0) coveredW -= w[i];
-    });
+  for (const e of counted) sp.coverPoint(toX(e.lng), toY(e.lat));
+  const coveredByExisting = sp.covered;
 
   // What each candidate reaches with only the existing gateways placed. Coverage only grows from there, so this is an
   // upper bound on what the candidate can ever add: the local search walks the candidates from the strongest and stops
@@ -383,7 +247,7 @@ export function planGateways(input: PlanInput): PlanResult {
       if (g > 0) heap.push(g, j, round);
     }
     for (;;) {
-      if (coveredW >= N || coveredW >= stopAt) return null;
+      if (sp.covered >= N || sp.covered >= stopAt) return null;
       let top = heap.pop();
       while (top && top.stamp !== round) {
         const g = freeGain(top.cand);
@@ -404,7 +268,6 @@ export function planGateways(input: PlanInput): PlanResult {
    * towards the middle of the meters it serves as long as that reaches no fewer, which shortens the distances.
    */
   const refine = (chosen: number[], from = 0) => {
-    const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [0.7071, 0.7071], [0.7071, -0.7071], [-0.7071, 0.7071], [-0.7071, -0.7071]];
     for (let pass = 0; pass < MAX_REFINE_PASSES; pass++) {
       let improved = false;
       for (let t = from; t < chosen.length; t++) {
@@ -440,45 +303,12 @@ export function planGateways(input: PlanInput): PlanResult {
           tryCand(j);
         }
 
-        // slide
-        let x = cx[best];
-        let y = cy[best];
-        for (let step = R / 2; step >= R / 32; ) {
-          let moved = false;
-          for (const [dx, dy] of DIRS) {
-            const g = gainAt(x + dx * step, y + dy * step);
-            if (g > bestGain) {
-              x += dx * step;
-              y += dy * step;
-              bestGain = g;
-              moved = true;
-              break;
-            }
-          }
-          if (!moved) step /= 2;
-        }
-        // centre on the meters it serves, while that reaches no fewer
-        for (let k = 0; k < 3; k++) {
-          let sx = 0, sy = 0, sw = 0;
-          forEachInRange(x, y, (i) => {
-            if (cov[i] === 0) {
-              sx += px[i] * w[i];
-              sy += py[i] * w[i];
-              sw += w[i];
-            }
-          });
-          if (sw === 0) break;
-          const mx = sx / sw;
-          const my = sy / sw;
-          if ((mx - x) ** 2 + (my - y) ** 2 < 1 || gainAt(mx, my) < bestGain) break;
-          x = mx;
-          y = my;
-        }
-        if (x !== cx[best] || y !== cy[best]) {
-          cx.push(x);
-          cy.push(y);
-          best = cx.length - 1;
-        }
+        // slide and centre
+        const polished = sp.polish(cx[best], cy[best], bestGain);
+        const x = polished.x;
+        const y = polished.y;
+        bestGain = polished.gain;
+        if (x !== cx[best] || y !== cy[best]) best = sp.addPosition(x, y);
         chosen[t] = best;
         place(best);
         if (bestGain > startGain) improved = true;
@@ -512,7 +342,7 @@ export function planGateways(input: PlanInput): PlanResult {
 
   /** What the best candidate not yet chosen would newly reach (null when nothing is left to reach). */
   const peekGain = (): number | null => {
-    if (coveredW >= N) return null;
+    if (sp.covered >= N) return null;
     let best = 0;
     for (let j = 0; j < C; j++) {
       const g = freeGain(j);
@@ -566,7 +396,7 @@ export function planGateways(input: PlanInput): PlanResult {
         }
       });
       const saved = [...chosen];
-      const before = coveredW;
+      const before = sp.covered;
       const out = [chosen[a], chosen[b]];
       out.forEach(unplace);
       const kept = chosen.filter((_, t) => t !== a && t !== b);
@@ -577,7 +407,7 @@ export function planGateways(input: PlanInput): PlanResult {
         place(c.j);
       }
       refine(kept, kept.length - 2); // only the two new ones: a full polish per try costs 3x for little more
-      if (coveredW > before) {
+      if (sp.covered > before) {
         chosen.splice(0, chosen.length, ...kept);
         improved = true;
       } else {
@@ -594,21 +424,32 @@ export function planGateways(input: PlanInput): PlanResult {
   const chosen: number[] = [];
   for (let r = 0; r < MAX_ROUNDS; r++) {
     const before = chosen.length;
-    const coveredBefore = coveredW;
+    const coveredBefore = sp.covered;
     greedy(chosen, K, minGain, targetCount);
     refine(chosen);
     pairMoves(chosen);
     prune(chosen);
-    if (chosen.length === before && coveredW === coveredBefore) break;
+    if (chosen.length === before && sp.covered === coveredBefore) break;
   }
   const nextGain = peekGain();
 
   let stopReason: StopReason;
   if (coveredByExisting >= N) stopReason = 'already-covered';
-  else if (coveredW >= N) stopReason = 'all-covered';
-  else if (coveredW >= targetCount) stopReason = 'target-reached';
+  else if (sp.covered >= N) stopReason = 'all-covered';
+  else if (sp.covered >= targetCount) stopReason = 'target-reached';
   else if (nextGain != null && nextGain >= minGain && chosen.length >= K) stopReason = 'max-gateways';
   else stopReason = 'low-gain';
+
+  // ---- report positions as 6-decimal coordinates: move each gateway onto exactly that point, so the numbers below are
+  // true for the coordinates people are given
+  for (let t = 0; t < chosen.length; t++) {
+    const j = chosen[t];
+    const at = sp.snap(cx[j], cy[j]);
+    if (at.x === cx[j] && at.y === cy[j]) continue;
+    unplace(j);
+    chosen[t] = sp.addPosition(at.x, at.y);
+    place(chosen[t]);
+  }
 
   // ---- rank: most valuable first; "addedInOrder" is what each one adds after the ones before it
   const covExisting = new Int32Array(P);
@@ -641,8 +482,7 @@ export function planGateways(input: PlanInput): PlanResult {
   }
 
   // ---- per gateway: who it serves (meters no existing gateway reaches, each given to its nearest new gateway)
-  const toLat = (y: number) => lat0 + y / M_PER_DEG;
-  const toLng = (x: number) => lng0 + x / kx;
+  const { toLat, toLng } = sp;
   const G = ranked.length;
   const served = new Float64Array(G);
   const distSum = new Float64Array(G);
@@ -707,17 +547,17 @@ export function planGateways(input: PlanInput): PlanResult {
   }
   const limit = Math.max(G, input.curveLimit ?? DEFAULT_CURVE_LIMIT);
   const extra: number[] = [];
-  if (coveredW < N && G < limit) {
+  if (sp.covered < N && G < limit) {
     // greedy() places what it picks: replay the picks to read each step's gain, then take them all away again, so the
     // coverage stays the plan's
     const picks: number[] = [];
     greedy(picks, limit - G, 1, N);
     for (let t = picks.length - 1; t >= 0; t--) unplace(picks[t]);
-    let last = coveredW;
+    let last = sp.covered;
     for (const j of picks) {
       place(j);
-      extra.push(coveredW - last);
-      last = coveredW;
+      extra.push(sp.covered - last);
+      last = sp.covered;
     }
     for (let t = picks.length - 1; t >= 0; t--) unplace(picks[t]);
   }

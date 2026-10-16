@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { autoMinNewMeters, planGateways, type PlanExisting, type PlanMeter } from './gatewayPlacement.js';
+import { haversineM } from './networkLogic.js';
 
 // Positions are built in metres east / north of a point in Bhubaneswar.
 const LAT0 = 20.3;
@@ -189,6 +190,25 @@ test('close to the best possible: brute force over a fine grid on small cases', 
   }
   t.diagnostic(`average: ${((sumRatio / runs) * 100).toFixed(1)}% of the brute-force best`);
   assert.ok(sumRatio / runs >= 0.95, `average ${(sumRatio / runs).toFixed(3)}`);
+});
+
+test('the numbers are true for the coordinates reported (recounted from them, many random cases)', () => {
+  for (let seed = 0; seed < 120; seed++) {
+    const r = rng(900 + seed);
+    const meters: PlanMeter[] = Array.from({ length: 30 + Math.floor(r() * 60) }, (_, i) => ({ id: `q${seed}-${i}`, ...at(r() * 2500, r() * 2500) }));
+    const R = 150 + r() * 400;
+    const plan = planGateways({ meters, existing: [], maxGateways: 1 + Math.floor(r() * 6), radiusM: R, minNewMeters: 1 });
+    const reached = meters.filter((m) => plan.gateways.some((g) => haversineM(g.lat, g.lng, m.lat, m.lng) <= R)).length;
+    // the planner measures on a flat projection; allow the projection's error (centimetres) but not a whole meter lost to rounding
+    assert.ok(Math.abs(reached - plan.totalCovered) <= 0, `seed ${seed}: recounted ${reached}, reported ${plan.totalCovered}`);
+  }
+});
+
+test('inputs that are not numbers do not break the planner', () => {
+  const meters = cluster(100, 0, 0, 200);
+  assert.equal(planGateways({ meters, existing: [], maxGateways: NaN, radiusM: 500 }).gateways.length, 0);
+  assert.equal(planGateways({ meters, existing: [], maxGateways: 5, radiusM: NaN }).stopReason, 'no-meters');
+  assert.equal(planGateways({ meters, existing: [], maxGateways: 5, radiusM: 500, minNewMeters: NaN }).gateways.length, 1);
 });
 
 test('fast enough for a city: 20,000 meters', () => {

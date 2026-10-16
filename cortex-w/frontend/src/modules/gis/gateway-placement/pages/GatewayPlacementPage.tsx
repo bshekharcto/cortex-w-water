@@ -16,9 +16,10 @@ import type { BoundingBox } from '../../shared/spatialIndex';
 import { mapApi } from '@/services/api/mapApi';
 import { networkApi, type NetGateway, type NetMeter, type NetMeterStatus, type NetSiteOption } from '@/services/api/networkApi';
 import { gatewayStatusApi, type GatewayState } from '@/services/api/gatewayStatusApi';
-import type { ExistingMode, GatewayCandidate, GatewayPlacementResult } from '../../shared/mapTypes';
+import type { ExistingMode, GatewayCandidate, GatewayPlacementResult, RelocationItem, RelocationResult } from '../../shared/mapTypes';
 import { GatewayCandidateDrawer } from '../components/GatewayCandidateDrawer';
-import { explainPlan, plural } from '../placementModel';
+import { RelocationPanel } from '../components/RelocationPanel';
+import { explainPlan, explainRelocation, plural } from '../placementModel';
 import { MeterHistoryDrawer } from '../../shared/MeterHistoryDrawer';
 import { createMeterLayer, type LayerItem, type MeterLayer } from '../../shared/meterCanvasLayer';
 import { getDecibelBorder } from '../../shared/meterColorUtils';
@@ -65,6 +66,19 @@ const EXISTING_MODE_LABEL: Record<ExistingMode, string> = {
   none: 'Ignore existing gateways',
 };
 const TARGET_CHOICES = [100, 99, 95, 90, 80];
+const RELOCATION_MODE_LABEL = {
+  working: 'A gateway that is not working reaches nothing',
+  all: 'Count every gateway as reaching',
+} as const;
+type PlacementMode = 'add' | 'optimize';
+
+/** The gateway icon for an existing gateway, from its live state (Gateway Status) when it is known. */
+function iconFor(state: GatewayState | undefined, working: boolean): string {
+  if (state === 'online') return 'reporting';
+  if (state === 'offline') return 'offline';
+  if (state === 'no-data') return 'stale';
+  return working ? 'reporting' : 'stale';
+}
 
 export function GatewayPlacementPage() {
   const navigate = useNavigate();
@@ -83,6 +97,18 @@ export function GatewayPlacementPage() {
   const [minNewMeters, setMinNewMeters] = useState<number | null>(null);
   const [targetCoverage, setTargetCoverage] = useState<number>(100);
   const [showOptions, setShowOptions] = useState(false);
+  // Mode: add new gateways, or optimise the existing network (keep / move / remove).
+  const [mode, setMode] = useState<PlacementMode>('add');
+  const [relocMode, setRelocMode] = useState<'all' | 'working'>('working');
+  const [maxMoves, setMaxMoves] = useState<number | null>(null);
+  const [maxMoveDistanceM, setMaxMoveDistanceM] = useState<number | null>(null);
+  const [allowRemove, setAllowRemove] = useState(true);
+  // the least net gain a move must bring (its own setting: "per new gateway" in add mode means something else)
+  const [minMoveGain, setMinMoveGain] = useState<number | null>(null);
+  // Gateways the user does not want touched: still counted as covering, never moved or removed.
+  const [lockedIds, setLockedIds] = useState<Set<string>>(new Set());
+  const [relocation, setRelocation] = useState<RelocationResult | null>(null);
+  const [focusedItemId, setFocusedItemId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   // Parts of the answer that could not be loaded while the rest could (shown as a note, not as an empty map).
@@ -297,6 +323,8 @@ export function GatewayPlacementPage() {
     setLoadWarnings([]);
     setPlacementResult(null);
     setCandidates([]);
+    setRelocation(null);
+    setFocusedItemId(null);
     setSelectedCandidate(null);
     setSelectedMeter(null);
   }, [siteId]);
@@ -308,6 +336,23 @@ export function GatewayPlacementPage() {
     setLoadWarnings([]);
 
     try {
+      if (mode === 'optimize') {
+        const rel = await mapApi.computeGatewayRelocation(siteId, coverageRadiusM, {
+          maxMoves,
+          minGain: minMoveGain,
+          maxMoveDistanceM,
+          allowRemove,
+          existingMode: relocMode,
+          lockedGatewayIds: [...lockedIds],
+        });
+        if (runId !== runIdRef.current) return;
+        if (!rel || !Array.isArray(rel.items)) throw new Error('The placement service returned no result');
+        setRelocation(rel);
+        if (rel.coordinatesStatus === 'stale') {
+          setLoadWarnings(['Meter positions could not be refreshed; the plan uses the last known positions.']);
+        }
+        return;
+      }
       const res = await mapApi.computeGatewayPlacement(siteId, gatewayCount, coverageRadiusM, {
         minNewMeters,
         targetCoveragePercent: targetCoverage,
@@ -317,6 +362,7 @@ export function GatewayPlacementPage() {
       if (!res || !Array.isArray(res.gateways)) throw new Error('The placement service returned no result');
       setPlacementResult(res);
       setCandidates(res.gateways);
+      setSelectedCandidate(null); // its numbers belonged to the plan before
       if (res.coordinatesStatus === 'stale') {
         setLoadWarnings(['Meter positions could not be refreshed; the plan uses the last known positions.']);
       }
@@ -331,7 +377,7 @@ export function GatewayPlacementPage() {
     } finally {
       if (runId === runIdRef.current) setIsLoading(false);
     }
-  }, [siteId, gatewayCount, coverageRadiusM, minNewMeters, targetCoverage, existingMode, navigate]);
+  }, [siteId, mode, gatewayCount, coverageRadiusM, minNewMeters, targetCoverage, existingMode, relocMode, maxMoves, maxMoveDistanceM, minMoveGain, allowRemove, lockedIds, navigate]);
 
   // Compute once for every new site selection (and again with the Generate button).
   const generateRef = useRef(handleGenerate);
@@ -339,6 +385,45 @@ export function GatewayPlacementPage() {
   useEffect(() => {
     void generateRef.current();
   }, [siteId]);
+
+  // Switching mode starts from a clean slate and computes the other kind of plan.
+  const firstModeRef = useRef(true);
+  useEffect(() => {
+    if (firstModeRef.current) {
+      firstModeRef.current = false;
+      return;
+    }
+    runIdRef.current++;
+    setLoadError(null);
+    setLoadWarnings([]);
+    setPlacementResult(null);
+    setCandidates([]);
+    setRelocation(null);
+    setFocusedItemId(null);
+    setSelectedCandidate(null);
+    void generateRef.current();
+  }, [mode]);
+
+  // Locking or unlocking a gateway recomputes (shortly after the last click).
+  const lockedKey = useMemo(() => [...lockedIds].sort().join(','), [lockedIds]);
+  // Runs only when the locks themselves change; a mode switch cancels a recompute still waiting (and computes on its own).
+  const lastLockedKeyRef = useRef(lockedKey);
+  useEffect(() => {
+    if (lastLockedKeyRef.current === lockedKey) return;
+    lastLockedKeyRef.current = lockedKey;
+    if (mode !== 'optimize') return;
+    const t = window.setTimeout(() => void generateRef.current(), 300);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lockedKey, mode]);
+  const toggleLock = useCallback((id: string) => {
+    setLockedIds((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   // Fly to candidate coordinates
   const flyToCandidate = (lat: number, lng: number) => {
@@ -369,8 +454,111 @@ export function GatewayPlacementPage() {
     existingMarkersRef.current = [];
     infoWindowRef.current?.close();
 
-    // 3. Render Existing Gateways, coloured by their live state from Gateway Status
-    if (showExistingGateways) {
+    // 3a. Optimise mode: every existing gateway with its verdict; a move is drawn as an arrow to the new place
+    if (mode === 'optimize' && relocation) {
+      const text = (item: RelocationItem): string => {
+        const lines: Record<RelocationItem['verdict'], string> = {
+          keep: `Keep. Only this gateway reaches ${(item.onlyThisOne ?? 0).toLocaleString()} meters.`,
+          locked:
+            item.lockedReason === 'other-site'
+              ? 'Locked: stands in a site outside the selection.'
+              : item.lockedReason === 'serves-other-sites'
+                ? 'Locked: also serves meters of sites outside the selection.'
+                : 'Locked by you: never moved or removed.',
+          remove: `Redundant: only ${(item.lost ?? 0).toLocaleString()} meters depend on it. Remove it, or reuse it elsewhere.`,
+          move: `Move ${item.moveTo ? Math.round(item.moveTo.distanceM).toLocaleString() : '?'} m: reaches ${(item.newlyReached ?? 0).toLocaleString()} new meters, loses ${(item.lost ?? 0).toLocaleString()} (net ${(item.net ?? 0).toLocaleString()}).`,
+        };
+        return `${lines[item.verdict]}${item.working ? '' : ' (not working today)'}`;
+      };
+      const openInfo = (anchor: any, item: RelocationItem) => {
+        const infoEl = document.createElement('div');
+        infoEl.style.cssText = 'padding:4px 8px;font-family:sans-serif;max-width:240px;';
+        const nameEl = document.createElement('strong');
+        nameEl.textContent = labelFor(item.id);
+        const subEl = document.createElement('span');
+        subEl.style.cssText = 'font-size:11px;color:#64748b';
+        subEl.textContent = text(item);
+        infoEl.append(nameEl, document.createElement('br'), subEl);
+        infoWindowRef.current?.setContent(infoEl);
+        infoWindowRef.current?.open(map, anchor);
+      };
+      relocation.items.forEach((item) => {
+        if ((item.verdict === 'keep' || item.verdict === 'locked') && !showExistingGateways) return;
+        const state = gatewayStatus.get(item.id)?.state;
+        const position = { lat: item.lat, lng: item.lng };
+        let marker: any;
+        if (item.verdict === 'remove') {
+          marker = new google.maps.Marker({
+            position,
+            map,
+            title: `Remove: ${labelFor(item.id)}`,
+            zIndex: 9998,
+            label: { text: '×', color: '#ffffff', fontWeight: '700', fontSize: '16px' },
+            icon: { path: google.maps.SymbolPath.CIRCLE, fillColor: '#DC2626', fillOpacity: 1, strokeColor: '#FFFFFF', strokeWeight: 2.5, scale: 13 },
+          });
+        } else {
+          marker = new google.maps.Marker({
+            position,
+            map,
+            title: `${item.verdict === 'locked' ? 'Locked: ' : ''}${labelFor(item.id)}`,
+            icon: getGatewayMapMarkerIcon(item.verdict === 'move' ? 'stale' : iconFor(state, item.working), 1.1),
+            opacity: item.verdict === 'move' ? 0.55 : 1,
+            zIndex: 9999,
+          });
+        }
+        marker.addListener('click', () => {
+          setFocusedItemId(item.id);
+          openInfo(marker, item);
+        });
+        existingMarkersRef.current.push(marker);
+
+        if (item.verdict === 'move' && item.moveTo) {
+          const to = { lat: item.moveTo.lat, lng: item.moveTo.lng };
+          candidateCirclesRef.current.push(
+            new google.maps.Polyline({
+              path: [position, to],
+              map,
+              clickable: false,
+              strokeOpacity: 0,
+              zIndex: 9000,
+              icons: [
+                { icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.9, strokeColor: '#EA580C', scale: 3 }, offset: '0', repeat: '12px' },
+                { icon: { path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW, strokeColor: '#EA580C', fillColor: '#EA580C', fillOpacity: 1, scale: 3 }, offset: '100%' },
+              ],
+            })
+          );
+          if (showRadiusCircles) {
+            candidateCirclesRef.current.push(
+              new google.maps.Circle({
+                strokeColor: '#EA580C',
+                strokeOpacity: 0.85,
+                strokeWeight: 2,
+                fillColor: '#FB923C',
+                fillOpacity: 0.18,
+                map,
+                center: to,
+                radius: relocation.coverageRadiusM,
+                clickable: false,
+              })
+            );
+          }
+          const target = new google.maps.Marker({
+            position: to,
+            map,
+            title: `Move ${labelFor(item.id)} here`,
+            zIndex: 10000,
+            label: { text: String(item.order ?? ''), color: '#ffffff', fontWeight: '700', fontSize: '13px' },
+            icon: { path: google.maps.SymbolPath.CIRCLE, fillColor: '#EA580C', fillOpacity: 1, strokeColor: '#FFFFFF', strokeWeight: 2.5, scale: 16 },
+          });
+          target.addListener('click', () => {
+            setFocusedItemId(item.id);
+            openInfo(target, item);
+          });
+          candidateMarkersRef.current.push(target);
+        }
+      });
+    } else if (showExistingGateways) {
+      // 3. Render Existing Gateways, coloured by their live state from Gateway Status
       gateways.forEach((gw) => {
         const state = gatewayStatus.get(gw.gatewayId)?.state;
         const marker = new google.maps.Marker({
@@ -400,7 +588,7 @@ export function GatewayPlacementPage() {
     }
 
     // 4. Render Recommended Gateways & Coverage Circles
-    displayCandidates.forEach((cand) => {
+    (mode === 'add' ? displayCandidates : []).forEach((cand) => {
       // Coverage circle
       if (showRadiusCircles) {
         const circle = new google.maps.Circle({
@@ -447,7 +635,7 @@ export function GatewayPlacementPage() {
 
       candidateMarkersRef.current.push(marker);
     });
-  }, [isLoaded, displayCandidates, gateways, gatewayStatus, labelFor, appliedRadiusM, showRadiusCircles, showExistingGateways]);
+  }, [isLoaded, mode, relocation, displayCandidates, gateways, gatewayStatus, labelFor, appliedRadiusM, showRadiusCircles, showExistingGateways]);
 
   // Meters: one canvas layer (no marker per meter), so the map stays smooth at any zoom. Same colours as the Network Explorer:
   // fill = how recently the meter reported, border = signal strength.
@@ -480,7 +668,8 @@ export function GatewayPlacementPage() {
     ...loadWarnings,
     ...(gatewayStatusUnavailable ? ['Gateway Status is not available, so gateway names come from the network list and their state is not shown.'] : []),
   ];
-  const planNote = placementResult ? explainPlan(placementResult) : null;
+  const planNote =
+    mode === 'optimize' ? (relocation ? explainRelocation(relocation) : null) : placementResult ? explainPlan(placementResult) : null;
   /** "95% → 11 gateways" for the levels the curve reaches. */
   const neededFor = placementResult?.gatewaysFor
     ? (['90', '95', '100'] as const).map((level) => {
@@ -497,7 +686,11 @@ export function GatewayPlacementPage() {
   const totalCovered = placementResult?.totalMetersCovered ?? 0;
   const overallPercent = placementResult?.overallCoveragePercent ?? null;
   const beforePercent = placementResult?.coverageBeforePercent ?? null;
-  const percentColor = overallPercent == null ? '#64748b' : overallPercent >= 80 ? '#059669' : overallPercent >= 50 ? '#d97706' : '#dc2626';
+  // what the summary bar shows: the plan of the current mode
+  const shownBefore = mode === 'optimize' ? relocation?.coverageBeforePercent ?? null : beforePercent;
+  const shownAfter = mode === 'optimize' ? relocation?.coverageAfterPercent ?? null : overallPercent;
+  const percentColor = shownAfter == null ? '#64748b' : shownAfter >= 80 ? '#059669' : shownAfter >= 50 ? '#d97706' : '#dc2626';
+  const changeCount = relocation ? relocation.moves + relocation.removals : 0;
   const fmtMetres = (v: number | null | undefined) => (v == null ? '—' : `${v}m`);
 
   return (
@@ -529,11 +722,35 @@ export function GatewayPlacementPage() {
             value={siteId}
             onChange={setSiteId}
           />
+
+          {/* Mode: add new gateways, or optimise the gateways that are already there */}
+          <div role="group" aria-label="Planning mode" style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 6, overflow: 'hidden' }}>
+            {([['add', 'Add gateways'], ['optimize', 'Optimize existing']] as const).map(([m, label]) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                aria-pressed={mode === m}
+                title={m === 'add' ? 'Where to put new gateways' : 'Which existing gateways to keep, move or remove (never adds any)'}
+                style={{
+                  border: 'none',
+                  padding: '6px 12px',
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  background: mode === m ? '#2563eb' : '#ffffff',
+                  color: mode === m ? '#ffffff' : '#334155',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Center: Controls (Gateways stepper & Radius stepper) */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          {/* Gateways Stepper */}
+          {/* Gateways Stepper (add mode only: optimising never adds gateways) */}
+          {mode === 'add' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span
               style={{ fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}
@@ -585,6 +802,7 @@ export function GatewayPlacementPage() {
               </div>
             </div>
           </div>
+          )}
 
           {/* Radius: quick choices in the dropdown, any value in between with the slider */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -662,7 +880,7 @@ export function GatewayPlacementPage() {
             ) : (
               <Zap size={15} />
             )}
-            <span>Generate</span>
+            <span>{mode === 'optimize' ? 'Optimize' : 'Generate'}</span>
           </button>
         </div>
       </div>
@@ -681,6 +899,7 @@ export function GatewayPlacementPage() {
           color: '#334155',
           zIndex: 19,
         }}>
+          {mode === 'add' ? (<>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontWeight: 600, color: '#64748b' }}>Existing gateways</span>
             <select
@@ -721,7 +940,79 @@ export function GatewayPlacementPage() {
               ))}
             </select>
           </label>
-          <span style={{ color: '#94a3b8' }}>Changes apply on Generate.</span>
+          </>) : (<>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 600, color: '#64748b' }}>Gateways not working</span>
+            <select
+              value={relocMode}
+              onChange={(e) => setRelocMode(e.target.value as 'all' | 'working')}
+              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: 12 }}
+            >
+              {(Object.keys(RELOCATION_MODE_LABEL) as Array<'all' | 'working'>).map((m) => (
+                <option key={m} value={m}>{RELOCATION_MODE_LABEL[m]}</option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 600, color: '#64748b' }}>Max moves</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={maxMoves ?? ''}
+              placeholder="no limit"
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                setMaxMoves(v === '' ? null : Math.min(100, Math.max(0, Math.round(Number(v)) || 0)));
+              }}
+              style={{ width: 90, padding: '4px 8px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: 12 }}
+              title="The most gateways to move. Empty = as many as are worth it."
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 600, color: '#64748b' }}>Max distance per move (m)</span>
+            <input
+              type="number"
+              min={0}
+              step={100}
+              max={100000}
+              value={maxMoveDistanceM ?? ''}
+              placeholder="no limit"
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                setMaxMoveDistanceM(v === '' ? null : Math.min(100000, Math.max(0, Math.round(Number(v)) || 0)));
+              }}
+              style={{ width: 90, padding: '4px 8px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: 12 }}
+              title="A gateway is moved at most this far. Empty = any distance (a far move is really a new site)."
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 600, color: '#64748b' }}>Min. net meters per move</span>
+            <input
+              type="number"
+              min={1}
+              max={100000}
+              value={minMoveGain ?? ''}
+              placeholder={`auto${relocation && minMoveGain == null ? ` (${relocation.minGainUsed})` : ''}`}
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                setMinMoveGain(v === '' ? null : Math.min(100000, Math.max(1, Math.round(Number(v)) || 1)));
+              }}
+              style={{ width: 90, padding: '4px 8px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: 12 }}
+              title="A move is only proposed when it reaches at least this many more meters than it loses. A gateway that loses fewer than this when removed is reported as redundant. Empty = automatic (about 0.5% of the meters)."
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={allowRemove} onChange={(e) => setAllowRemove(e.target.checked)} />
+            <span style={{ fontWeight: 600, color: '#64748b' }}>Suggest removals</span>
+          </label>
+          {lockedIds.size > 0 && (
+            <button onClick={() => setLockedIds(new Set())} className="cw-button-secondary" style={{ padding: '3px 10px', fontSize: 12 }}>
+              Unlock all ({lockedIds.size})
+            </button>
+          )}
+          </>)}
+          <span style={{ color: '#94a3b8' }}>Changes apply on {mode === 'optimize' ? 'Optimize' : 'Generate'}.</span>
         </div>
       )}
 
@@ -917,8 +1208,18 @@ export function GatewayPlacementPage() {
                 </div>
                 <div className="gis-legend-item">
                   <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#EA580C', color: '#fff', fontSize: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>1</span>
-                  <span>Recommended gateway (circle = coverage radius)</span>
+                  <span>
+                    {mode === 'optimize'
+                      ? 'New place of a moved gateway (number = order; dashed arrow from where it stands)'
+                      : 'Recommended gateway (circle = coverage radius)'}
+                  </span>
                 </div>
+                {mode === 'optimize' && (
+                  <div className="gis-legend-item">
+                    <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#DC2626', color: '#fff', fontSize: 11, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>×</span>
+                    <span>Redundant gateway (can be removed or reused)</span>
+                  </div>
+                )}
                 <div className="gis-legend-item">
                   <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#059669', color: '#fff', fontSize: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>50</span>
                   <span>Group of meters (click to zoom)</span>
@@ -953,8 +1254,12 @@ export function GatewayPlacementPage() {
               }}
             >
               <span>
-                <strong>{plural(displayCandidates.length, 'new gateway')}</strong> · coverage{' '}
-                {beforePercent == null ? '—' : `${beforePercent}%`} → <span style={{ color: percentColor }}>{overallPercent == null ? '—' : `${overallPercent}%`}</span>
+                {mode === 'optimize' ? (
+                  <strong>{plural(relocation?.moves ?? 0, 'move')} · {plural(relocation?.removals ?? 0, 'removal')}</strong>
+                ) : (
+                  <strong>{plural(displayCandidates.length, 'new gateway')}</strong>
+                )}{' '}
+                · coverage {shownBefore == null ? '—' : `${shownBefore}%`} → <span style={{ color: percentColor }}>{shownAfter == null ? '—' : `${shownAfter}%`}</span>
               </span>
               {isSummaryExpanded ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
             </div>
@@ -976,16 +1281,36 @@ export function GatewayPlacementPage() {
                     {' '}({summary.withCoordinates.toLocaleString()} with a position)
                   </div>
                 )}
+                {mode === 'optimize' ? (
+                  <>
+                    <div>Meters planned for (with a position): <strong>{relocation ? relocation.totalMeters.toLocaleString() : '—'}</strong></div>
+                    <div>Reached today (within {relocation?.coverageRadiusM ?? appliedRadiusM} m): <strong>{relocation ? relocation.coveredBefore.toLocaleString() : '—'}</strong></div>
+                    <div>Reached after the changes: <strong style={{ color: '#059669' }}>{relocation ? relocation.coveredAfter.toLocaleString() : '—'}</strong></div>
+                    <div>Still out of reach: <strong>{relocation ? relocation.uncovered.toLocaleString() : '—'}</strong></div>
+                    {relocation && relocation.excludedMeterCount > 0 && (
+                      <div>Left out (no usable position): <strong>{relocation.excludedMeterCount.toLocaleString()}</strong></div>
+                    )}
+                    {relocation && (
+                      <div>
+                        Gateways: <strong>{relocation.movable}</strong> may change, <strong>{relocation.locked}</strong> locked
+                        {relocation.unplacedGatewaysCount ? ` · ${relocation.unplacedGatewaysCount} without a position are not shown` : ''}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
                 <div>Meters planned for (with a position): <strong>{totalMeters == null ? '—' : totalMeters.toLocaleString()}</strong></div>
-                <div>
-                  Already within {appliedRadiusM} m of an existing gateway:{' '}
-                  <strong>{placementResult?.coveredByExisting == null ? '—' : placementResult.coveredByExisting.toLocaleString()}</strong>
-                  {placementResult?.existingMode && placementResult.existingMode !== 'all' ? ` (${EXISTING_MODE_LABEL[placementResult.existingMode].toLowerCase()})` : ''}
-                </div>
-                <div>Newly reached by the new gateways: <strong style={{ color: '#059669' }}>{placementResult?.newlyCovered == null ? '—' : placementResult.newlyCovered.toLocaleString()}</strong></div>
-                <div>Still out of reach: <strong>{placementResult?.uncovered == null ? '—' : placementResult.uncovered.toLocaleString()}</strong> (total reached {totalCovered.toLocaleString()})</div>
-                {placementResult && placementResult.excludedMeterCount > 0 && (
-                  <div>Left out (no usable position): <strong>{placementResult.excludedMeterCount.toLocaleString()}</strong></div>
+                    <div>
+                      Already within {appliedRadiusM} m of an existing gateway:{' '}
+                      <strong>{placementResult?.coveredByExisting == null ? '—' : placementResult.coveredByExisting.toLocaleString()}</strong>
+                      {placementResult?.existingMode && placementResult.existingMode !== 'all' ? ` (${EXISTING_MODE_LABEL[placementResult.existingMode].toLowerCase()})` : ''}
+                    </div>
+                    <div>Newly reached by the new gateways: <strong style={{ color: '#059669' }}>{placementResult?.newlyCovered == null ? '—' : placementResult.newlyCovered.toLocaleString()}</strong></div>
+                    <div>Still out of reach: <strong>{placementResult?.uncovered == null ? '—' : placementResult.uncovered.toLocaleString()}</strong> (total reached {totalCovered.toLocaleString()})</div>
+                    {placementResult && placementResult.excludedMeterCount > 0 && (
+                      <div>Left out (no usable position): <strong>{placementResult.excludedMeterCount.toLocaleString()}</strong></div>
+                    )}
+                  </>
                 )}
                 <div>Existing Gateways: <strong>{gateways.length}</strong></div>
               </div>
@@ -1013,7 +1338,7 @@ export function GatewayPlacementPage() {
             justifyContent: 'space-between',
             alignItems: 'center',
           }}>
-            <span>Recommended Gateways ({displayCandidates.length})</span>
+            <span>{mode === 'optimize' ? `Recommended Changes (${changeCount})` : `Recommended Gateways (${displayCandidates.length})`}</span>
             {isLoading && <RefreshCw size={14} className="cw-spin" color="#2563eb" />}
           </div>
 
@@ -1030,7 +1355,7 @@ export function GatewayPlacementPage() {
                 <Info size={16} style={{ flexShrink: 0, color: '#2563eb' }} />
                 <div>
                   <div>{planNote}</div>
-                  {neededFor && placementResult?.stopReason !== 'no-meters' && placementResult?.stopReason !== 'already-covered' && (
+                  {mode === 'add' && neededFor && placementResult?.stopReason !== 'no-meters' && placementResult?.stopReason !== 'already-covered' && (
                     <div style={{ marginTop: 6, color: '#475569' }} title="Beyond the recommended gateways these are estimates (each next gateway placed where it reaches most)">
                       New gateways needed for {neededFor.map((x) => `${x.level}%: ${x.text}`).join(' · ')}
                     </div>
@@ -1046,7 +1371,34 @@ export function GatewayPlacementPage() {
               </div>
             ))}
 
-            {displayCandidates.length === 0 && !isLoading ? (
+            {mode === 'optimize' ? (
+              relocation ? (
+                <RelocationPanel
+                  relocation={relocation}
+                  labelFor={labelFor}
+                  lockedIds={lockedIds}
+                  onToggleLock={toggleLock}
+                  focusedId={focusedItemId}
+                  onFocus={(item) => {
+                    setFocusedItemId(item.id);
+                    const to = item.moveTo ?? item;
+                    const map = mapInstanceRef.current;
+                    if (!map) return;
+                    if (item.moveTo) {
+                      const google = (window as any).google;
+                      const b = new google.maps.LatLngBounds();
+                      b.extend({ lat: item.lat, lng: item.lng });
+                      b.extend({ lat: to.lat, lng: to.lng });
+                      map.fitBounds(b, 80);
+                    } else {
+                      flyToCandidate(item.lat, item.lng);
+                    }
+                  }}
+                />
+              ) : !isLoading ? (
+                <div style={{ textAlign: 'center', padding: '40px 16px', color: '#94a3b8', fontSize: 12 }}>Click "Optimize" to work out the changes.</div>
+              ) : null
+            ) : displayCandidates.length === 0 && !isLoading ? (
               <div style={{ textAlign: 'center', padding: '40px 16px', color: '#94a3b8' }}>
                 <MapPin size={32} style={{ margin: '0 auto 8px', opacity: 0.4 }} />
                 <div style={{ fontWeight: 600, fontSize: 14 }}>No gateway recommendations</div>

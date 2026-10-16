@@ -4,8 +4,9 @@ import { config } from '../config/env.js';
 import { pool } from '../db/pool.js';
 import { localDate } from '../services/localDate.js';
 import { requireClient, scopeSiteIds, rootSites } from '../services/clientContext.js';
-import { getGateways, getLegacyGisData, getMeterMap, resolveSiteScope } from '../services/networkService.js';
+import { getGateways, getLegacyGisData, getMeterMap, resolveSiteScope, type SiteScope } from '../services/networkService.js';
 import { planGateways, type ExistingMode } from '../services/gatewayPlacement.js';
+import { planRelocation } from '../services/gatewayRelocation.js';
 import { clientTenantIds } from '../services/tenantScope.js';
 
 const router = Router();
@@ -315,6 +316,53 @@ router.get('/asset-locations', async (req, res) => {
   }
 });
 
+/**
+ * Plans already worked out, per data snapshot: the meter map and gateway list objects are cached per client and scope by
+ * networkService (and replaced when they refresh), so a plan is reused only for the same client, the same data and the
+ * same settings, and is dropped with the snapshot. Repeated clicks on Generate then cost nothing.
+ */
+const planCache = new WeakMap<object, WeakMap<object, Map<string, unknown>>>();
+const PLAN_CACHE_PER_SNAPSHOT = 50;
+function cachedPlan<T>(map: object, gws: object, key: string, compute: () => T): T {
+  let byGateways = planCache.get(map);
+  if (!byGateways) planCache.set(map, (byGateways = new WeakMap()));
+  let plans = byGateways.get(gws);
+  if (!plans) byGateways.set(gws, (plans = new Map()));
+  if (plans.has(key)) return plans.get(key) as T;
+  const value = compute();
+  if (plans.size >= PLAN_CACHE_PER_SNAPSHOT) plans.delete(plans.keys().next().value!);
+  plans.set(key, value);
+  return value;
+}
+
+/**
+ * What a run on some sites must know about the client's WHOLE network, or it would misjudge gateways at the edge of the
+ * selection: whether a gateway is working is decided from every meter it hears (on the selected sites alone a gateway
+ * that serves the next site looks silent), and how many meters of sites outside the selection each gateway serves (such
+ * a gateway must not be moved or removed by a plan that cannot see those meters). Both lists are cached by networkService.
+ */
+async function wholeNetwork(scope: SiteScope): Promise<{ working: Map<string, boolean>; servesOutside: Map<string, number> }> {
+  const all = resolveSiteScope('ALL') ?? null;
+  const [allMap, allGateways] = await Promise.all([getMeterMap(all), getGateways(all)]);
+  const isWorking = (status: string) => status === 'reporting' || status === 'degraded'; // degraded still carries traffic
+  const working = new Map<string, boolean>();
+  for (const g of [...allGateways.gateways, ...allGateways.unplaced]) working.set(g.gatewayId, isWorking(g.status));
+  const servesOutside = new Map<string, number>();
+  if (scope) {
+    const inScope = new Set(scope);
+    for (const r of allMap.rows) {
+      if (r[5] < 0 || (r[8] >= 0 && inScope.has(r[8]))) continue;
+      const id = allMap.gatewayIds[r[5]];
+      servesOutside.set(id, (servesOutside.get(id) ?? 0) + 1);
+    }
+  }
+  return { working, servesOutside };
+}
+
+/** What a plan read from wholeNetwork for these gateways, as text: part of the plan-cache key, so a plan never outlives it. */
+const wholeKey = (gateways: ReadonlyArray<{ gatewayId: string }>, whole: Awaited<ReturnType<typeof wholeNetwork>>) =>
+  gateways.map((g) => `${g.gatewayId}:${whole.working.get(g.gatewayId) ? 1 : 0}:${whole.servesOutside.get(g.gatewayId) ?? 0}`).join(',');
+
 // The limits Gateway Placement accepts (the page offers the same ones).
 const MIN_GATEWAYS = 1;
 const MAX_GATEWAYS = 25;
@@ -363,18 +411,19 @@ router.post('/gateway-placement/compute', async (req, res) => {
       return res.status(400).json({ error: `existingMode must be one of ${EXISTING_MODES.join(', ')}` });
     }
 
-    const [map, gws] = await Promise.all([getMeterMap(scope), getGateways(scope)]);
+    const [map, gws, whole] = await Promise.all([getMeterMap(scope), getGateways(scope), wholeNetwork(scope)]);
     const started = performance.now();
-    const plan = planGateways({
+    const planKey = JSON.stringify(['add', gatewayCount, coverageRadiusM, minNewMeters, targetCoveragePercent, existingMode, wholeKey(gws.gateways, whole)]);
+    const plan = cachedPlan(map, gws, planKey, () => planGateways({
       meters: map.rows.map((r) => ({ id: r[0], lat: r[2], lng: r[3] })),
-      // a gateway that hears nothing (or has gone quiet) is not working; degraded still carries traffic
-      existing: gws.gateways.map((g) => ({ id: g.gatewayId, lat: g.lat, lng: g.lng, working: g.status === 'reporting' || g.status === 'degraded' })),
+      // working: judged from every meter it hears across the client's network, not only the selected sites
+      existing: gws.gateways.map((g) => ({ id: g.gatewayId, lat: g.lat, lng: g.lng, working: whole.working.get(g.gatewayId) ?? false })),
       maxGateways: gatewayCount,
       radiusM: coverageRadiusM,
       minNewMeters,
       targetCoveragePercent,
       existingMode,
-    });
+    }));
     const computeMs = Math.round(performance.now() - started);
     const share = (n: number) => (plan.metersConsidered > 0 ? Math.round((n / plan.metersConsidered) * 1000) / 10 : 0);
 
@@ -428,6 +477,135 @@ router.post('/gateway-placement/compute', async (req, res) => {
   } catch (err: any) {
     console.error('[gis] Error computing gateway placement:', err.message);
     res.status(500).json({ error: 'Failed to compute gateway placement' });
+  }
+});
+
+const MAX_MOVES = 100;
+const MAX_LOCKED = 1000;
+const MAX_MOVE_DISTANCE_M = 100_000;
+const GATEWAY_ID = /^[0-9a-f]{16}$/i;
+
+/**
+ * POST /api/gis/gateway-placement/relocate
+ * body: { siteId: 'ALL' | id | 'a,b', coverageRadiusM, maxMoves?: number | null (null = no limit),
+ *         minGain?: number | null (null = automatic), maxMoveDistanceM?: number | null (null = no limit),
+ *         allowRemove?: boolean (default true),
+ *         existingMode?: 'all' | 'working' (default 'working'), lockedGatewayIds?: string[] }
+ *
+ * Which existing gateways to keep, move or remove (services/gatewayRelocation.ts), for the chosen sites and every site
+ * below them. The number of gateways never grows. A gateway that stands in a site outside the selection, or that also
+ * serves meters of such a site, is never proposed for a move or removal: it is locked (lockedReason 'other-site' /
+ * 'serves-other-sites'), and still counted as reaching the meters around it.
+ */
+router.post('/gateway-placement/relocate', async (req, res) => {
+  try {
+    const siteId = String(req.body.siteId ?? 'ALL');
+    const scope = resolveSiteScope(siteId);
+    if (scope === undefined) return res.status(404).json({ error: 'Unknown site' });
+
+    const coverageRadiusM = Number(req.body.coverageRadiusM ?? 500);
+    const maxMovesRaw = req.body.maxMoves;
+    const maxMoves = maxMovesRaw == null || maxMovesRaw === '' ? null : Number(maxMovesRaw);
+    const minGainRaw = req.body.minGain;
+    const minGain = minGainRaw == null || minGainRaw === '' ? null : Number(minGainRaw);
+    const maxDistRaw = req.body.maxMoveDistanceM;
+    const maxMoveDistanceM = maxDistRaw == null || maxDistRaw === '' ? null : Number(maxDistRaw);
+    const allowRemove = req.body.allowRemove == null ? true : req.body.allowRemove === true;
+    const existingMode = String(req.body.existingMode ?? 'working');
+    const lockedRaw = req.body.lockedGatewayIds ?? [];
+
+    if (!Number.isFinite(coverageRadiusM) || coverageRadiusM < MIN_RADIUS_M || coverageRadiusM > MAX_RADIUS_M) {
+      return res.status(400).json({ error: `coverageRadiusM must be from ${MIN_RADIUS_M} to ${MAX_RADIUS_M} metres` });
+    }
+    if (maxMoves !== null && (!Number.isInteger(maxMoves) || maxMoves < 0 || maxMoves > MAX_MOVES)) {
+      return res.status(400).json({ error: `maxMoves must be empty (no limit) or a whole number from 0 to ${MAX_MOVES}` });
+    }
+    if (minGain !== null && (!Number.isInteger(minGain) || minGain < 1 || minGain > MAX_MIN_NEW_METERS)) {
+      return res.status(400).json({ error: `minGain must be empty (automatic) or a whole number from 1 to ${MAX_MIN_NEW_METERS}` });
+    }
+    if (maxMoveDistanceM !== null && (!Number.isFinite(maxMoveDistanceM) || maxMoveDistanceM < 0 || maxMoveDistanceM > MAX_MOVE_DISTANCE_M)) {
+      return res.status(400).json({ error: `maxMoveDistanceM must be empty (no limit) or from 0 to ${MAX_MOVE_DISTANCE_M} metres` });
+    }
+    if (req.body.allowRemove != null && typeof req.body.allowRemove !== 'boolean') {
+      return res.status(400).json({ error: 'allowRemove must be true or false' });
+    }
+    if (existingMode !== 'all' && existingMode !== 'working') {
+      return res.status(400).json({ error: "existingMode must be 'all' or 'working'" });
+    }
+    if (!Array.isArray(lockedRaw) || lockedRaw.length > MAX_LOCKED || lockedRaw.some((g) => typeof g !== 'string' || !GATEWAY_ID.test(g))) {
+      return res.status(400).json({ error: `lockedGatewayIds must be a list of at most ${MAX_LOCKED} 16-character gateway ids` });
+    }
+    const lockedByUser = new Set<string>(lockedRaw.map((g: string) => g.toLowerCase()));
+
+    const [map, gws, whole] = await Promise.all([getMeterMap(scope), getGateways(scope), wholeNetwork(scope)]);
+    const inScope = scope ? new Set(scope) : null;
+    // why a gateway may not be touched by this run (null: it may)
+    const lockReason = (g: { gatewayId: string; siteId: number | null }): 'you' | 'other-site' | 'serves-other-sites' | null => {
+      if (lockedByUser.has(g.gatewayId)) return 'you';
+      if (inScope && g.siteId !== null && !inScope.has(g.siteId)) return 'other-site';
+      if ((whole.servesOutside.get(g.gatewayId) ?? 0) > 0) return 'serves-other-sites';
+      return null;
+    };
+    const reasons = new Map(gws.gateways.map((g) => [g.gatewayId, lockReason(g)]));
+    const started = performance.now();
+    const planKey = JSON.stringify(['move', coverageRadiusM, maxMoves, minGain, maxMoveDistanceM, allowRemove, existingMode, [...lockedByUser].sort(), wholeKey(gws.gateways, whole)]);
+    const plan = cachedPlan(map, gws, planKey, () => planRelocation({
+      meters: map.rows.map((r) => ({ id: r[0], lat: r[2], lng: r[3] })),
+      existing: gws.gateways.map((g) => ({
+        id: g.gatewayId,
+        lat: g.lat,
+        lng: g.lng,
+        // working: judged from every meter it hears across the client's network, not only the selected sites
+        working: whole.working.get(g.gatewayId) ?? false,
+        locked: reasons.get(g.gatewayId) != null,
+      })),
+      radiusM: coverageRadiusM,
+      maxMoves,
+      minGain,
+      maxMoveDistanceM,
+      allowRemove,
+      existingMode,
+    }));
+    const computeMs = Math.round(performance.now() - started);
+    const bySite = new Map(gws.gateways.map((g) => [g.gatewayId, g]));
+
+    res.json({
+      siteId,
+      coverageRadiusM,
+      existingMode,
+      metersInSelection: map.summary.total,
+      totalMeters: plan.metersConsidered,
+      excludedMeterCount: map.summary.withoutCoordinates + plan.invalidMeters,
+      coordinatesStatus: map.coordinates.status,
+      coveredBefore: plan.coveredBefore,
+      coveredAfter: plan.coveredAfter,
+      coverageBeforePercent: plan.coverageBeforePercent,
+      coverageAfterPercent: plan.coverageAfterPercent,
+      uncovered: plan.uncovered,
+      existingCounted: plan.existingCounted,
+      movable: plan.movable,
+      locked: plan.locked,
+      moves: plan.moves,
+      removals: plan.removals,
+      removalLoss: plan.removalLoss,
+      minGainUsed: plan.minGainUsed,
+      stopReason: plan.stopReason,
+      nextNet: plan.nextNet,
+      steps: plan.steps,
+      unplacedGatewaysCount: gws.unplaced.length,
+      items: plan.items.map((i) => {
+        const g = bySite.get(i.id);
+        return {
+          ...i,
+          siteId: g?.siteId ?? null,
+          lockedReason: i.verdict !== 'locked' ? null : reasons.get(i.id) ?? null,
+        };
+      }),
+      computeMs,
+    });
+  } catch (err: any) {
+    console.error('[gis] Error computing gateway relocation:', err.message);
+    res.status(500).json({ error: 'Failed to compute gateway relocation' });
   }
 });
 

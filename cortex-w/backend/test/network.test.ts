@@ -27,6 +27,7 @@ const { config } = await import('../src/config/env.js');
 
 const app = express();
 app.use(compression());
+app.use(express.json());
 app.use(authMiddleware);
 app.use(requireAuth);
 app.use('/api/network', networkRoutes);
@@ -200,6 +201,63 @@ try {
   const gmB = await get('/api/gis/meters?limit=all', B.token);
   const aMeterIds = new Set(gm.body.meters.map((m: any) => m.meterId));
   check('B /api/gis/meters shares no meter with A', gmB.status === 200 && gmB.body.meters.every((m: any) => !aMeterIds.has(m.meterId)), `${gmB.body?.meters?.length} meters`);
+
+  // --- Gateway Placement: add gateways / optimise existing ones (computed here, from the same meters and gateways) ---
+  const post = async (path: string, body: unknown, token?: string) => {
+    const t0 = performance.now();
+    const r = await fetch(BASE + path, { method: 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    return { status: r.status, body: (await r.json().catch(() => null)) as any, ms: Math.round(performance.now() - t0) };
+  };
+  const leafId = A.sites.find((x) => !A.sites.some((c) => c.parentSite === x.id))?.id;
+  const pl = await post('/api/gis/gateway-placement/compute', { siteId: 'ALL', gatewayCount: 25, coverageRadiusM: 800 }, A.token);
+  check('placement 200', pl.status === 200, `${pl.ms} ms (engine ${pl.body?.computeMs} ms)`);
+  check('placement plans for the meters the map draws', pl.body?.totalMeters === map.rows.length, `${pl.body?.totalMeters} vs ${map.rows.length}`);
+  check('placement: the count is a maximum and the stop reason says why', pl.body?.gateways.length <= 25 && ['all-covered', 'target-reached', 'low-gain', 'max-gateways', 'already-covered'].includes(pl.body?.stopReason), `${pl.body?.gateways.length} gateways, ${pl.body?.stopReason}`);
+  check('placement numbers add up', pl.body && pl.body.coveredByExisting + pl.body.newlyCovered === pl.body.totalMetersCovered && pl.body.totalMetersCovered + pl.body.uncovered === pl.body.totalMeters
+    && pl.body.gateways.reduce((n: number, g: any) => n + g.metersCoveredCount, 0) === pl.body.newlyCovered);
+  check('placement: gateways ranked, every one worth its minimum', pl.body?.gateways.every((g: any, k: number) => g.gatewayNumber === k + 1 && g.onlyThisOne >= pl.body.minNewMetersUsed));
+  const plLeaf = await post('/api/gis/gateway-placement/compute', { siteId: String(leafId), gatewayCount: 25, coverageRadiusM: 500 }, A.token);
+  check('placement for a small site stops early on its own', plLeaf.status === 200 && plLeaf.body.gateways.length < 25, `${plLeaf.body?.gateways.length} gateways for site ${leafId} (${plLeaf.body?.stopReason})`);
+  const again = await post('/api/gis/gateway-placement/compute', { siteId: 'ALL', gatewayCount: 25, coverageRadiusM: 800 }, A.token);
+  check('the same request again is answered from the plan already worked out', again.status === 200 && JSON.stringify(again.body.gateways) === JSON.stringify(pl.body.gateways), `${again.ms} ms`);
+  const rl = await post('/api/gis/gateway-placement/relocate', { siteId: 'ALL', coverageRadiusM: 800 }, A.token);
+  check('relocation 200', rl.status === 200, `${rl.ms} ms (engine ${rl.body?.computeMs} ms)`);
+  check('relocation never adds gateways and never lowers coverage beyond the removal budget', rl.body && rl.body.items.length === placed.length && rl.body.coveredAfter >= rl.body.coveredBefore - rl.body.removalLoss && rl.body.removalLoss <= rl.body.minGainUsed,
+    `${rl.body?.coverageBeforePercent}% -> ${rl.body?.coverageAfterPercent}%, ${rl.body?.moves} moves, ${rl.body?.removals} removals`);
+  check('relocation: every move is worth its minimum', rl.body?.items.every((i: any) => i.verdict !== 'move' || i.net >= rl.body.minGainUsed));
+  const firstMove = rl.body?.items.find((i: any) => i.verdict === 'move');
+  if (firstMove) {
+    const rlLocked = await post('/api/gis/gateway-placement/relocate', { siteId: 'ALL', coverageRadiusM: 800, lockedGatewayIds: [firstMove.id] }, A.token);
+    check('a locked gateway is never moved', rlLocked.status === 200 && rlLocked.body.items.find((i: any) => i.id === firstMove.id)?.verdict === 'locked');
+  }
+  check('placement / relocation validate their input', (await Promise.all([
+    post('/api/gis/gateway-placement/compute', { siteId: 'ALL', gatewayCount: 0, coverageRadiusM: 800 }, A.token),
+    post('/api/gis/gateway-placement/compute', { siteId: 'ALL', gatewayCount: 5, coverageRadiusM: 'x' }, A.token),
+    post('/api/gis/gateway-placement/relocate', { siteId: 'ALL', coverageRadiusM: 800, existingMode: 'none' }, A.token),
+    post('/api/gis/gateway-placement/relocate', { siteId: 'ALL', coverageRadiusM: 800, lockedGatewayIds: ['nope'] }, A.token),
+  ])).every((x) => x.status === 400));
+  check('placement without a sign-in -> 401', (await post('/api/gis/gateway-placement/compute', { siteId: 'ALL', gatewayCount: 5, coverageRadiusM: 800 })).status === 401);
+  if (bOnly) {
+    check("A planning on B's site -> 404", (await post('/api/gis/gateway-placement/compute', { siteId: String(bOnly.id), gatewayCount: 5, coverageRadiusM: 800 }, A.token)).status === 404);
+    check("A optimising B's site -> 404", (await post('/api/gis/gateway-placement/relocate', { siteId: String(bOnly.id), coverageRadiusM: 800 }, A.token)).status === 404);
+  }
+  // a run on one site must not move or remove a gateway that also serves meters of other sites
+  const scopedRoot = A.sites.find((x) => !x.parentSite && A.sites.some((c) => c.parentSite === x.id))?.id ?? rootId;
+  const scopeIds = new Set<number>([scopedRoot]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const x of A.sites) if (x.parentSite && scopeIds.has(x.parentSite) && !scopeIds.has(x.id)) { scopeIds.add(x.id); grew = true; }
+  }
+  const servesOutside = new Set<string>();
+  for (const r of map.rows) if (r[5] >= 0 && !scopeIds.has(r[8])) servesOutside.add(map.gatewayIds[r[5]]);
+  const rlSite = await post('/api/gis/gateway-placement/relocate', { siteId: String(scopedRoot), coverageRadiusM: 800 }, A.token);
+  const touched = (rlSite.body?.items ?? []).filter((i: any) => i.verdict === 'move' || i.verdict === 'remove');
+  check('a one-site relocation never touches a gateway that also serves other sites', rlSite.status === 200 && touched.every((i: any) => !servesOutside.has(i.id)),
+    `${touched.length} changes, ${rlSite.body?.items?.filter((i: any) => i.lockedReason === 'serves-other-sites').length} locked as serving other sites`);
+
+  const rlB = await post('/api/gis/gateway-placement/relocate', { siteId: 'ALL', coverageRadiusM: 800 }, B.token);
+  const aGatewayIds = new Set(placed.map((g: any) => g.gatewayId));
+  check("B's relocation plan holds none of A's gateways", rlB.status === 200 && rlB.body.items.every((i: any) => !aGatewayIds.has(i.id)), `${rlB.body?.items?.length} gateways`);
 
   console.log(`\n${pass} passed, ${fail} failed`);
 } catch (err) {

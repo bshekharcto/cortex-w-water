@@ -284,13 +284,13 @@ function GatewayCandidateDrawerContent({ gateway, siteName, radiusM: selectedRad
                 <div className="gis-kv-row">
                   <span className="gis-k">Latitude</span>
                   <span className="gis-v" style={{ fontFamily: 'monospace', fontWeight: 600 }}>
-                    {gateway.latitude.toFixed(6)}° N
+                    {Math.abs(gateway.latitude).toFixed(6)}° {gateway.latitude < 0 ? 'S' : 'N'}
                   </span>
                 </div>
                 <div className="gis-kv-row">
                   <span className="gis-k">Longitude</span>
                   <span className="gis-v" style={{ fontFamily: 'monospace', fontWeight: 600 }}>
-                    {gateway.longitude.toFixed(6)}° E
+                    {Math.abs(gateway.longitude).toFixed(6)}° {gateway.longitude < 0 ? 'W' : 'E'}
                   </span>
                 </div>
                 <div className="gis-kv-row">
@@ -587,7 +587,8 @@ export function GatewayCandidateDrawer(props: GatewayCandidateDrawerProps) {
   if (!props.gateway) return null;
 
   return (
-    <DrawerErrorBoundary onClose={props.onClose}>
+    // one drawer per candidate: its tab, width and approval mark never carry over to another one
+    <DrawerErrorBoundary key={`${props.gateway.gatewayNumber}|${props.gateway.latitude}|${props.gateway.longitude}`} onClose={props.onClose}>
       <GatewayCandidateDrawerContent
         gateway={props.gateway}
         siteName={props.siteName}

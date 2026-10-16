@@ -1,5 +1,5 @@
 import { apiRequest } from './httpClient';
-import type { SensorRawDataDTO, GeofenceDTO, GatewayPlacementResult, ExistingMode } from '@/modules/gis/shared/mapTypes';
+import type { SensorRawDataDTO, GeofenceDTO, GatewayPlacementResult, ExistingMode, RelocationResult } from '@/modules/gis/shared/mapTypes';
 import type { GisMeter } from '@/modules/gis/shared/gisData';
 
 export interface LiveMetersResponse {
@@ -104,6 +104,29 @@ export const mapApi = {
     apiRequest<GatewayPlacementResult>('/gis/gateway-placement/compute', {
       method: 'POST',
       body: { siteId, gatewayCount, coverageRadiusM, ...options },
+      signal,
+    }),
+
+  /**
+   * Which existing gateways to keep, move or remove for the selected sites (and every site below them). The number of
+   * gateways never grows. maxMoves / minGain / maxMoveDistanceM null = no limit / automatic / no limit.
+   */
+  computeGatewayRelocation: (
+    siteId: string,
+    coverageRadiusM: number,
+    options: {
+      maxMoves?: number | null;
+      minGain?: number | null;
+      maxMoveDistanceM?: number | null;
+      allowRemove?: boolean;
+      existingMode?: 'all' | 'working';
+      lockedGatewayIds?: string[];
+    } = {},
+    signal?: AbortSignal
+  ) =>
+    apiRequest<RelocationResult>('/gis/gateway-placement/relocate', {
+      method: 'POST',
+      body: { siteId, coverageRadiusM, ...options },
       signal,
     }),
 };
