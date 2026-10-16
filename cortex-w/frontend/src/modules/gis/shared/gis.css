@@ -1525,3 +1525,92 @@
 .gis-suggest-id { font-size: 12.5px; font-weight: 600; color: #0F172A; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .gis-suggest-sub { font-size: 11px; color: #64748B; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gis-suggest-tag { font-size: 10px; color: #B45309; background: #FEF3C7; border-radius: 10px; padding: 1px 6px; white-space: nowrap; }
+
+/* ---------- Gateway filter (Network Explorer): "id · name" entries in a searchable, scrollable list ---------- */
+.gis-gwpick { position: relative; display: inline-flex; align-items: center; flex-shrink: 0; }
+.gis-gwpick-btn { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; min-width: 190px; max-width: 280px; padding: 5px 10px; background: var(--cw-surface-soft, #F8FAFC); border: 1px solid var(--cw-border, #E2E8F0); border-radius: 6px; font-size: 12px; font-weight: 500; color: var(--cw-text, #0F172A); cursor: pointer; }
+.gis-gwpick-btn:hover { border-color: #93C5FD; }
+.gis-gwpick-btn--active { border-color: #2563EB; background: #EFF6FF; padding-right: 28px; }
+.gis-gwpick-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gis-gwpick-name { color: #64748B; font-weight: 500; }
+.gis-gwpick-clear { position: absolute; right: 24px; top: 50%; transform: translateY(-50%); display: inline-flex; padding: 2px; border: none; border-radius: 50%; background: transparent; color: #64748B; cursor: pointer; }
+.gis-gwpick-clear:hover { background: #DBEAFE; color: #1D4ED8; }
+.gis-gwpick-panel { position: absolute; top: calc(100% + 6px); left: 0; z-index: 60; width: 340px; background: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 8px; box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18); overflow: hidden; }
+.gis-gwpick-search { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #E2E8F0; color: #94A3B8; }
+.gis-gwpick-search input { flex: 1; border: none; outline: none; font-size: 12px; color: #0F172A; background: transparent; }
+.gis-gwpick-list { list-style: none; margin: 0; padding: 4px; max-height: 280px; overflow-y: auto; scrollbar-width: thin; }
+.gis-gwpick-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 7px 9px; border: none; border-radius: 6px; background: transparent; font-size: 12px; color: #1E293B; text-align: left; cursor: pointer; }
+.gis-gwpick-item:hover { background: #F1F5F9; }
+.gis-gwpick-item--on { background: rgba(37, 99, 235, 0.1); color: #1D4ED8; }
+.gis-gwpick-item-main { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gis-gwpick-empty { padding: 12px; font-size: 12px; color: #64748B; text-align: center; }
+
+/* the meter drawer's "nearest gateway" line, right under "Meter 360" */
+.gis-meter-nearest-gw { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 8px 0 2px 0; padding: 6px 12px; font-size: 12px; font-weight: 500; color: #475569; background: #EFF6FF; border: 1px solid #BFDBFE; border-left: 3px solid #2563EB; border-radius: 8px; line-height: 1.3; }
+.gis-meter-nearest-gw b { color: #0F172A; font-weight: 700; }
+.gis-meter-nearest-gw .gis-nearest-dist { margin-left: 2px; padding: 2px 8px; border-radius: 999px; background: #2563EB; color: #FFFFFF; font-weight: 700; font-size: 11.5px; white-space: nowrap; }
+
+/* every filter on one line (scrolls sideways on a narrow screen instead of wrapping) */
+.gis-filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; min-width: 0; }
+.gis-filter-row > * { flex-shrink: 0; }
+.gis-filter-row .gis-search-input { width: 190px; }
+.gis-cov-panel { overflow-y: auto; min-height: 0; }
+.gis-cov-details { border-top: 1px solid #E2E8F0; padding-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+
+/* filter controls share one height so the row reads evenly; status sits right next to the gateway filter */
+.gis-filter-row .gis-select, .gis-filter-row .gis-search-input, .gis-filter-row .cc-sitetree-button { height: 30px; box-sizing: border-box; }
+.gis-filter-row .gis-select { padding: 0 28px 0 10px; border-radius: 6px; }
+.gis-filter-row .gis-title-badge { margin-right: 4px; }
+
+/* the gateway card: wider and more open */
+.gis-map-top { width: 360px; gap: 10px; }
+.gis-cov-panel { padding: 14px 38px 14px 14px; gap: 12px; }
+.gis-cov-close { top: 10px; right: 10px; }
+.gis-cov-id { gap: 3px; }
+.gis-cov-name { font-size: 14px; }
+.gis-cov-ctl { gap: 10px; padding: 10px 12px; }
+.gis-cov-ctl-top { gap: 8px 12px; }
+.gis-cov-result-wrap { gap: 8px; }
+.gis-cov-chips { gap: 6px 14px; line-height: 1.4; }
+.gis-cov-details { padding-top: 12px; gap: 8px; }
+.gis-cov-details .gis-kv-row { padding: 2px 0; }
+.gis-cov-details .gis-action-btn { margin-top: 6px; }
+@media (max-width: 900px) { .gis-map-top { width: 300px; } }
+
+/* gateway + status live together in one box: label, control, divider, label, control, all on one rhythm */
+.gis-filter-group { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 6px 0 10px; background: var(--cw-surface-soft, #F8FAFC); border: 1px solid var(--cw-border, #E2E8F0); border-radius: 8px; flex-shrink: 0; }
+.gis-filter-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #64748B; white-space: nowrap; }
+.gis-filter-sep { width: 1px; height: 18px; background: #CBD5E1; margin: 0 4px; }
+.gis-filter-group .gis-gwpick-btn { min-width: 0; width: auto; max-width: 240px; height: 26px; border-color: transparent; background: #FFFFFF; gap: 6px; }
+.gis-filter-group .gis-gwpick-btn:hover { border-color: #93C5FD; }
+.gis-filter-group .gis-gwpick-btn--active { background: #EFF6FF; border-color: #2563EB; }
+.gis-filter-group .gis-select--bare { height: 26px; background: #FFFFFF; border-color: transparent; }
+.gis-filter-group .gis-select--bare:hover { border-color: #93C5FD; }
+
+/* Network Explorer: the whole bar (title, filters, layers, views) stays on one line on a normal laptop screen; below 1200px it may wrap */
+.gis-container .gis-toolbar { flex-wrap: nowrap; gap: 8px; }
+.gis-container .gis-toolbar-left { flex-wrap: nowrap; gap: 8px; min-width: 0; flex: 1 1 auto; }
+.gis-container .gis-toolbar-right { flex-wrap: nowrap; gap: 8px; flex-shrink: 0; }
+.gis-container .gis-toolbar .gis-title-badge { white-space: nowrap; flex-shrink: 0; }
+.gis-container .gis-toolbar .gis-layer-btn, .gis-container .gis-toolbar .gis-view-tab { white-space: nowrap; }
+.gis-filter-row { flex: 1 1 auto; }
+.gis-filter-row .gis-search-wrap { flex: 1 1 180px; min-width: 120px; max-width: 220px; }
+.gis-filter-row .gis-search-input { width: 100%; }
+.gis-filter-row .cc-sitetree-button { min-width: 120px; }
+.gis-filter-group .gis-select--bare { width: 118px; }
+.gis-filter-group .gis-gwpick-btn { min-width: 128px; }
+@media (max-width: 1200px) {
+  .gis-container .gis-toolbar, .gis-container .gis-toolbar-left, .gis-container .gis-toolbar-right { flex-wrap: wrap; }
+  .gis-filter-row { flex-wrap: wrap; }
+}
+@media (max-width: 1500px) {
+  .gis-container .gis-fullscreen-btn span { display: none; }
+  .gis-container .gis-fullscreen-btn { padding-left: 8px; padding-right: 8px; }
+  .gis-filter-group .gis-filter-label { font-size: 10px; }
+}
+
+/* nearest gateway: label, gateway and distance on a single line (a long gateway name is cut with … rather than wrapping) */
+.gis-meter-nearest-gw { display: flex; flex-wrap: nowrap; width: fit-content; max-width: 100%; align-items: center; gap: 8px; white-space: nowrap; }
+.gis-meter-nearest-gw > span:first-child { flex-shrink: 0; }
+.gis-meter-nearest-gw b { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.gis-meter-nearest-gw .gis-nearest-dist { flex-shrink: 0; margin-left: 0; }
