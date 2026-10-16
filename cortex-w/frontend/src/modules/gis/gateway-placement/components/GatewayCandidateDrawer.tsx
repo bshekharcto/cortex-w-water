@@ -96,9 +96,13 @@ function GatewayCandidateDrawerContent({ gateway, siteName, radiusM: selectedRad
   const [isApproved, setIsApproved] = useState(false);
 
   const gwNum = gateway.gatewayNumber;
-  const assignedCount = gateway.metersAssigned || gateway.assignedAssetIds?.length || 0;
-  const coveredCount = gateway.metersCoveredCount || 0;
-  const coveragePercent = gateway.percentCovered ?? (assignedCount > 0 ? Math.round((coveredCount / assignedCount) * 100) : 0);
+  // inRange: every meter within the radius; coveredCount: the meters it newly brings into reach (counted once across
+  // gateways); coveragePercent: that as a share of all the meters planned for.
+  const inRange = gateway.metersAssigned;
+  const coveredCount = gateway.metersCoveredCount;
+  const coveragePercent = gateway.percentCovered ?? 0;
+  const onlyThisOne = gateway.onlyThisOne ?? null;
+  const addedInOrder = gateway.addedInOrder ?? null;
   // Missing values stay missing ("—" on screen, null in the export); nothing is filled in with a made-up number.
   const avgDist = gateway.avgDistanceM;
   const maxDist = gateway.maxDistanceM;
@@ -116,9 +120,11 @@ function GatewayCandidateDrawerContent({ gateway, siteName, radiusM: selectedRad
         longitude: gateway.longitude,
       },
       coverageRadiusM: radiusM,
-      metersAssigned: assignedCount,
-      metersCovered: coveredCount,
-      coveragePercent: `${coveragePercent}%`,
+      metersInRange: inRange,
+      metersNewlyCovered: coveredCount,
+      metersOnlyThisGatewayReaches: onlyThisOne,
+      metersAddedInBuildOrder: addedInOrder,
+      shareOfAllMeters: `${coveragePercent}%`,
       avgDistanceMeters: avgDist,
       maxDistanceMeters: maxDist,
       nearestExistingGateway:
@@ -157,7 +163,7 @@ function GatewayCandidateDrawerContent({ gateway, siteName, radiusM: selectedRad
                 CANDIDATE #{gwNum}
               </span>
               <span className="gis-status-badge gis-status-badge--normal">
-                {coveragePercent}% COVERED
+                +{coveragePercent}% OF METERS
               </span>
               <span className="gis-badge-sub gis-badge-sub--ok">
                 {siteName.toUpperCase()}
@@ -165,7 +171,7 @@ function GatewayCandidateDrawerContent({ gateway, siteName, radiusM: selectedRad
             </div>
             <h2 className="gis-meter-id-title">Recommended Gateway #{gwNum}</h2>
             <p className="gis-meter-consumer-sub">
-              <strong>{coveredCount.toLocaleString()} / {assignedCount.toLocaleString()} meters</strong> within {radiusM ?? '—'}m radius
+              <strong>{coveredCount.toLocaleString()} meters newly reached</strong> · {inRange.toLocaleString()} within {radiusM ?? '—'} m
             </p>
           </div>
 
@@ -187,12 +193,12 @@ function GatewayCandidateDrawerContent({ gateway, siteName, radiusM: selectedRad
         <div className="gis-meter-kpi-grid">
           <div className="gis-meter-kpi-card">
             <div className="gis-kpi-top">
-              <span className="gis-kpi-label">Coverage Ratio</span>
+              <span className="gis-kpi-label">Newly Reached</span>
               <Radio size={13} color="#EA580C" />
             </div>
             <div className="gis-kpi-val-group">
-              <span className="gis-kpi-big" style={{ color: '#EA580C' }}>{coveragePercent}%</span>
-              <span className="gis-kpi-small">{coveredCount}/{assignedCount} Covered</span>
+              <span className="gis-kpi-big" style={{ color: '#EA580C' }}>{coveredCount.toLocaleString()}</span>
+              <span className="gis-kpi-small">{coveragePercent}% of all meters</span>
             </div>
           </div>
 
@@ -365,19 +371,19 @@ function GatewayCandidateDrawerContent({ gateway, siteName, radiusM: selectedRad
                   textAlign: 'center',
                 }}>
                   <div>
-                    <div style={{ fontSize: 11, color: '#64748b' }}>Assigned Meters</div>
+                    <div style={{ fontSize: 11, color: '#64748b' }}>Within {radiusM ?? '—'} m</div>
                     <div style={{ fontSize: 20, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
-                      {assignedCount.toLocaleString()}
+                      {inRange.toLocaleString()}
                     </div>
                   </div>
                   <div>
-                    <div style={{ fontSize: 11, color: '#64748b' }}>Covered (&lt;{radiusM ?? '—'}m)</div>
+                    <div style={{ fontSize: 11, color: '#64748b' }}>Newly Reached</div>
                     <div style={{ fontSize: 20, fontWeight: 700, color: '#EA580C', marginTop: 2 }}>
                       {coveredCount.toLocaleString()}
                     </div>
                   </div>
                   <div>
-                    <div style={{ fontSize: 11, color: '#64748b' }}>Coverage %</div>
+                    <div style={{ fontSize: 11, color: '#64748b' }}>Share of All Meters</div>
                     <div style={{ fontSize: 20, fontWeight: 700, color: '#059669', marginTop: 2 }}>
                       {coveragePercent}%
                     </div>
@@ -385,11 +391,19 @@ function GatewayCandidateDrawerContent({ gateway, siteName, radiusM: selectedRad
                 </div>
 
                 <div className="gis-kv-row" style={{ marginTop: 12 }}>
-                  <span className="gis-k">Average Distance to Meter</span>
+                  <span className="gis-k">Average Distance to Served Meters</span>
                   <span className="gis-v">{avgDist == null ? '—' : `${avgDist} meters`}</span>
                 </div>
                 <div className="gis-kv-row">
-                  <span className="gis-k">Furthest Assigned Meter</span>
+                  <span className="gis-k">Only This Gateway Reaches</span>
+                  <span className="gis-v">{onlyThisOne == null ? '—' : `${onlyThisOne.toLocaleString()} meters`}</span>
+                </div>
+                <div className="gis-kv-row">
+                  <span className="gis-k">Adds When Built in Rank Order</span>
+                  <span className="gis-v">{addedInOrder == null ? '—' : `${addedInOrder.toLocaleString()} meters`}</span>
+                </div>
+                <div className="gis-kv-row">
+                  <span className="gis-k">Furthest Served Meter</span>
                   <span className="gis-v">{maxDist == null ? '—' : `${maxDist} meters`}</span>
                 </div>
                 <div className="gis-kv-row">

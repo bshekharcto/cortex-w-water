@@ -4,7 +4,8 @@ import { config } from '../config/env.js';
 import { pool } from '../db/pool.js';
 import { localDate } from '../services/localDate.js';
 import { requireClient, scopeSiteIds, rootSites } from '../services/clientContext.js';
-import { getLegacyGisData, resolveSiteScope } from '../services/networkService.js';
+import { getGateways, getLegacyGisData, getMeterMap, resolveSiteScope } from '../services/networkService.js';
+import { planGateways, type ExistingMode } from '../services/gatewayPlacement.js';
 import { clientTenantIds } from '../services/tenantScope.js';
 
 const router = Router();
@@ -276,18 +277,6 @@ router.get('/meter-detail/:assetId', async (req, res) => {
   }
 });
 
-// Helper: Haversine distance in meters
-function computeHaversineDistanceM(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
 // GET /api/gis/geofences & GET /api/gis/geofence
 async function handleGeofences(req: any, res: any) {
   try {
@@ -331,105 +320,110 @@ const MIN_GATEWAYS = 1;
 const MAX_GATEWAYS = 25;
 const MIN_RADIUS_M = 100;
 const MAX_RADIUS_M = 5000;
+const MIN_TARGET_PERCENT = 50;
+const MAX_MIN_NEW_METERS = 100_000;
+const EXISTING_MODES: ExistingMode[] = ['all', 'working', 'none'];
 
-// POST /api/gis/gateway-placement/compute
+/**
+ * POST /api/gis/gateway-placement/compute
+ * body: { siteId: 'ALL' | id | 'a,b', gatewayCount (the most new gateways allowed), coverageRadiusM,
+ *         minNewMeters?: number | null (null = automatic), targetCoveragePercent?: 50..100, existingMode?: all | working | none }
+ *
+ * Where to put new gateways (services/gatewayPlacement.ts), for the chosen sites and every site below them. The meters
+ * and existing gateways are exactly the ones the Network Explorer and this page's map draw (services/networkService.ts),
+ * so the counts agree. gatewayCount is a maximum: fewer gateways come back when fewer are worth building, and
+ * `stopReason` says why it stopped.
+ */
 router.post('/gateway-placement/compute', async (req, res) => {
   try {
-    const siteId = Number(req.body.siteId ?? defaultSiteId());
-    if (!Number.isInteger(siteId)) return res.status(400).json({ error: 'siteId must be a number' });
-    if (scopeSiteIds(requireClient(), String(siteId)) === null) return res.status(404).json({ error: 'Unknown site' });
-    const gatewayCount = Number(req.body.gatewayCount ?? req.body.numberOfGateways ?? 5);
-    const coverageRadiusM = Number(req.body.coverageRadiusM ?? req.body.radius ?? 500);
+    const siteId = String(req.body.siteId ?? 'ALL');
+    const scope = resolveSiteScope(siteId);
+    if (scope === undefined) return res.status(404).json({ error: 'Unknown site' });
+
+    const gatewayCount = Number(req.body.gatewayCount ?? 5);
+    const coverageRadiusM = Number(req.body.coverageRadiusM ?? 500);
+    const minNewRaw = req.body.minNewMeters;
+    const minNewMeters = minNewRaw == null || minNewRaw === '' ? null : Number(minNewRaw);
+    const targetCoveragePercent = Number(req.body.targetCoveragePercent ?? 100);
+    const existingMode = (req.body.existingMode ?? 'all') as ExistingMode;
+
     if (!Number.isInteger(gatewayCount) || gatewayCount < MIN_GATEWAYS || gatewayCount > MAX_GATEWAYS) {
       return res.status(400).json({ error: `gatewayCount must be a whole number from ${MIN_GATEWAYS} to ${MAX_GATEWAYS}` });
     }
     if (!Number.isFinite(coverageRadiusM) || coverageRadiusM < MIN_RADIUS_M || coverageRadiusM > MAX_RADIUS_M) {
       return res.status(400).json({ error: `coverageRadiusM must be from ${MIN_RADIUS_M} to ${MAX_RADIUS_M} metres` });
     }
-
-    const authHeader = req.headers.authorization;
-    const token = await getAuthToken(authHeader);
-    const headers: Record<string, string> = token ? { Authorization: token } : {};
-
-    // Parallel fetch: upstream compute + existing geofences to enrich nearest existing gateways
-    const [computeRes, fenceRes] = await Promise.all([
-      proxyUpstream('POST', '/api/map/gateway-placement/compute', {
-        body: { siteId, gatewayCount, coverageRadiusM },
-        headers,
-      }),
-      proxyUpstream('GET', '/api/map/geofence', {
-        query: { siteIds: String(siteId) },
-        headers,
-      }).catch(() => ({ status: 500, data: [] })),
-    ]);
-
-    if (computeRes.status !== 200 || !computeRes.data) {
-      return res.status(computeRes.status).json(computeRes.data || { error: 'Computation failed' });
+    if (minNewMeters !== null && (!Number.isInteger(minNewMeters) || minNewMeters < 1 || minNewMeters > MAX_MIN_NEW_METERS)) {
+      return res.status(400).json({ error: `minNewMeters must be empty (automatic) or a whole number from 1 to ${MAX_MIN_NEW_METERS}` });
+    }
+    if (!Number.isFinite(targetCoveragePercent) || targetCoveragePercent < MIN_TARGET_PERCENT || targetCoveragePercent > 100) {
+      return res.status(400).json({ error: `targetCoveragePercent must be from ${MIN_TARGET_PERCENT} to 100` });
+    }
+    if (!EXISTING_MODES.includes(existingMode)) {
+      return res.status(400).json({ error: `existingMode must be one of ${EXISTING_MODES.join(', ')}` });
     }
 
-    const rawData = computeRes.data as any;
-    const rawGateways: any[] = Array.isArray(rawData.gateways) ? rawData.gateways : [];
-    const fences: any[] = Array.isArray(fenceRes.data) ? fenceRes.data : [];
-
-    // Filter valid existing gateways with coordinates
-    const existingGateways = fences.filter((f: any) => f.radius && f.geofenceCoordinates?.[0]);
-
-    // Enrich candidate gateways
-    const enrichedGateways = rawGateways.map((g: any, index: number) => {
-      const gNum = g.gatewayNumber ?? (index + 1);
-      const assigned = g.metersAssigned ?? g.assignedAssetIds?.length ?? 0;
-      const covered = g.metersCoveredCount ?? 0;
-      const percent = assigned > 0 ? Math.round((covered / assigned) * 100) : 0;
-      const avgDist = typeof g.avgDistanceM === 'number' ? Number(g.avgDistanceM.toFixed(1)) : null;
-      const maxDist = typeof g.maxDistanceM === 'number' ? Number(g.maxDistanceM.toFixed(1)) : null;
-
-      // Find nearest existing gateway using Haversine distance
-      let nearestName: string | null = null;
-      let nearestDist: number | null = null;
-
-      for (const ex of existingGateways) {
-        const coords = ex.geofenceCoordinates[0];
-        const d = computeHaversineDistanceM(g.latitude, g.longitude, coords.latitude, coords.longitude);
-        if (nearestDist === null || d < nearestDist) {
-          nearestDist = d;
-          nearestName = ex.name || 'Existing Gateway';
-        }
-      }
-
-      return {
-        ...g,
-        gatewayNumber: gNum,
-        metersAssigned: assigned,
-        metersCoveredCount: covered,
-        percentCovered: percent,
-        avgDistanceM: avgDist,
-        maxDistanceM: maxDist,
-        coverageRadiusM,
-        nearestExistingName: nearestName,
-        nearestExistingDistanceM: nearestDist !== null ? Number(nearestDist.toFixed(1)) : null,
-      };
+    const [map, gws] = await Promise.all([getMeterMap(scope), getGateways(scope)]);
+    const started = performance.now();
+    const plan = planGateways({
+      meters: map.rows.map((r) => ({ id: r[0], lat: r[2], lng: r[3] })),
+      // a gateway that hears nothing (or has gone quiet) is not working; degraded still carries traffic
+      existing: gws.gateways.map((g) => ({ id: g.gatewayId, lat: g.lat, lng: g.lng, working: g.status === 'reporting' || g.status === 'degraded' })),
+      maxGateways: gatewayCount,
+      radiusM: coverageRadiusM,
+      minNewMeters,
+      targetCoveragePercent,
+      existingMode,
     });
-
-    const totalCovered = rawData.totalMetersCovered ?? enrichedGateways.reduce((sum, g) => sum + g.metersCoveredCount, 0);
-    // If upstream doesn't report totalMeters, we have no reliable real count
-    // for this site — report null rather than a stale hardcoded guess.
-    const totalMeters = typeof rawData.totalMeters === 'number' ? rawData.totalMeters : null;
-    const overallPercent = totalMeters && totalMeters > 0 ? Math.round((totalCovered / totalMeters) * 100) : null;
+    const computeMs = Math.round(performance.now() - started);
+    const share = (n: number) => (plan.metersConsidered > 0 ? Math.round((n / plan.metersConsidered) * 1000) / 10 : 0);
 
     res.json({
       siteId,
       gatewayCount,
       coverageRadiusM,
-      totalMeters,
-      totalMetersCovered: totalCovered,
-      overallCoveragePercent: overallPercent,
-      excludedMeterCount: rawData.excludedMeterCount ?? 0,
-      excludedAssetIds: rawData.excludedAssetIds ?? [],
-      gateways: enrichedGateways,
-      existingGatewaysCount: existingGateways.length,
-      existingGateways,
-      // true when the geofence list could not be loaded, so "no nearest gateway" is not mistaken for "there are none"
-      existingGatewaysUnavailable: fenceRes.status !== 200,
+      existingMode,
+      // meters: the ones with a usable position are planned for; the others are counted so the page can say so
+      metersInSelection: map.summary.total,
+      totalMeters: plan.metersConsidered,
+      excludedMeterCount: map.summary.withoutCoordinates + plan.invalidMeters,
+      excludedAssetIds: [],
+      coordinatesStatus: map.coordinates.status,
+      coveredByExisting: plan.coveredByExisting,
+      newlyCovered: plan.newlyCovered,
+      totalMetersCovered: plan.totalCovered,
+      uncovered: plan.uncovered,
+      coverageBeforePercent: plan.coverageBeforePercent,
+      overallCoveragePercent: plan.coverageAfterPercent,
+      // why it stopped, and what more gateways would bring
+      stopReason: plan.stopReason,
+      nextGain: plan.nextGain,
+      minNewMetersUsed: plan.minNewMetersUsed,
+      targetCoveragePercent: plan.targetCoveragePercent,
+      curve: plan.curve,
+      curveComplete: plan.curveComplete,
+      gatewaysFor: plan.gatewaysFor,
+      existingGatewaysCount: gws.gateways.length,
+      existingCounted: plan.existingCounted,
+      unplacedGatewaysCount: gws.unplaced.length,
+      gateways: plan.gateways.map((g) => ({
+        gatewayNumber: g.rank,
+        latitude: g.lat,
+        longitude: g.lng,
+        metersAssigned: g.inRange,
+        metersCoveredCount: g.newlyCovered,
+        percentCovered: share(g.newlyCovered),
+        addedInOrder: g.addedInOrder,
+        onlyThisOne: g.onlyThisOne,
+        avgDistanceM: g.avgDistanceM,
+        maxDistanceM: g.maxDistanceM,
+        coverageRadiusM,
+        nearestExistingId: g.nearestExisting?.id ?? null,
+        nearestExistingName: g.nearestExisting?.id ?? null,
+        nearestExistingDistanceM: g.nearestExisting?.distanceM ?? null,
+        assignedAssetIds: [],
+      })),
+      computeMs,
     });
   } catch (err: any) {
     console.error('[gis] Error computing gateway placement:', err.message);

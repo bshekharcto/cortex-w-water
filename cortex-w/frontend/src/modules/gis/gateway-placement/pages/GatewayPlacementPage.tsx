@@ -16,8 +16,9 @@ import type { BoundingBox } from '../../shared/spatialIndex';
 import { mapApi } from '@/services/api/mapApi';
 import { networkApi, type NetGateway, type NetMeter, type NetMeterStatus, type NetSiteOption } from '@/services/api/networkApi';
 import { gatewayStatusApi, type GatewayState } from '@/services/api/gatewayStatusApi';
-import type { GatewayCandidate, GatewayPlacementResult } from '../../shared/mapTypes';
+import type { ExistingMode, GatewayCandidate, GatewayPlacementResult } from '../../shared/mapTypes';
 import { GatewayCandidateDrawer } from '../components/GatewayCandidateDrawer';
+import { explainPlan, plural } from '../placementModel';
 import { MeterHistoryDrawer } from '../../shared/MeterHistoryDrawer';
 import { createMeterLayer, type LayerItem, type MeterLayer } from '../../shared/meterCanvasLayer';
 import { getDecibelBorder } from '../../shared/meterColorUtils';
@@ -25,7 +26,6 @@ import { getGatewayMapMarkerIcon, getGatewaySvg } from '../../shared/gatewayIcon
 import { isUnauthorized } from '../../shared/meterDetailModel';
 import { SiteTreeSelect } from '@/modules/command-center/components/SiteTreeSelect';
 import { useNetworkData } from '../../network/hooks/useNetworkData';
-import { siteWithDescendants } from '../../network/networkScope';
 import { distanceM } from '../../network/coverage';
 import {
   METER_STATUS_STYLE,
@@ -59,6 +59,13 @@ function existingIconStatus(gw: NetGateway, state: GatewayState | undefined): st
 }
 const STATE_LABEL: Record<GatewayState, string> = { online: 'Online', offline: 'Offline', 'no-data': 'No data' };
 
+const EXISTING_MODE_LABEL: Record<ExistingMode, string> = {
+  all: 'Count all existing gateways',
+  working: 'Count only working gateways',
+  none: 'Ignore existing gateways',
+};
+const TARGET_CHOICES = [100, 99, 95, 90, 80];
+
 export function GatewayPlacementPage() {
   const navigate = useNavigate();
   const apiKey = runtimeConfig.GOOGLE_MAPS_API_KEY;
@@ -67,11 +74,15 @@ export function GatewayPlacementPage() {
   // The site picker is the same tree as the Network Explorer's: a site, several sites, or all, each with its sub-sites.
   const [siteId, setSiteId] = useState<string>('ALL');
   const [sites, setSites] = useState<NetSiteOption[]>([]);
-  const userPickedSiteRef = useRef(false);
 
   // Control State
   const [gatewayCount, setGatewayCount] = useState<number>(5);
   const [coverageRadiusM, setCoverageRadiusM] = useState<number>(500);
+  // Options: how existing gateways count, the least a new gateway must bring (null = automatic), and when to stop.
+  const [existingMode, setExistingMode] = useState<ExistingMode>('all');
+  const [minNewMeters, setMinNewMeters] = useState<number | null>(null);
+  const [targetCoverage, setTargetCoverage] = useState<number>(100);
+  const [showOptions, setShowOptions] = useState(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   // Parts of the answer that could not be loaded while the rest could (shown as a note, not as an empty map).
@@ -111,12 +122,6 @@ export function GatewayPlacementPage() {
   const infoWindowRef = useRef<any>(null);
   const fittedForRef = useRef<string | null>(null);
 
-  // The placement is computed for one site at a time (see "scopeNote" below for what that means for its sub-sites).
-  const singleSiteId = useMemo(() => {
-    if (!/^\d+$/.test(siteId) || !sites.some((s) => s.id === siteId)) return null;
-    return Number(siteId);
-  }, [siteId, sites]);
-  const subSiteCount = useMemo(() => (singleSiteId == null ? 0 : siteWithDescendants(sites, siteId).size - 1), [sites, siteId, singleSiteId]);
   const currentSiteName = sites.find((s) => s.id === siteId)?.name ?? (siteId === 'ALL' ? 'All sites' : 'Selected sites');
 
   // The sign-in ended: go to the login screen instead of leaving a page whose buttons can never work.
@@ -130,11 +135,7 @@ export function GatewayPlacementPage() {
     networkApi
       .listSites(ctl.signal)
       .then((list) => {
-        const real = list.filter((s) => s.id !== 'ALL');
-        setSites(real);
-        // Start on the first top-level site (a placement run is for a site); the user's own choice always wins.
-        const first = real.find((s) => !s.parentId || !real.some((p) => p.id === s.parentId));
-        if (first && !userPickedSiteRef.current) setSiteId(first.id);
+        setSites(list.filter((s) => s.id !== 'ALL'));
       })
       .catch((e) => {
         if (isUnauthorized(e)) navigate('/login', { replace: true });
@@ -301,20 +302,23 @@ export function GatewayPlacementPage() {
   }, [siteId]);
 
   const handleGenerate = useCallback(async () => {
-    if (singleSiteId == null) return;
     const runId = ++runIdRef.current;
     setIsLoading(true);
     setLoadError(null);
     setLoadWarnings([]);
 
     try {
-      const res = await mapApi.computeGatewayPlacement(singleSiteId, gatewayCount, coverageRadiusM);
+      const res = await mapApi.computeGatewayPlacement(siteId, gatewayCount, coverageRadiusM, {
+        minNewMeters,
+        targetCoveragePercent: targetCoverage,
+        existingMode,
+      });
       if (runId !== runIdRef.current) return; // a newer run (e.g. another site) has started
       if (!res || !Array.isArray(res.gateways)) throw new Error('The placement service returned no result');
       setPlacementResult(res);
       setCandidates(res.gateways);
-      if (res.existingGatewaysUnavailable) {
-        setLoadWarnings(['The existing gateways could not be checked, so "nearest existing" is unavailable.']);
+      if (res.coordinatesStatus === 'stale') {
+        setLoadWarnings(['Meter positions could not be refreshed; the plan uses the last known positions.']);
       }
     } catch (err: any) {
       if (runId !== runIdRef.current) return;
@@ -327,14 +331,14 @@ export function GatewayPlacementPage() {
     } finally {
       if (runId === runIdRef.current) setIsLoading(false);
     }
-  }, [singleSiteId, gatewayCount, coverageRadiusM, navigate]);
+  }, [siteId, gatewayCount, coverageRadiusM, minNewMeters, targetCoverage, existingMode, navigate]);
 
-  // Compute once when a single site is chosen (and again with the Generate button).
+  // Compute once for every new site selection (and again with the Generate button).
   const generateRef = useRef(handleGenerate);
   generateRef.current = handleGenerate;
   useEffect(() => {
-    if (singleSiteId != null) void generateRef.current();
-  }, [singleSiteId]);
+    void generateRef.current();
+  }, [siteId]);
 
   // Fly to candidate coordinates
   const flyToCandidate = (lat: number, lng: number) => {
@@ -476,18 +480,23 @@ export function GatewayPlacementPage() {
     ...loadWarnings,
     ...(gatewayStatusUnavailable ? ['Gateway Status is not available, so gateway names come from the network list and their state is not shown.'] : []),
   ];
-  // The placement service counts only the meters assigned directly to the one site it is asked about.
-  const scopeNote =
-    singleSiteId != null && subSiteCount > 0
-      ? `This run counts only the meters assigned directly to ${currentSiteName}; its ${subSiteCount} sub-site${subSiteCount === 1 ? '' : 's'} are not included yet.`
-      : null;
+  const planNote = placementResult ? explainPlan(placementResult) : null;
+  /** "95% → 11 gateways" for the levels the curve reaches. */
+  const neededFor = placementResult?.gatewaysFor
+    ? (['90', '95', '100'] as const).map((level) => {
+        const n = placementResult.gatewaysFor![level];
+        const followed = Math.max(0, (placementResult.curve?.length ?? 1) - 1);
+        return { level, text: n == null ? `more than ${followed}` : String(n) };
+      })
+    : null;
+  const maxCandidateGain = Math.max(1, ...displayCandidates.map((c) => c.metersCoveredCount));
 
   // Coverage statistics calculations
-  // totalMeters / overallPercent are null when the service does not know the site's meter count: shown as "—", never guessed.
+  // null until a plan is in: shown as "—", never guessed.
   const totalMeters = placementResult?.totalMeters ?? null;
-  const totalCovered = placementResult?.totalMetersCovered ?? candidates.reduce((sum, g) => sum + g.metersCoveredCount, 0);
-  const overallPercent =
-    placementResult?.overallCoveragePercent ?? (totalMeters ? Math.round((totalCovered / totalMeters) * 100) : null);
+  const totalCovered = placementResult?.totalMetersCovered ?? 0;
+  const overallPercent = placementResult?.overallCoveragePercent ?? null;
+  const beforePercent = placementResult?.coverageBeforePercent ?? null;
   const percentColor = overallPercent == null ? '#64748b' : overallPercent >= 80 ? '#059669' : overallPercent >= 50 ? '#d97706' : '#dc2626';
   const fmtMetres = (v: number | null | undefined) => (v == null ? '—' : `${v}m`);
 
@@ -518,10 +527,7 @@ export function GatewayPlacementPage() {
           <SiteTreeSelect
             sites={sites}
             value={siteId}
-            onChange={(v) => {
-              userPickedSiteRef.current = true;
-              setSiteId(v);
-            }}
+            onChange={setSiteId}
           />
         </div>
 
@@ -529,8 +535,11 @@ export function GatewayPlacementPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           {/* Gateways Stepper */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>
-              Gateways
+            <span
+              style={{ fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}
+              title="The most new gateways to place. Fewer are recommended when fewer are worth building."
+            >
+              Max gateways
             </span>
             <div style={{
               display: 'inline-flex',
@@ -624,12 +633,19 @@ export function GatewayPlacementPage() {
           </div>
         </div>
 
-        {/* Right: Primary Generate Button */}
-        <div>
+        {/* Right: Options + Primary Generate Button */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            onClick={() => setShowOptions((v) => !v)}
+            className="cw-button-secondary"
+            aria-expanded={showOptions}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', fontSize: 13, fontWeight: 600 }}
+          >
+            Options {showOptions ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
           <button
             onClick={handleGenerate}
-            disabled={isLoading || singleSiteId == null}
-            title={singleSiteId == null ? 'Choose one site to compute a placement' : undefined}
+            disabled={isLoading}
             className="cw-button-primary"
             style={{
               display: 'inline-flex',
@@ -650,6 +666,64 @@ export function GatewayPlacementPage() {
           </button>
         </div>
       </div>
+
+      {/* Options: how existing gateways count, the least a new gateway must bring, and when to stop */}
+      {showOptions && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 20,
+          flexWrap: 'wrap',
+          padding: '8px 20px',
+          background: '#f8fafc',
+          borderBottom: '1px solid #e2e8f0',
+          fontSize: 12,
+          color: '#334155',
+          zIndex: 19,
+        }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 600, color: '#64748b' }}>Existing gateways</span>
+            <select
+              value={existingMode}
+              onChange={(e) => setExistingMode(e.target.value as ExistingMode)}
+              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: 12 }}
+              title="Meters an existing gateway already reaches need no new gateway"
+            >
+              {(Object.keys(EXISTING_MODE_LABEL) as ExistingMode[]).map((m) => (
+                <option key={m} value={m}>{EXISTING_MODE_LABEL[m]}</option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 600, color: '#64748b' }}>Min. new meters per gateway</span>
+            <input
+              type="number"
+              min={1}
+              value={minNewMeters ?? ''}
+              placeholder={`auto${placementResult?.minNewMetersUsed && minNewMeters == null ? ` (${placementResult.minNewMetersUsed})` : ''}`}
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                setMinNewMeters(v === '' ? null : Math.max(1, Math.round(Number(v)) || 1));
+              }}
+              style={{ width: 90, padding: '4px 8px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: 12 }}
+              title="A gateway is only recommended when it brings at least this many meters into reach. Empty = automatic (about 0.5% of the meters)."
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 600, color: '#64748b' }}>Stop at coverage</span>
+            <select
+              value={targetCoverage}
+              onChange={(e) => setTargetCoverage(Number(e.target.value))}
+              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: 12 }}
+            >
+              {TARGET_CHOICES.map((t) => (
+                <option key={t} value={t}>{t}%</option>
+              ))}
+            </select>
+          </label>
+          <span style={{ color: '#94a3b8' }}>Changes apply on Generate.</span>
+        </div>
+      )}
 
       {/* 2. BODY CONTENT: MAP (LEFT) + RECOMMENDED GATEWAYS SIDEBAR (RIGHT) */}
       <div style={{ display: 'flex', flex: 1, position: 'relative', overflow: 'hidden' }}>
@@ -879,7 +953,8 @@ export function GatewayPlacementPage() {
               }}
             >
               <span>
-                <strong>{displayCandidates.length} gateways</strong> - <span style={{ color: percentColor }}>{overallPercent == null ? '—' : `${overallPercent}%`}</span> of meters covered
+                <strong>{plural(displayCandidates.length, 'new gateway')}</strong> · coverage{' '}
+                {beforePercent == null ? '—' : `${beforePercent}%`} → <span style={{ color: percentColor }}>{overallPercent == null ? '—' : `${overallPercent}%`}</span>
               </span>
               {isSummaryExpanded ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
             </div>
@@ -901,11 +976,16 @@ export function GatewayPlacementPage() {
                     {' '}({summary.withCoordinates.toLocaleString()} with a position)
                   </div>
                 )}
-                <div>Total Bounded Meters (this run): <strong>{totalMeters == null ? '—' : totalMeters.toLocaleString()}</strong></div>
-                <div>Meters Covered (&lt;{appliedRadiusM}m): <strong style={{ color: '#059669' }}>{totalCovered.toLocaleString()}</strong></div>
-                <div>Meters Outside Radius: <strong>{totalMeters == null ? '—' : Math.max(0, totalMeters - totalCovered).toLocaleString()}</strong></div>
+                <div>Meters planned for (with a position): <strong>{totalMeters == null ? '—' : totalMeters.toLocaleString()}</strong></div>
+                <div>
+                  Already within {appliedRadiusM} m of an existing gateway:{' '}
+                  <strong>{placementResult?.coveredByExisting == null ? '—' : placementResult.coveredByExisting.toLocaleString()}</strong>
+                  {placementResult?.existingMode && placementResult.existingMode !== 'all' ? ` (${EXISTING_MODE_LABEL[placementResult.existingMode].toLowerCase()})` : ''}
+                </div>
+                <div>Newly reached by the new gateways: <strong style={{ color: '#059669' }}>{placementResult?.newlyCovered == null ? '—' : placementResult.newlyCovered.toLocaleString()}</strong></div>
+                <div>Still out of reach: <strong>{placementResult?.uncovered == null ? '—' : placementResult.uncovered.toLocaleString()}</strong> (total reached {totalCovered.toLocaleString()})</div>
                 {placementResult && placementResult.excludedMeterCount > 0 && (
-                  <div>Meters Excluded (no usable position): <strong>{placementResult.excludedMeterCount.toLocaleString()}</strong></div>
+                  <div>Left out (no usable position): <strong>{placementResult.excludedMeterCount.toLocaleString()}</strong></div>
                 )}
                 <div>Existing Gateways: <strong>{gateways.length}</strong></div>
               </div>
@@ -945,10 +1025,17 @@ export function GatewayPlacementPage() {
               </div>
             )}
 
-            {scopeNote && (
-              <div style={{ padding: 12, borderRadius: 6, background: '#eff6ff', color: '#1d4ed8', fontSize: 12, display: 'flex', gap: 8 }}>
-                <Info size={16} style={{ flexShrink: 0 }} />
-                <span>{scopeNote}</span>
+            {planNote && !isLoading && (
+              <div style={{ padding: 12, borderRadius: 6, background: '#eff6ff', color: '#1e3a8a', fontSize: 12, display: 'flex', gap: 8 }}>
+                <Info size={16} style={{ flexShrink: 0, color: '#2563eb' }} />
+                <div>
+                  <div>{planNote}</div>
+                  {neededFor && placementResult?.stopReason !== 'no-meters' && placementResult?.stopReason !== 'already-covered' && (
+                    <div style={{ marginTop: 6, color: '#475569' }} title="Beyond the recommended gateways these are estimates (each next gateway placed where it reaches most)">
+                      New gateways needed for {neededFor.map((x) => `${x.level}%: ${x.text}`).join(' · ')}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -964,17 +1051,15 @@ export function GatewayPlacementPage() {
                 <MapPin size={32} style={{ margin: '0 auto 8px', opacity: 0.4 }} />
                 <div style={{ fontWeight: 600, fontSize: 14 }}>No gateway recommendations</div>
                 <div style={{ fontSize: 12, marginTop: 4 }}>
-                  {singleSiteId == null
-                    ? 'Placement is computed for one site at a time for now. Choose a single site above; the map still shows every meter and gateway of your selection.'
-                    : 'Click "Generate" to compute gateway placement'}
+                  {placementResult ? 'See the note above for why.' : 'Click "Generate" to compute gateway placement'}
                 </div>
               </div>
             ) : (
               displayCandidates.map((cand) => {
                 const num = cand.gatewayNumber;
-                const assigned = cand.metersAssigned || cand.assignedAssetIds?.length || 0;
-                const covered = cand.metersCoveredCount || 0;
-                const percent = cand.percentCovered ?? (assigned > 0 ? Math.round((covered / assigned) * 100) : 0);
+                const inRange = cand.metersAssigned;
+                const covered = cand.metersCoveredCount;
+                const percent = cand.percentCovered ?? 0;
                 const avgD = cand.avgDistanceM;
                 const maxD = cand.maxDistanceM;
                 const nearestName = cand.nearestExistingName;
@@ -1016,8 +1101,8 @@ export function GatewayPlacementPage() {
                         }}>
                           {num}
                         </span>
-                        <span style={{ fontWeight: 700, fontSize: 14, color: '#0f172a' }}>
-                          {assigned.toLocaleString()} meters
+                        <span style={{ fontWeight: 700, fontSize: 14, color: '#0f172a' }} title="Meters it newly brings into reach">
+                          +{covered.toLocaleString()} meters
                         </span>
                       </div>
 
@@ -1029,7 +1114,7 @@ export function GatewayPlacementPage() {
                         fontSize: 11,
                         fontWeight: 700,
                       }}>
-                        {percent}% covered
+                        {percent}% of meters
                       </span>
                     </div>
 
@@ -1043,10 +1128,10 @@ export function GatewayPlacementPage() {
                       borderBottom: '1px solid #f1f5f9',
                     }}>
                       <div>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: '#dc2626' }}>
-                          {covered}/{assigned}
+                        <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>
+                          {inRange.toLocaleString()}
                         </div>
-                        <div style={{ fontSize: 11, color: '#64748b' }}>Covered</div>
+                        <div style={{ fontSize: 11, color: '#64748b' }} title="Every meter within the radius, including those other gateways also reach">In range</div>
                       </div>
 
                       <div>
@@ -1066,11 +1151,18 @@ export function GatewayPlacementPage() {
 
                     {/* Progress Bar */}
                     <div style={{ height: 4, background: '#f1f5f9', borderRadius: 2, marginTop: 8, overflow: 'hidden' }}>
-                      <div style={{ width: `${percent}%`, height: '100%', background: '#ea580c' }} />
+                      <div style={{ width: `${Math.round((covered / maxCandidateGain) * 100)}%`, height: '100%', background: '#ea580c' }} />
                     </div>
 
+                    {cand.onlyThisOne != null && (
+                      <div style={{ fontSize: 11, color: '#64748b', marginTop: 8 }}>
+                        Only this one reaches <strong>{cand.onlyThisOne.toLocaleString()}</strong>
+                        {cand.addedInOrder != null && <> · adds <strong>{cand.addedInOrder.toLocaleString()}</strong> when built in this order</>}
+                      </div>
+                    )}
+
                     {/* Nearest Existing line */}
-                    <div style={{ fontSize: 11, color: '#64748b', marginTop: 8 }}>
+                    <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
                       {nearestName == null || nearestDist == null ? (
                         <>Nearest existing: <strong>none found</strong></>
                       ) : (

@@ -1,5 +1,5 @@
 import { apiRequest } from './httpClient';
-import type { SensorRawDataDTO, GeofenceDTO, GatewayPlacementResult } from '@/modules/gis/shared/mapTypes';
+import type { SensorRawDataDTO, GeofenceDTO, GatewayPlacementResult, ExistingMode } from '@/modules/gis/shared/mapTypes';
 import type { GisMeter } from '@/modules/gis/shared/gisData';
 
 export interface LiveMetersResponse {
@@ -90,10 +90,21 @@ export const mapApi = {
   getGeofences: (siteId: number = 6394) =>
     apiRequest<GeofenceDTO[]>('/gis/geofences', { query: { siteIds: siteId } }),
 
-  computeGatewayPlacement: (siteId: number, gatewayCount: number, coverageRadiusM: number) =>
+  /**
+   * Where to put new gateways for the selected sites (and every site below them). gatewayCount is the most allowed:
+   * fewer come back when fewer are worth building. minNewMeters null = worked out from the number of meters.
+   */
+  computeGatewayPlacement: (
+    siteId: string,
+    gatewayCount: number,
+    coverageRadiusM: number,
+    options: { minNewMeters?: number | null; targetCoveragePercent?: number; existingMode?: ExistingMode } = {},
+    signal?: AbortSignal
+  ) =>
     apiRequest<GatewayPlacementResult>('/gis/gateway-placement/compute', {
       method: 'POST',
-      body: { siteId, gatewayCount, coverageRadiusM },
+      body: { siteId, gatewayCount, coverageRadiusM, ...options },
+      signal,
     }),
 };
 
