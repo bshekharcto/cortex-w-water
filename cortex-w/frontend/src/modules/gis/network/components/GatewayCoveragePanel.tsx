@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Minus, Plus, RotateCcw, X } from 'lucide-react';
 import type { NetGateway } from '@/services/api/networkApi';
 import { formatDistance, type GatewayReach } from '../coverage';
@@ -10,6 +11,8 @@ interface Props {
   radiusM: number;
   onRadiusChange: (radiusM: number) => void;
   onClose: () => void;
+  /** Extra rows shown at the bottom of the same card (the gateway's telemetry). */
+  details?: ReactNode;
 }
 
 export const MIN_RADIUS_M = 50;
@@ -27,7 +30,7 @@ const n = (v: number) => v.toLocaleString();
  * its nearest and farthest meter, and how many meters a given radius would cover. The slider only changes the picture and
  * the numbers: it never changes the gateway's stored radius.
  */
-export function GatewayCoveragePanel({ gateway, reach, radiusM, onRadiusChange, onClose }: Props) {
+export function GatewayCoveragePanel({ gateway, reach, radiusM, onRadiusChange, onClose, details }: Props) {
   const cov = reach.coverageAt(radiusM);
   const stored = defaultRadius(gateway);
   const max = Math.max(3000, Math.ceil((stored * 2) / 500) * 500);
@@ -51,7 +54,7 @@ export function GatewayCoveragePanel({ gateway, reach, radiusM, onRadiusChange, 
         <span className="gis-cov-name" title={gatewayLabel(gateway)}>{gatewayLabel(gateway)}</span>
         <span className="gis-cov-count"><b>{n(reach.metersOnGateway)}</b> meters on this gateway</span>
       </div>
-      <button className="gis-cov-close" onClick={onClose} aria-label="Close coverage">
+      <button className="gis-cov-close" onClick={onClose} aria-label="Close gateway card" title="Close">
         <X size={15} />
       </button>
 
@@ -122,9 +125,9 @@ export function GatewayCoveragePanel({ gateway, reach, radiusM, onRadiusChange, 
           <span className="gis-cov-sep" />
           {chip('#2563EB', 'This gateway', cov.onThisGateway, 'Their latest frames came in through this gateway')}
           {chip('#F59E0B', 'Other gateway', cov.onOtherGateway, 'Inside this circle, but their latest frames came in through a different gateway')}
-          {chip('#94A3B8', 'No gateway', cov.noGateway, 'No frame has ever been received from them, so no gateway is known')}
         </div>
       </div>
+      {details}
     </aside>
   );
 }

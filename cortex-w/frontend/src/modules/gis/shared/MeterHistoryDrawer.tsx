@@ -84,12 +84,19 @@ class DrawerErrorBoundary extends Component<DrawerErrorBoundaryProps, DrawerErro
   }
 }
 
+/** The gateway closest to the meter on the map, and how far away it is. */
+export interface NearestGateway {
+  gatewayId: string;
+  distanceLabel: string;
+}
+
 interface MeterHistoryDrawerProps {
   meter: GisMeter | null;
   onClose: () => void;
+  nearestGateway?: NearestGateway | null;
 }
 
-function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose: () => void }) {
+function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: GisMeter; onClose: () => void; nearestGateway?: NearestGateway | null }) {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'readings' | 'alerts' | 'telemetry' | 'consumer'>('readings');
   const [isWide, setIsWide] = useState<boolean>(false);
@@ -202,6 +209,12 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
             )}
           </div>
           <h2 className="gis-meter-id-title">Meter {meter.meterId}</h2>
+          {nearestGateway && (
+            <p className="gis-meter-nearest-gw" title="Straight-line distance to the closest gateway on the map">
+              <span>Nearest gateway</span> <b>{nearestGateway.gatewayId}</b>
+              <span className="gis-nearest-dist">{nearestGateway.distanceLabel}</span>
+            </p>
+          )}
           <p className="gis-meter-consumer-sub">
             {consumerHeadline({ name: consumerName, ward: consumerWard, id: consumerId, loading: isLoadingDetail })}
           </p>
@@ -741,11 +754,11 @@ function MeterHistoryDrawerInner({ meter, onClose }: { meter: GisMeter; onClose:
   );
 }
 
-export function MeterHistoryDrawer({ meter, onClose }: MeterHistoryDrawerProps) {
+export function MeterHistoryDrawer({ meter, onClose, nearestGateway }: MeterHistoryDrawerProps) {
   if (!meter) return null;
   return (
     <DrawerErrorBoundary onClose={onClose}>
-      <MeterHistoryDrawerInner meter={meter} onClose={onClose} />
+      <MeterHistoryDrawerInner meter={meter} onClose={onClose} nearestGateway={nearestGateway} />
     </DrawerErrorBoundary>
   );
 }

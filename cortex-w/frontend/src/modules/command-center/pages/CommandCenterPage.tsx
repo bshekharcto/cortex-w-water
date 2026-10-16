@@ -1,5 +1,6 @@
 import { WindowLabelProvider } from '../utils/thresholds';
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useParams } from 'react-router-dom';
 import '../styles/commandCenter.css';
 import '../styles/commandCenterExtras.css';
 
@@ -77,11 +78,13 @@ function isoDaysAgo(days: number): string {
 }
 
 export function CommandCenterPage() {
+  // /app/command-center/gateways/:gatewayId (from the Network Explorer) opens that gateway
+  const { gatewayId: routeGatewayId, meterId: routeMeterId } = useParams<{ gatewayId?: string; meterId?: string }>();
   const [activeMode, setActiveMode] = useState<'Gateways' | 'Meters'>('Gateways');
   const [timeRange, setTimeRange] = useState<TimeWindow>('7D');
   const [customRange, setCustomRange] = useState<CustomRange>({ from: isoDaysAgo(6), to: isoDaysAgo(0) });
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedGatewayId, setSelectedGatewayId] = useState<string | null>(null);
+  const [selectedGatewayId, setSelectedGatewayId] = useState<string | null>(routeGatewayId ?? null);
   const [gatewayTab, setGatewayTab] = useState<GatewayTabType>('METERS');
   const [selectedMeter, setSelectedMeter] = useState<MeterTelemetryItem | null>(null);
   // the frame whose details are open, and the meter whose whole frame history replaces the workspace
@@ -167,6 +170,49 @@ export function CommandCenterPage() {
     siteId: selectedSiteId,
   };
   const windowText = timeRange === 'CUSTOM' ? `${customRange.from} → ${customRange.to}` : timeRange === 'TODAY' ? 'Today' : timeRange === '1H' ? 'Last hour' : timeRange === '6H' ? 'Last 6 hours' : timeRange;
+
+  // a link to another gateway while this page is open selects that gateway
+  useEffect(() => {
+    if (routeGatewayId) {
+      setSelectedGatewayId(routeGatewayId);
+      setActiveMode('Gateways');
+    }
+  }, [routeGatewayId]);
+
+  // /app/command-center/meters/:meterId (from the Network Explorer): go to the gateway that heard the meter, and show that
+  // meter's packets
+  useEffect(() => {
+    if (!routeMeterId) return;
+    let cancelled = false;
+    (async () => {
+      let hit: { gatewayId: string; meter: MeterTelemetryItem } | null = null;
+      try {
+        hit = await fetchMeter(routeMeterId, gatewayScope);
+      } catch (err) {
+        console.warn('[CommandCenter] Exact meter lookup failed, trying the search:', err);
+      }
+      if (!hit) {
+        try {
+          const m = (await searchMeters(routeMeterId, daysFor(timeRange), rangeFor(timeRange, customRange), selectedSiteId)).find(
+            (x) => x.meterId === routeMeterId
+          );
+          if (m) hit = { gatewayId: m.gatewayId, meter: m };
+        } catch (err) {
+          console.warn('[CommandCenter] Meter lookup failed:', err);
+        }
+      }
+      if (cancelled || !hit) return;
+      setActiveMode('Gateways');
+      setSelectedGatewayId(hit.gatewayId);
+      setGatewayTab('METERS');
+      setSelectedMeter(hit.meter);
+      setFramesMeter(hit.meter);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeMeterId]);
 
   // Ensure an active gateway is selected once gateways are known
   useEffect(() => {
