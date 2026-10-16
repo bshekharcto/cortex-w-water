@@ -40,12 +40,17 @@ export interface GatewayCandidate {
 
 export interface GatewayPlacementResult {
   siteId: number;
-  totalMeters: number;
+  gatewayCount?: number;
+  coverageRadiusM?: number;
+  /** null when the count is not known for the site; never guess one. */
+  totalMeters: number | null;
   totalMetersCovered: number;
-  overallCoveragePercent?: number;
+  overallCoveragePercent?: number | null;
   excludedMeterCount: number;
   excludedAssetIds: number[];
   gateways: GatewayCandidate[];
   existingGatewaysCount?: number;
+  existingGateways?: GeofenceDTO[];
+  existingGatewaysUnavailable?: boolean;
 }
 

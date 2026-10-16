@@ -78,13 +78,16 @@ class DrawerErrorBoundary extends Component<DrawerErrorBoundaryProps, DrawerErro
 interface GatewayCandidateDrawerProps {
   gateway: GatewayCandidate | null;
   siteName: string;
+  /** The radius the user selected; used when the candidate itself does not carry one. */
+  radiusM?: number;
   onClose: () => void;
   onFlyTo?: (lat: number, lng: number) => void;
 }
 
-function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: {
+function GatewayCandidateDrawerContent({ gateway, siteName, radiusM: selectedRadiusM, onClose, onFlyTo }: {
   gateway: GatewayCandidate;
   siteName: string;
+  radiusM?: number;
   onClose: () => void;
   onFlyTo?: (lat: number, lng: number) => void;
 }) {
@@ -96,11 +99,13 @@ function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: 
   const assignedCount = gateway.metersAssigned || gateway.assignedAssetIds?.length || 0;
   const coveredCount = gateway.metersCoveredCount || 0;
   const coveragePercent = gateway.percentCovered ?? (assignedCount > 0 ? Math.round((coveredCount / assignedCount) * 100) : 0);
-  const avgDist = gateway.avgDistanceM ?? 1110.9;
-  const maxDist = gateway.maxDistanceM ?? 5132.0;
-  const radiusM = gateway.coverageRadiusM ?? 500;
-  const nearestName = gateway.nearestExistingName || 'Existing Network Gateway';
-  const nearestDist = gateway.nearestExistingDistanceM ?? 271.5;
+  // Missing values stay missing ("—" on screen, null in the export); nothing is filled in with a made-up number.
+  const avgDist = gateway.avgDistanceM;
+  const maxDist = gateway.maxDistanceM;
+  const radiusM = gateway.coverageRadiusM ?? selectedRadiusM ?? null;
+  const nearestName = gateway.nearestExistingName ?? null;
+  const nearestDist = gateway.nearestExistingDistanceM ?? null;
+  const fmtM = (v: number | null) => (v == null ? '—' : `${v} m`);
 
   const handleExportSpec = () => {
     const spec = {
@@ -116,10 +121,8 @@ function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: 
       coveragePercent: `${coveragePercent}%`,
       avgDistanceMeters: avgDist,
       maxDistanceMeters: maxDist,
-      nearestExistingGateway: {
-        name: nearestName,
-        distanceMeters: nearestDist,
-      },
+      nearestExistingGateway:
+        nearestName == null ? null : { name: nearestName, distanceMeters: nearestDist },
       hardwareRecommendations: {
         mountingType: 'Rooftop Mast (15m height)',
         antenna: '8 dBi Omni-directional collinear fiberglass antenna',
@@ -162,7 +165,7 @@ function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: 
             </div>
             <h2 className="gis-meter-id-title">Recommended Gateway #{gwNum}</h2>
             <p className="gis-meter-consumer-sub">
-              <strong>{coveredCount.toLocaleString()} / {assignedCount.toLocaleString()} meters</strong> within {radiusM}m radius
+              <strong>{coveredCount.toLocaleString()} / {assignedCount.toLocaleString()} meters</strong> within {radiusM ?? '—'}m radius
             </p>
           </div>
 
@@ -199,8 +202,8 @@ function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: 
               <Activity size={13} color="#2563EB" />
             </div>
             <div className="gis-kpi-val-group">
-              <span className="gis-kpi-big">{avgDist} m</span>
-              <span className="gis-kpi-small">Max: {maxDist} m</span>
+              <span className="gis-kpi-big">{fmtM(avgDist)}</span>
+              <span className="gis-kpi-small">Max: {fmtM(maxDist)}</span>
             </div>
           </div>
 
@@ -210,9 +213,9 @@ function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: 
               <MapPin size={13} color="#059669" />
             </div>
             <div className="gis-kpi-val-group">
-              <span className="gis-kpi-big">{nearestDist} m</span>
+              <span className="gis-kpi-big">{fmtM(nearestDist)}</span>
               <span className="gis-kpi-small" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {nearestName}
+                {nearestName ?? 'None found'}
               </span>
             </div>
           </div>
@@ -224,7 +227,7 @@ function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: 
             </div>
             <div className="gis-kpi-val-group">
               <span className="gis-kpi-big">{siteName}</span>
-              <span className="gis-kpi-small">Radius: {radiusM} m</span>
+              <span className="gis-kpi-small">Radius: {fmtM(radiusM)}</span>
             </div>
           </div>
         </div>
@@ -291,7 +294,7 @@ function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: 
                 <div className="gis-kv-row">
                   <span className="gis-k">Coverage Radius</span>
                   <span className="gis-v" style={{ fontWeight: 600, color: '#EA580C' }}>
-                    {radiusM} meters
+                    {radiusM == null ? '—' : `${radiusM} meters`}
                   </span>
                 </div>
 
@@ -368,7 +371,7 @@ function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: 
                     </div>
                   </div>
                   <div>
-                    <div style={{ fontSize: 11, color: '#64748b' }}>Covered (&lt;{radiusM}m)</div>
+                    <div style={{ fontSize: 11, color: '#64748b' }}>Covered (&lt;{radiusM ?? '—'}m)</div>
                     <div style={{ fontSize: 20, fontWeight: 700, color: '#EA580C', marginTop: 2 }}>
                       {coveredCount.toLocaleString()}
                     </div>
@@ -383,11 +386,11 @@ function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: 
 
                 <div className="gis-kv-row" style={{ marginTop: 12 }}>
                   <span className="gis-k">Average Distance to Meter</span>
-                  <span className="gis-v">{avgDist} meters</span>
+                  <span className="gis-v">{avgDist == null ? '—' : `${avgDist} meters`}</span>
                 </div>
                 <div className="gis-kv-row">
                   <span className="gis-k">Furthest Assigned Meter</span>
-                  <span className="gis-v">{maxDist} meters</span>
+                  <span className="gis-v">{maxDist == null ? '—' : `${maxDist} meters`}</span>
                 </div>
                 <div className="gis-kv-row">
                   <span className="gis-k">Line-of-Sight Coverage</span>
@@ -448,13 +451,13 @@ function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: 
                 <div className="gis-kv-row">
                   <span className="gis-k">Nearest Gateway Name</span>
                   <span className="gis-v" style={{ fontWeight: 600, color: '#0f172a' }}>
-                    {nearestName}
+                    {nearestName ?? 'None found'}
                   </span>
                 </div>
                 <div className="gis-kv-row">
                   <span className="gis-k">Separation Distance</span>
                   <span className="gis-v" style={{ fontWeight: 700, color: '#2563eb' }}>
-                    {nearestDist} meters
+                    {nearestDist == null ? '—' : `${nearestDist} meters`}
                   </span>
                 </div>
                 <div className="gis-kv-row">
@@ -519,6 +522,9 @@ function GatewayCandidateDrawerContent({ gateway, siteName, onClose, onFlyTo }: 
                 <p style={{ fontSize: 12, color: '#64748b', margin: 0 }}>
                   Approve this proposed gateway location for inclusion into WATCO municipal network rollout work orders.
                 </p>
+                <p style={{ fontSize: 11, color: '#b45309', margin: 0, fontWeight: 600 }}>
+                  Not saved: this mark is kept for this session only and is lost when the drawer is closed or the page is refreshed.
+                </p>
 
                 <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
                   <button
@@ -571,6 +577,7 @@ export function GatewayCandidateDrawer(props: GatewayCandidateDrawerProps) {
       <GatewayCandidateDrawerContent
         gateway={props.gateway}
         siteName={props.siteName}
+        radiusM={props.radiusM}
         onClose={props.onClose}
         onFlyTo={props.onFlyTo}
       />

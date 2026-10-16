@@ -326,13 +326,26 @@ router.get('/asset-locations', async (req, res) => {
   }
 });
 
+// The limits Gateway Placement accepts (the page offers the same ones).
+const MIN_GATEWAYS = 1;
+const MAX_GATEWAYS = 25;
+const MIN_RADIUS_M = 100;
+const MAX_RADIUS_M = 5000;
+
 // POST /api/gis/gateway-placement/compute
 router.post('/gateway-placement/compute', async (req, res) => {
   try {
     const siteId = Number(req.body.siteId ?? defaultSiteId());
+    if (!Number.isInteger(siteId)) return res.status(400).json({ error: 'siteId must be a number' });
     if (scopeSiteIds(requireClient(), String(siteId)) === null) return res.status(404).json({ error: 'Unknown site' });
     const gatewayCount = Number(req.body.gatewayCount ?? req.body.numberOfGateways ?? 5);
     const coverageRadiusM = Number(req.body.coverageRadiusM ?? req.body.radius ?? 500);
+    if (!Number.isInteger(gatewayCount) || gatewayCount < MIN_GATEWAYS || gatewayCount > MAX_GATEWAYS) {
+      return res.status(400).json({ error: `gatewayCount must be a whole number from ${MIN_GATEWAYS} to ${MAX_GATEWAYS}` });
+    }
+    if (!Number.isFinite(coverageRadiusM) || coverageRadiusM < MIN_RADIUS_M || coverageRadiusM > MAX_RADIUS_M) {
+      return res.status(400).json({ error: `coverageRadiusM must be from ${MIN_RADIUS_M} to ${MAX_RADIUS_M} metres` });
+    }
 
     const authHeader = req.headers.authorization;
     const token = await getAuthToken(authHeader);
@@ -367,8 +380,8 @@ router.post('/gateway-placement/compute', async (req, res) => {
       const assigned = g.metersAssigned ?? g.assignedAssetIds?.length ?? 0;
       const covered = g.metersCoveredCount ?? 0;
       const percent = assigned > 0 ? Math.round((covered / assigned) * 100) : 0;
-      const avgDist = g.avgDistanceM ? Number(g.avgDistanceM.toFixed(1)) : null;
-      const maxDist = g.maxDistanceM ? Number(g.maxDistanceM.toFixed(1)) : null;
+      const avgDist = typeof g.avgDistanceM === 'number' ? Number(g.avgDistanceM.toFixed(1)) : null;
+      const maxDist = typeof g.maxDistanceM === 'number' ? Number(g.maxDistanceM.toFixed(1)) : null;
 
       // Find nearest existing gateway using Haversine distance
       let nearestName: string | null = null;
@@ -400,8 +413,8 @@ router.post('/gateway-placement/compute', async (req, res) => {
     const totalCovered = rawData.totalMetersCovered ?? enrichedGateways.reduce((sum, g) => sum + g.metersCoveredCount, 0);
     // If upstream doesn't report totalMeters, we have no reliable real count
     // for this site — report null rather than a stale hardcoded guess.
-    const totalMeters = rawData.totalMeters ?? null;
-    const overallPercent = totalMeters ? Math.round((totalCovered / totalMeters) * 100) : null;
+    const totalMeters = typeof rawData.totalMeters === 'number' ? rawData.totalMeters : null;
+    const overallPercent = totalMeters && totalMeters > 0 ? Math.round((totalCovered / totalMeters) * 100) : null;
 
     res.json({
       siteId,
@@ -414,6 +427,9 @@ router.post('/gateway-placement/compute', async (req, res) => {
       excludedAssetIds: rawData.excludedAssetIds ?? [],
       gateways: enrichedGateways,
       existingGatewaysCount: existingGateways.length,
+      existingGateways,
+      // true when the geofence list could not be loaded, so "no nearest gateway" is not mistaken for "there are none"
+      existingGatewaysUnavailable: fenceRes.status !== 200,
     });
   } catch (err: any) {
     console.error('[gis] Error computing gateway placement:', err.message);
