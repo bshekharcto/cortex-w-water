@@ -117,7 +117,8 @@ export function GatewayPlacementPage() {
   const runIdRef = useRef(0);
 
   // Layer Toggles
-  const [showMeters, setShowMeters] = useState<boolean>(true);
+  // Meters start hidden: this page is about gateways, and thousands of meters bury them. The checkbox shows them.
+  const [showMeters, setShowMeters] = useState<boolean>(false);
   const [enableClustering, setEnableClustering] = useState<boolean>(true);
   const [showRadiusCircles, setShowRadiusCircles] = useState<boolean>(true);
   const [showExistingGateways, setShowExistingGateways] = useState<boolean>(true);

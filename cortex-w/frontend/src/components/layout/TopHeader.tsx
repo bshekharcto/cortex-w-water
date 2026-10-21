@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Bell, Clock } from 'lucide-react';
 import { useDataFreshness } from './DataFreshness';
+import { useHeaderTakeover } from './HeaderStatus';
+import { headerPill } from './headerStatusLogic';
 
 const ROUTE_TITLES: Record<string, string> = {
   '/app/dashboard': 'Dashboard',
@@ -48,9 +50,10 @@ export function TopHeader() {
     .sort((a, b) => b.length - a.length)[0];
   const title = matchedPath ? ROUTE_TITLES[matchedPath] : 'Cortex-W';
 
-  // when the scheduler last updated the numbers, as clock time at the site (HH:MM)
+  // when the scheduler last updated the numbers (clock time at the site), unless the open page reads live data and shows
+  // its own load time here instead
   const { localTime } = useDataFreshness();
-  const updatedAt = localTime ? localTime.slice(11, 16) : null;
+  const pill = headerPill(useHeaderTakeover(), localTime);
 
   return (
     <header className={`cw-top-header ${isCommandCenter ? 'cw-top-header--dark' : ''}`}>
@@ -59,9 +62,9 @@ export function TopHeader() {
         <span className="cw-top-header-powered">POWERED BY COGNECTO</span>
       </div>
       <div className="cw-top-header-right">
-        {updatedAt && (
-          <span className="cw-data-updated" title="When the numbers were last updated. They update by themselves.">
-            <Clock size={13} /> Last updated {updatedAt}
+        {pill && (
+          <span className="cw-data-updated" title={pill.title}>
+            <Clock size={13} /> Last updated {pill.text}
           </span>
         )}
         <div className="cw-notif-wrap" ref={notifRef}>
