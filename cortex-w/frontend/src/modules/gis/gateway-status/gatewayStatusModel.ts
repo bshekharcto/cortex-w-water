@@ -177,7 +177,7 @@ export const reasonLabel = (reason: string | null): string => (reason ? REASON_L
 
 // --- Table sorting / filtering -----------------------------------------------------------------------------------
 
-export type SortKey = 'gatewayId' | 'status' | 'lastSeenAt' | 'uptime' | 'onlineTime' | 'downtimeEvents' | 'heartbeats';
+export type SortKey = 'gatewayId' | 'address' | 'status' | 'lastSeenAt' | 'uptime' | 'onlineTime' | 'downtimeEvents' | 'heartbeats';
 export type SortDir = 'asc' | 'desc';
 
 const STATE_ORDER: Record<GatewayState, number> = { offline: 0, 'no-data': 1, online: 2 };
@@ -185,6 +185,7 @@ const STATE_ORDER: Record<GatewayState, number> = { offline: 0, 'no-data': 1, on
 function sortValue(g: GatewayConnectivity, key: SortKey): string | number | null {
   switch (key) {
     case 'gatewayId': return g.gatewayId;
+    case 'address': return g.address?.trim().toLowerCase() || null;
     case 'status': return STATE_ORDER[g.status];
     case 'lastSeenAt': return g.lastSeenAt ? Date.parse(g.lastSeenAt) : null;
     case 'uptime': return g.uptimePercent;
@@ -209,11 +210,10 @@ export function sortGateways(rows: GatewayConnectivity[], key: SortKey, dir: Sor
   });
 }
 
+/** The search box matches the gateway ID only (part of it is enough, any case). */
 export function filterGateways(rows: GatewayConnectivity[], state: GatewayState | 'all', search: string): GatewayConnectivity[] {
   const q = search.trim().toLowerCase();
-  return rows.filter(
-    (g) => (state === 'all' || g.status === state) && (!q || g.gatewayId.includes(q) || (g.address ?? '').toLowerCase().includes(q))
-  );
+  return rows.filter((g) => (state === 'all' || g.status === state) && (!q || g.gatewayId.toLowerCase().includes(q)));
 }
 
 // --- Timeline ----------------------------------------------------------------------------------------------------

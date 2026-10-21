@@ -130,11 +130,21 @@ describe('table', () => {
     expect(rows.map((g) => g.gatewayId)).toEqual(before);
   });
 
-  it('filters by state and by id or address text', () => {
+  it('filters by state and by gateway ID only (never by address)', () => {
     expect(filterGateways(rows, 'offline', '').map((g) => g.gatewayId)).toEqual(['506f980000000262']);
     expect(filterGateways(rows, 'all', '  2A1 ').map((g) => g.gatewayId)).toEqual(['506f9800000002a1']);
-    expect(filterGateways(rows, 'all', 'meusium')).toHaveLength(3);
+    expect(filterGateways(rows, 'all', 'meusium')).toHaveLength(0); // an address, not an ID
     expect(filterGateways(rows, 'all', 'zzz')).toHaveLength(0);
+  });
+
+  it('sorts by address, without an address always last', () => {
+    const withAddress = [
+      { ...rows[0], gatewayId: 'a', address: 'Sadar' },
+      { ...rows[0], gatewayId: 'b', address: null },
+      { ...rows[0], gatewayId: 'c', address: 'Khandagiri' },
+    ];
+    expect(sortGateways(withAddress, 'address', 'asc').map((g) => g.gatewayId)).toEqual(['c', 'a', 'b']);
+    expect(sortGateways(withAddress, 'address', 'desc').map((g) => g.gatewayId)).toEqual(['a', 'c', 'b']);
   });
 });
 

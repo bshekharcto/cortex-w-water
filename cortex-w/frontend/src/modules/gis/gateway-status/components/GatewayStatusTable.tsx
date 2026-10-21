@@ -24,6 +24,7 @@ interface GatewayStatusTableProps {
 
 const COLUMNS: Array<{ key: SortKey; label: string; align?: 'left' }> = [
   { key: 'gatewayId', label: 'Gateway ID' },
+  { key: 'address', label: 'Address' },
   { key: 'status', label: 'Current Status' },
   { key: 'lastSeenAt', label: 'Last Seen At' },
   { key: 'uptime', label: 'Uptime %' },
@@ -71,6 +72,7 @@ export function GatewayStatusTable({ rows, onTimeline, onMap }: GatewayStatusTab
             {visible.map((g) => (
               <tr key={g.gatewayId}>
                 <td className="gs-mono">{g.gatewayId}</td>
+                <td className="gs-address" title={g.address ?? undefined}>{g.address ?? DASH}</td>
                 <td>
                   <span className={clsx('gs-state', `gs-state--${g.status}`)}>
                     <span className="gs-dot" />

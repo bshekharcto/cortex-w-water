@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { RadioTower, RefreshCw, Search } from 'lucide-react';
+import { RadioTower, RefreshCw, Search, TableProperties } from 'lucide-react';
 import clsx from 'clsx';
 import { gatewayStatusApi, type GatewayConnectivity, type GatewayRange, type GatewayState } from '@/services/api/gatewayStatusApi';
 import { useTakeOverHeaderLastUpdated } from '@/components/layout/HeaderStatus';
@@ -81,18 +81,21 @@ export function GatewayStatusPage() {
             <Search size={14} className="gs-search-icon" />
             <input
               type="search"
-              placeholder="Search gateway ID or address…"
+              placeholder="Search gateway ID…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              aria-label="Search gateways"
+              aria-label="Search gateway ID"
             />
           </div>
         </div>
         <div className="gs-toolbar-right">
-          <button className="cw-button-secondary gs-refresh" onClick={reload} disabled={refreshing} title="Refresh now">
-            <RefreshCw size={13} className={refreshing ? 'cw-spin' : ''} /> Refresh
+          <button className="cw-button-secondary gs-refresh" onClick={reload} disabled={refreshing} title="Refresh now" aria-label="Refresh">
+            <RefreshCw size={14} className={refreshing ? 'cw-spin' : ''} />
           </button>
           <RangeControls range={range} onChange={changeRange} />
+          <button className="cw-button-secondary gs-uptime-btn" onClick={() => navigate('/app/gis/gateway-status/uptime')} title="Daily uptime of every gateway, in hours or percent, as a chart you can download">
+            <TableProperties size={14} /> Uptime chart
+          </button>
         </div>
       </div>
 
