@@ -41,6 +41,8 @@ export interface XlsxSheet {
   rowHeights?: Record<number, number>;
   /** Print on landscape paper, one page wide. */
   landscape?: boolean;
+  /** Text cells such as "23:18" are meant as text: do not flag them as "number stored as text". */
+  textIsText?: boolean;
 }
 
 export interface XlsxMeta {
@@ -302,6 +304,7 @@ function sheetXml(sheet: XlsxSheet, styles: StyleBook, strings: SharedStrings): 
     filter +
     '<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>' +
     (sheet.landscape ? '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>' : '') +
+    (sheet.textIsText ? `<ignoredErrors><ignoredError sqref="${dimension}" numberStoredAsText="1"/></ignoredErrors>` : '') +
     '</worksheet>'
   );
 }

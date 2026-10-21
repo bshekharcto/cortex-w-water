@@ -8,6 +8,7 @@ import {
   cellText,
   colorOf,
   dayHeading,
+  fmtMinutes,
   type Unit,
   type UptimeRow,
 } from './uptimeModel';
@@ -25,17 +26,6 @@ export interface ExportMeta {
 
 const NAVY = '#0F1F3D';
 
-/**
- * A time of day is stored as a fraction of a day. That fraction is rarely exact in binary (1398/1440 is 83879.99999 s),
- * and a spreadsheet that cuts the seconds off to show hours:minutes would then show 23:17 instead of 23:18. A quarter of
- * a second is added so that every viewer, whether it rounds or cuts, shows the minute the page shows.
- */
-const SAFE_SECONDS = 0.25;
-export const minutesToDays = (minutes: number): number => minutes / 1440 + SAFE_SECONDS / 86400;
-/** Whole days since 1899-12-30: how a spreadsheet counts dates. */
-export function excelDate(date: string): number {
-  return (Date.parse(`${date}T00:00:00Z`) - Date.UTC(1899, 11, 30)) / 86_400_000;
-}
 const header: XlsxStyle = { bold: true, fill: { color: NAVY }, textColor: '#FFFFFF', border: true };
 const noDataStyle: XlsxStyle = { fill: { color: NO_DATA_COLOR }, align: 'center', textColor: '#94A3B8', border: true };
 
@@ -74,19 +64,13 @@ function sheetFor(rows: UptimeRow[], unit: Unit, meta: ExportMeta): XlsxSheet {
       { v: r.address ?? '', style: { border: true } },
       ...r.cells.map((c): XlsxCell => {
         if (c.kind === 'nodata') return { v: '–', style: noDataStyle };
-        const fill = { color: colorOf(bucketOf(c.percent)) };
-        // numbers stay numbers (sortable, summable); a partial day is marked in the number format with a "*"
-        const star = c.kind === 'partial' ? '*' : '';
-        return unit === 'hours'
-          ? { v: minutesToDays(c.minutes), style: { fill, align: 'center', border: true, numFmt: star ? '[h]:mm"*"' : '[h]:mm' } }
-          : { v: Math.round((c.percent ?? 0) * 10) / 10, style: { fill, align: 'center', border: true, numFmt: star ? '0.0"*"' : '0.0' } };
+        // The cell holds exactly the text the page shows ("23:18", "97.1", "10:50*"), as text: no number format that a
+        // viewer could misread (some show a time format as a duration with seconds). The figures as numbers are on the Data sheet.
+        return { v: cellText(c, unit), style: { fill: { color: colorOf(bucketOf(c.percent)) }, align: 'center', border: true } };
       }),
       r.avgMinutes == null || r.avgPercent == null
         ? { v: '–', style: noDataStyle }
-        : unit === 'hours'
-          ? // the page rounds the average to a whole minute: so does the file
-            { v: minutesToDays(Math.round(r.avgMinutes)), style: { bold: true, align: 'center', border: true, numFmt: '[h]:mm' } }
-          : { v: Math.round(r.avgPercent * 10) / 10, style: { bold: true, align: 'center', border: true, numFmt: '0.0"%"' } },
+        : { v: avgText(r, unit), style: { bold: true, align: 'center', border: true } },
     ]);
   }
   out.push(pad([]));
@@ -101,12 +85,14 @@ function sheetFor(rows: UptimeRow[], unit: Unit, meta: ExportMeta): XlsxSheet {
     autoFilter: { headerRow: 3, toRow: 3 + rows.length },
     rowHeights: { 1: 24, 3: 24 },
     landscape: true,
+    textIsText: true,
   };
 }
 
 /**
- * The same figures as plain numbers, one row per gateway and day, for sorting, pivots and formulas: real dates, the
- * online time as a time and as whole minutes, and the percentage as a number.
+ * The same figures as plain numbers, one row per gateway and day, for sorting, pivots and formulas. Only the most basic
+ * number formats are used (whole numbers, one decimal) so that every viewer shows them as they are; the date is the
+ * ISO text "2026-10-06" (it sorts and filters correctly, and every tool reads it).
  */
 function dataSheet(rows: UptimeRow[]): XlsxSheet {
   const head = (v: string): XlsxCell => ({ v, style: header });
@@ -117,9 +103,9 @@ function dataSheet(rows: UptimeRow[]): XlsxSheet {
       out.push([
         { v: r.gatewayId },
         { v: r.address ?? '' },
-        { v: excelDate(c.date), style: { numFmt: 'dd mmm yyyy', align: 'left' } },
+        { v: c.date, style: { align: 'left' } },
         { v: none ? 'No data' : c.kind === 'partial' ? 'Part of the day' : 'Full day' },
-        none ? { v: null } : { v: minutesToDays(c.minutes), style: { numFmt: '[h]:mm', align: 'center' } },
+        none ? { v: null } : { v: fmtMinutes(c.minutes), style: { align: 'center' } },
         none ? { v: null } : { v: c.minutes, style: { numFmt: '0', align: 'center' } },
         none ? { v: null } : { v: Math.round((c.percent ?? 0) * 10) / 10, style: { numFmt: '0.0', align: 'center' } },
       ]);
@@ -132,6 +118,7 @@ function dataSheet(rows: UptimeRow[]): XlsxSheet {
     freeze: { rows: 1, cols: 0 },
     autoFilter: { headerRow: 1, toRow: out.length },
     rowHeights: { 1: 24 },
+    textIsText: true,
   };
 }
 

@@ -2,8 +2,8 @@
 import { describe, expect, it } from 'vitest';
 import type { ConnectivityReport, GatewayConnectivity } from '@/services/api/gatewayStatusApi';
 import { BUCKETS, NO_DATA_COLOR, avgText, bucketOf, buildUptime, cellText, colorOf, datesBetween, dayHeading, filterRows, sortRows } from '../uptimeModel';
-import { chartNotes, excelDate, minutesToDays, uptimeCsv, uptimeWorkbook } from '../uptimeExport';
-import { readWorkbook, showNumber } from './xlsxReader';
+import { chartNotes, uptimeCsv, uptimeWorkbook } from '../uptimeExport';
+import { readWorkbook } from './xlsxReader';
 
 const TODAY = '2026-10-21';
 
@@ -108,18 +108,30 @@ describe('the Excel file is the UI, cell for cell', () => {
     expect(data.name).toBe('Data');
   });
 
-  it('shows the right minute in a viewer that CUTS the seconds off (every minute of the day)', () => {
-    for (let m = 0; m <= 2880; m++) {
-      const shown = showNumber(minutesToDays(m), '[h]:mm');
-      expect(shown).toBe(`${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`);
+  it('the grids hold plain text exactly as the page shows it, with no number format a viewer could misread (the ".250" / "250" bug)', () => {
+    const dates = datesBetween('2026-10-06', '2026-10-20');
+    const rows = buildUptime(randomReport(9, 30, dates), dates, TODAY);
+    const [hours, percent] = readWorkbook(uptimeWorkbook(rows, metaFor(dates)));
+    for (const sheet of [hours, percent]) {
+      for (const cell of sheet.cells.values()) {
+        const row = Number(cell.ref.replace(/\D/g, ''));
+        if (row < 3 || cell.value === null) continue; // the title rows
+        // every value of the grid is text, and none has a number format (so none can be shown as a duration)
+        expect(typeof cell.value, cell.ref).toBe('string');
+        expect(cell.numFmt, cell.ref).toBe('General');
+        expect(String(cell.value), cell.ref).not.toMatch(/:\d\d:\d\d|\.\d{3}\b/); // no seconds, no milliseconds
+      }
     }
-    // and it still shows the right minute in a viewer that ROUNDS to the nearest minute
-    for (let m = 0; m <= 2880; m++) expect(Math.round(minutesToDays(m) * 1440)).toBe(m);
+    // a gateway that was down all day reads 0:00 (hours) and 0.0 (percent), never "250"
+    const down = buildUptime({ gateways: [gw('506f9800000009aa', 'Down', [day('2026-10-08', 0, 86_400)])] } as unknown as ConnectivityReport, ['2026-10-08'], TODAY);
+    const [h2, p2] = readWorkbook(uptimeWorkbook(down, metaFor(['2026-10-08'])));
+    expect(h2.cells.get('C4')?.value).toBe('0:00');
+    expect(p2.cells.get('C4')?.value).toBe('0.0');
   });
 });
 
 describe('the Data sheet holds the same figures as plain numbers', () => {
-  it('one row per gateway and day, real dates, minutes and percent as numbers, nothing for a day without data', () => {
+  it('one row per gateway and day, ISO dates, minutes and percent as numbers, nothing for a day without data', () => {
     const dates = datesBetween('2026-10-06', '2026-10-12');
     const rows = buildUptime(randomReport(11, 8, dates), dates, TODAY);
     const data = readWorkbook(uptimeWorkbook(rows, metaFor(dates)))[2];
@@ -128,15 +140,15 @@ describe('the Data sheet holds the same figures as plain numbers', () => {
       for (const c of r.cells) {
         const cell = (col: string) => data.cells.get(`${col}${line}`);
         expect(cell('A')?.value).toBe(r.gatewayId);
-        expect(cell('C')?.value).toBe(excelDate(c.date));
-        expect(cell('C')?.shown).toMatch(/^\d{2} Oct 2026$/);
+        expect(cell('C')?.value).toBe(c.date); // "2026-10-06": sorts, filters and parses everywhere
         expect(cell('D')?.value).toBe(c.kind === 'nodata' ? 'No data' : c.kind === 'partial' ? 'Part of the day' : 'Full day');
         if (c.kind === 'nodata') {
           expect(cell('E')).toBeUndefined();
           expect(cell('F')).toBeUndefined();
           expect(cell('G')).toBeUndefined();
         } else {
-          expect(cell('E')?.shown).toBe(cellText(c, 'hours').replace('*', ''));
+          expect(cell('E')?.value).toBe(cellText(c, 'hours').replace('*', ''));
+          expect(cell('F')?.numFmt).toBe('0'); // only the most basic number formats
           expect(cell('F')?.value).toBe(c.minutes);
           expect(cell('G')?.value).toBe(Math.round((c.percent ?? 0) * 10) / 10);
           expect(typeof cell('F')?.value).toBe('number');
@@ -147,9 +159,12 @@ describe('the Data sheet holds the same figures as plain numbers', () => {
     expect(data.autoFilter).toBe(`A1:G${line - 1}`);
   });
 
-  it('turns dates into the numbers a spreadsheet uses (1 Jan 2026 is 46023)', () => {
-    expect(excelDate('2026-01-01')).toBe(46023);
-    expect(excelDate('2026-10-21') - excelDate('2026-10-20')).toBe(1);
+  it('uses no time or date number format anywhere (they are what some viewers show as a duration)', () => {
+    const dates = datesBetween('2026-10-06', '2026-10-10');
+    const rows = buildUptime(randomReport(6, 6, dates), dates, TODAY);
+    for (const sheet of readWorkbook(uptimeWorkbook(rows, metaFor(dates)))) {
+      for (const cell of sheet.cells.values()) expect(['General', '0', '0.0'], `${sheet.name} ${cell.ref}`).toContain(cell.numFmt);
+    }
   });
 });
 
