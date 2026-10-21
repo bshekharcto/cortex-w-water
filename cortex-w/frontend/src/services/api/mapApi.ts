@@ -1,5 +1,5 @@
 import { apiRequest } from './httpClient';
-import type { SensorRawDataDTO, GeofenceDTO, GatewayPlacementResult } from '@/modules/gis/shared/mapTypes';
+import type { SensorRawDataDTO, GeofenceDTO, GatewayPlacementResult, ExistingMode, RelocationResult } from '@/modules/gis/shared/mapTypes';
 import type { GisMeter } from '@/modules/gis/shared/gisData';
 
 export interface LiveMetersResponse {
@@ -80,9 +80,14 @@ export const mapApi = {
   getMeters: (params?: { siteId?: string; gatewayId?: string; problemsOnly?: boolean; search?: string; limit?: number }) =>
     apiRequest<LiveMetersResponse>('/gis/meters', { query: params }),
 
-  /** `core` answers from the database alone (fast); without it the beta API parts are included too (slower). */
-  getMeterDetail: (assetId: number | string, meterId?: string, opts?: { core?: boolean }) =>
-    apiRequest<LiveMeterDetailResponse>(`/gis/meter-detail/${assetId}`, { query: { meterId, core: opts?.core ? '1' : undefined } }),
+  /**
+   * `core` answers from the database alone (fast). `parts` asks for beta API parts one at a time: 'profile' (contact,
+   * consumer, latest bill) and 'documents' (replacement history, photos). Without either, everything is returned.
+   */
+  getMeterDetail: (assetId: number | string, meterId?: string, opts?: { core?: boolean; parts?: Array<'profile' | 'documents'> }) =>
+    apiRequest<LiveMeterDetailResponse>(`/gis/meter-detail/${assetId}`, {
+      query: { meterId, core: opts?.core ? '1' : undefined, parts: opts?.parts?.length ? opts.parts.join(',') : undefined },
+    }),
 
   getAssetLocations: (siteId: number = 6394) =>
     apiRequest<Record<string, SensorRawDataDTO>>('/gis/asset-locations', { query: { siteIds: siteId } }),
@@ -90,10 +95,44 @@ export const mapApi = {
   getGeofences: (siteId: number = 6394) =>
     apiRequest<GeofenceDTO[]>('/gis/geofences', { query: { siteIds: siteId } }),
 
-  computeGatewayPlacement: (siteId: number, gatewayCount: number, coverageRadiusM: number) =>
+  /**
+   * Where to put new gateways for the selected sites (and every site below them). gatewayCount is the most allowed:
+   * fewer come back when fewer are worth building. minNewMeters null = worked out from the number of meters.
+   */
+  computeGatewayPlacement: (
+    siteId: string,
+    gatewayCount: number,
+    coverageRadiusM: number,
+    options: { minNewMeters?: number | null; targetCoveragePercent?: number; existingMode?: ExistingMode } = {},
+    signal?: AbortSignal
+  ) =>
     apiRequest<GatewayPlacementResult>('/gis/gateway-placement/compute', {
       method: 'POST',
-      body: { siteId, gatewayCount, coverageRadiusM },
+      body: { siteId, gatewayCount, coverageRadiusM, ...options },
+      signal,
+    }),
+
+  /**
+   * Which existing gateways to keep, move or remove for the selected sites (and every site below them). The number of
+   * gateways never grows. maxMoves / minGain / maxMoveDistanceM null = no limit / automatic / no limit.
+   */
+  computeGatewayRelocation: (
+    siteId: string,
+    coverageRadiusM: number,
+    options: {
+      maxMoves?: number | null;
+      minGain?: number | null;
+      maxMoveDistanceM?: number | null;
+      allowRemove?: boolean;
+      existingMode?: 'all' | 'working';
+      lockedGatewayIds?: string[];
+    } = {},
+    signal?: AbortSignal
+  ) =>
+    apiRequest<RelocationResult>('/gis/gateway-placement/relocate', {
+      method: 'POST',
+      body: { siteId, coverageRadiusM, ...options },
+      signal,
     }),
 };
 

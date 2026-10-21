@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { RadioTower, RefreshCw, Search } from 'lucide-react';
+import { RadioTower, RefreshCw, Search, TableProperties } from 'lucide-react';
 import clsx from 'clsx';
 import { gatewayStatusApi, type GatewayConnectivity, type GatewayRange, type GatewayState } from '@/services/api/gatewayStatusApi';
+import { useTakeOverHeaderLastUpdated } from '@/components/layout/HeaderStatus';
 import { useGatewayLoad } from '../useGatewayLoad';
 import { filterGateways, fmtDateTime, presetOf, rangeFromParams, rangeToParams, todayIn } from '../gatewayStatusModel';
 import { GatewayStatusTable } from '../components/GatewayStatusTable';
@@ -46,6 +47,13 @@ export function GatewayStatusPage() {
 
   const rows = useMemo(() => filterGateways(data?.gateways ?? [], state, search), [data, state, search]);
 
+  // This page reads the gateway health service live, with no scheduler in between, so the header's "Last updated" shows
+  // when this data was loaded (on every refresh) instead of when the database numbers were last updated.
+  useTakeOverHeaderLastUpdated(
+    data ? fmtDateTime(data.generatedAt) : null,
+    'When this gateway data was last loaded. It comes live from the gateway health service, with no delay.'
+  );
+
   const changeRange = (next: GatewayRange) => setParams(rangeToParams(next), { replace: false });
   const openTimeline = (g: GatewayConnectivity) =>
     navigate({ pathname: `/app/gis/gateway-status/${g.gatewayId}`, search: paramText ? `?${paramText}` : '' });
@@ -69,25 +77,24 @@ export function GatewayStatusPage() {
               </button>
             ))}
           </div>
+          <div className="gs-search">
+            <Search size={14} className="gs-search-icon" />
+            <input
+              type="search"
+              placeholder="Search gateway ID…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              aria-label="Search gateway ID"
+            />
+          </div>
         </div>
-        <RangeControls range={range} onChange={changeRange} />
-      </div>
-
-      <div className="gs-subbar">
-        <div className="gs-search">
-          <Search size={14} className="gs-search-icon" />
-          <input
-            type="search"
-            placeholder="Search gateway ID or address…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            aria-label="Search gateways"
-          />
-        </div>
-        <div className="gs-asof">
-          {data && <span>As of {fmtDateTime(data.generatedAt)}</span>}
-          <button className="cw-button-secondary gs-refresh" onClick={reload} disabled={refreshing} title="Refresh now">
-            <RefreshCw size={13} className={refreshing ? 'cw-spin' : ''} /> Refresh
+        <div className="gs-toolbar-right">
+          <button className="cw-button-secondary gs-refresh" onClick={reload} disabled={refreshing} title="Refresh now" aria-label="Refresh">
+            <RefreshCw size={14} className={refreshing ? 'cw-spin' : ''} />
+          </button>
+          <RangeControls range={range} onChange={changeRange} />
+          <button className="cw-button-secondary gs-uptime-btn" onClick={() => navigate('/app/gis/gateway-status/uptime')} title="Daily uptime of every gateway, in hours or percent, as a chart you can download">
+            <TableProperties size={14} /> Uptime chart
           </button>
         </div>
       </div>

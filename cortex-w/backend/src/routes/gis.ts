@@ -4,7 +4,9 @@ import { config } from '../config/env.js';
 import { pool } from '../db/pool.js';
 import { localDate } from '../services/localDate.js';
 import { requireClient, scopeSiteIds, rootSites } from '../services/clientContext.js';
-import { getLegacyGisData, resolveSiteScope } from '../services/networkService.js';
+import { getGateways, getLegacyGisData, getMeterMap, resolveSiteScope, type SiteScope } from '../services/networkService.js';
+import { planGateways, type ExistingMode } from '../services/gatewayPlacement.js';
+import { planRelocation } from '../services/gatewayRelocation.js';
 import { clientTenantIds } from '../services/tenantScope.js';
 
 const router = Router();
@@ -112,6 +114,12 @@ router.get('/performance', async (req, res) => {
 // replacement history and the latest bill. If one of those calls fails the rest is still returned and the part is named in
 // `unavailable`; a value nobody knows is null, never a stand-in. With ?core=1 the beta API is not called at all: the answer
 // comes from Postgres alone (fast), and `partial: true` says the beta parts are still to be asked for.
+// The beta parts can be asked for one tab at a time with ?parts=profile,documents (each only calls its own beta APIs):
+//   profile    contact and consumer details (asset, household) and the latest bill   -> consumer, latestBill
+//   documents  replacement history and the photos (meter-image, plus the attachments of the replacement history)
+//              -> replacement, photos
+// Nothing asked for is ever fetched, so opening a meter costs only the database part until a tab needs more. Without
+// `core` and `parts` everything is returned, as before.
 router.get('/meter-detail/:assetId', async (req, res) => {
   try {
     const assetId = Number(req.params.assetId);
@@ -146,8 +154,12 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     // A call that threw or got a server error is "unavailable"; a 404/204 just means there is nothing to show.
     const unavailable: string[] = [];
     const coreOnly = req.query.core === '1';
-    const call = async (name: string, run: () => Promise<{ status: number; data: unknown }>) => {
-      if (coreOnly) return null;
+    const asked = String(req.query.parts ?? '').split(',').map((p) => p.trim()).filter(Boolean);
+    if (asked.some((p) => p !== 'profile' && p !== 'documents')) return res.status(400).json({ error: "parts must be 'profile', 'documents' or both" });
+    // no `parts` = every part (the original behaviour); `core=1` = none
+    const wants = (part: 'profile' | 'documents') => !coreOnly && (asked.length === 0 || asked.includes(part));
+    const call = async (name: string, part: 'profile' | 'documents', run: () => Promise<{ status: number; data: unknown }>) => {
+      if (!wants(part)) return null;
       try {
         const r = await run();
         if (r.status >= 500) unavailable.push(name);
@@ -159,11 +171,11 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     };
 
     const [asset, imeiData, imagesData, latestBill, hhDetail, daily, summary, frame] = await Promise.all([
-      call('consumer', () => proxyUpstream('GET', `/api/asset/${assetId}`, { headers })) as Promise<any>,
-      call('replacement history', () => proxyUpstream('GET', `/api/household/imei-history`, { query: { assetId: String(assetId) }, headers })),
-      call('photos', () => proxyUpstream('GET', `/api/water/meter-image/${assetId}`, { headers })),
-      call('bill', () => proxyUpstream('GET', `/api/billing/latest-bill/${assetId}`, { headers })) as Promise<any>,
-      call('consumer', () =>
+      call('consumer', 'profile', () => proxyUpstream('GET', `/api/asset/${assetId}`, { headers })) as Promise<any>,
+      call('replacement history', 'documents', () => proxyUpstream('GET', `/api/household/imei-history`, { query: { assetId: String(assetId) }, headers })),
+      call('photos', 'documents', () => proxyUpstream('GET', `/api/water/meter-image/${assetId}`, { headers })),
+      call('bill', 'profile', () => proxyUpstream('GET', `/api/billing/latest-bill/${assetId}`, { headers })) as Promise<any>,
+      call('consumer', 'profile', () =>
         proxyUpstream('POST', `/api/water/household-meter-details`, {
           body: { searchType: 'METER_NUMBER', value: meterId, fromDate: last30Days, toDate: today },
           headers,
@@ -267,7 +279,8 @@ router.get('/meter-detail/:assetId', async (req, res) => {
       photos,
       latestBill: latestBill ?? null,
       dailyReadings,
-      partial: coreOnly,
+      // true while some beta part has not been asked for (the page asks for each when its tab opens)
+      partial: !(wants('profile') && wants('documents')),
       unavailable: [...new Set(unavailable)],
     });
   } catch (err: any) {
@@ -275,18 +288,6 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch meter detail' });
   }
 });
-
-// Helper: Haversine distance in meters
-function computeHaversineDistanceM(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
 
 // GET /api/gis/geofences & GET /api/gis/geofence
 async function handleGeofences(req: any, res: any) {
@@ -326,98 +327,296 @@ router.get('/asset-locations', async (req, res) => {
   }
 });
 
-// POST /api/gis/gateway-placement/compute
+/**
+ * Plans already worked out, per data snapshot: the meter map and gateway list objects are cached per client and scope by
+ * networkService (and replaced when they refresh), so a plan is reused only for the same client, the same data and the
+ * same settings, and is dropped with the snapshot. Repeated clicks on Generate then cost nothing.
+ */
+const planCache = new WeakMap<object, WeakMap<object, Map<string, unknown>>>();
+const PLAN_CACHE_PER_SNAPSHOT = 50;
+function cachedPlan<T>(map: object, gws: object, key: string, compute: () => T): T {
+  let byGateways = planCache.get(map);
+  if (!byGateways) planCache.set(map, (byGateways = new WeakMap()));
+  let plans = byGateways.get(gws);
+  if (!plans) byGateways.set(gws, (plans = new Map()));
+  if (plans.has(key)) return plans.get(key) as T;
+  const value = compute();
+  if (plans.size >= PLAN_CACHE_PER_SNAPSHOT) plans.delete(plans.keys().next().value!);
+  plans.set(key, value);
+  return value;
+}
+
+/**
+ * What a run on some sites must know about the client's WHOLE network, or it would misjudge gateways at the edge of the
+ * selection: whether a gateway is working is decided from every meter it hears (on the selected sites alone a gateway
+ * that serves the next site looks silent), and how many meters of sites outside the selection each gateway serves (such
+ * a gateway must not be moved or removed by a plan that cannot see those meters). Both lists are cached by networkService.
+ */
+async function wholeNetwork(scope: SiteScope): Promise<{ working: Map<string, boolean>; servesOutside: Map<string, number> }> {
+  const all = resolveSiteScope('ALL') ?? null;
+  const [allMap, allGateways] = await Promise.all([getMeterMap(all), getGateways(all)]);
+  const isWorking = (status: string) => status === 'reporting' || status === 'degraded'; // degraded still carries traffic
+  const working = new Map<string, boolean>();
+  for (const g of [...allGateways.gateways, ...allGateways.unplaced]) working.set(g.gatewayId, isWorking(g.status));
+  const servesOutside = new Map<string, number>();
+  if (scope) {
+    const inScope = new Set(scope);
+    for (const r of allMap.rows) {
+      if (r[5] < 0 || (r[8] >= 0 && inScope.has(r[8]))) continue;
+      const id = allMap.gatewayIds[r[5]];
+      servesOutside.set(id, (servesOutside.get(id) ?? 0) + 1);
+    }
+  }
+  return { working, servesOutside };
+}
+
+/** What a plan read from wholeNetwork for these gateways, as text: part of the plan-cache key, so a plan never outlives it. */
+const wholeKey = (gateways: ReadonlyArray<{ gatewayId: string }>, whole: Awaited<ReturnType<typeof wholeNetwork>>) =>
+  gateways.map((g) => `${g.gatewayId}:${whole.working.get(g.gatewayId) ? 1 : 0}:${whole.servesOutside.get(g.gatewayId) ?? 0}`).join(',');
+
+// The limits Gateway Placement accepts (the page offers the same ones).
+const MIN_GATEWAYS = 1;
+const MAX_GATEWAYS = 25;
+const MIN_RADIUS_M = 100;
+const MAX_RADIUS_M = 5000;
+const MIN_TARGET_PERCENT = 50;
+const MAX_MIN_NEW_METERS = 100_000;
+const EXISTING_MODES: ExistingMode[] = ['all', 'working', 'none'];
+
+/**
+ * POST /api/gis/gateway-placement/compute
+ * body: { siteId: 'ALL' | id | 'a,b', gatewayCount (the most new gateways allowed), coverageRadiusM,
+ *         minNewMeters?: number | null (null = automatic), targetCoveragePercent?: 50..100, existingMode?: all | working | none }
+ *
+ * Where to put new gateways (services/gatewayPlacement.ts), for the chosen sites and every site below them. The meters
+ * and existing gateways are exactly the ones the Network Explorer and this page's map draw (services/networkService.ts),
+ * so the counts agree. gatewayCount is a maximum: fewer gateways come back when fewer are worth building, and
+ * `stopReason` says why it stopped.
+ */
 router.post('/gateway-placement/compute', async (req, res) => {
   try {
-    const siteId = Number(req.body.siteId ?? defaultSiteId());
-    if (scopeSiteIds(requireClient(), String(siteId)) === null) return res.status(404).json({ error: 'Unknown site' });
-    const gatewayCount = Number(req.body.gatewayCount ?? req.body.numberOfGateways ?? 5);
-    const coverageRadiusM = Number(req.body.coverageRadiusM ?? req.body.radius ?? 500);
+    const siteId = String(req.body.siteId ?? 'ALL');
+    const scope = resolveSiteScope(siteId);
+    if (scope === undefined) return res.status(404).json({ error: 'Unknown site' });
 
-    const authHeader = req.headers.authorization;
-    const token = await getAuthToken(authHeader);
-    const headers: Record<string, string> = token ? { Authorization: token } : {};
+    const gatewayCount = Number(req.body.gatewayCount ?? 5);
+    const coverageRadiusM = Number(req.body.coverageRadiusM ?? 500);
+    const minNewRaw = req.body.minNewMeters;
+    const minNewMeters = minNewRaw == null || minNewRaw === '' ? null : Number(minNewRaw);
+    const targetCoveragePercent = Number(req.body.targetCoveragePercent ?? 100);
+    const existingMode = (req.body.existingMode ?? 'all') as ExistingMode;
 
-    // Parallel fetch: upstream compute + existing geofences to enrich nearest existing gateways
-    const [computeRes, fenceRes] = await Promise.all([
-      proxyUpstream('POST', '/api/map/gateway-placement/compute', {
-        body: { siteId, gatewayCount, coverageRadiusM },
-        headers,
-      }),
-      proxyUpstream('GET', '/api/map/geofence', {
-        query: { siteIds: String(siteId) },
-        headers,
-      }).catch(() => ({ status: 500, data: [] })),
-    ]);
-
-    if (computeRes.status !== 200 || !computeRes.data) {
-      return res.status(computeRes.status).json(computeRes.data || { error: 'Computation failed' });
+    if (!Number.isInteger(gatewayCount) || gatewayCount < MIN_GATEWAYS || gatewayCount > MAX_GATEWAYS) {
+      return res.status(400).json({ error: `gatewayCount must be a whole number from ${MIN_GATEWAYS} to ${MAX_GATEWAYS}` });
+    }
+    if (!Number.isFinite(coverageRadiusM) || coverageRadiusM < MIN_RADIUS_M || coverageRadiusM > MAX_RADIUS_M) {
+      return res.status(400).json({ error: `coverageRadiusM must be from ${MIN_RADIUS_M} to ${MAX_RADIUS_M} metres` });
+    }
+    if (minNewMeters !== null && (!Number.isInteger(minNewMeters) || minNewMeters < 1 || minNewMeters > MAX_MIN_NEW_METERS)) {
+      return res.status(400).json({ error: `minNewMeters must be empty (automatic) or a whole number from 1 to ${MAX_MIN_NEW_METERS}` });
+    }
+    if (!Number.isFinite(targetCoveragePercent) || targetCoveragePercent < MIN_TARGET_PERCENT || targetCoveragePercent > 100) {
+      return res.status(400).json({ error: `targetCoveragePercent must be from ${MIN_TARGET_PERCENT} to 100` });
+    }
+    if (!EXISTING_MODES.includes(existingMode)) {
+      return res.status(400).json({ error: `existingMode must be one of ${EXISTING_MODES.join(', ')}` });
     }
 
-    const rawData = computeRes.data as any;
-    const rawGateways: any[] = Array.isArray(rawData.gateways) ? rawData.gateways : [];
-    const fences: any[] = Array.isArray(fenceRes.data) ? fenceRes.data : [];
-
-    // Filter valid existing gateways with coordinates
-    const existingGateways = fences.filter((f: any) => f.radius && f.geofenceCoordinates?.[0]);
-
-    // Enrich candidate gateways
-    const enrichedGateways = rawGateways.map((g: any, index: number) => {
-      const gNum = g.gatewayNumber ?? (index + 1);
-      const assigned = g.metersAssigned ?? g.assignedAssetIds?.length ?? 0;
-      const covered = g.metersCoveredCount ?? 0;
-      const percent = assigned > 0 ? Math.round((covered / assigned) * 100) : 0;
-      const avgDist = g.avgDistanceM ? Number(g.avgDistanceM.toFixed(1)) : null;
-      const maxDist = g.maxDistanceM ? Number(g.maxDistanceM.toFixed(1)) : null;
-
-      // Find nearest existing gateway using Haversine distance
-      let nearestName: string | null = null;
-      let nearestDist: number | null = null;
-
-      for (const ex of existingGateways) {
-        const coords = ex.geofenceCoordinates[0];
-        const d = computeHaversineDistanceM(g.latitude, g.longitude, coords.latitude, coords.longitude);
-        if (nearestDist === null || d < nearestDist) {
-          nearestDist = d;
-          nearestName = ex.name || 'Existing Gateway';
-        }
-      }
-
-      return {
-        ...g,
-        gatewayNumber: gNum,
-        metersAssigned: assigned,
-        metersCoveredCount: covered,
-        percentCovered: percent,
-        avgDistanceM: avgDist,
-        maxDistanceM: maxDist,
-        coverageRadiusM,
-        nearestExistingName: nearestName,
-        nearestExistingDistanceM: nearestDist !== null ? Number(nearestDist.toFixed(1)) : null,
-      };
-    });
-
-    const totalCovered = rawData.totalMetersCovered ?? enrichedGateways.reduce((sum, g) => sum + g.metersCoveredCount, 0);
-    // If upstream doesn't report totalMeters, we have no reliable real count
-    // for this site — report null rather than a stale hardcoded guess.
-    const totalMeters = rawData.totalMeters ?? null;
-    const overallPercent = totalMeters ? Math.round((totalCovered / totalMeters) * 100) : null;
+    const [map, gws, whole] = await Promise.all([getMeterMap(scope), getGateways(scope), wholeNetwork(scope)]);
+    const started = performance.now();
+    const planKey = JSON.stringify(['add', gatewayCount, coverageRadiusM, minNewMeters, targetCoveragePercent, existingMode, wholeKey(gws.gateways, whole)]);
+    const plan = cachedPlan(map, gws, planKey, () => planGateways({
+      meters: map.rows.map((r) => ({ id: r[0], lat: r[2], lng: r[3] })),
+      // working: judged from every meter it hears across the client's network, not only the selected sites
+      existing: gws.gateways.map((g) => ({ id: g.gatewayId, lat: g.lat, lng: g.lng, working: whole.working.get(g.gatewayId) ?? false })),
+      maxGateways: gatewayCount,
+      radiusM: coverageRadiusM,
+      minNewMeters,
+      targetCoveragePercent,
+      existingMode,
+    }));
+    const computeMs = Math.round(performance.now() - started);
+    const share = (n: number) => (plan.metersConsidered > 0 ? Math.round((n / plan.metersConsidered) * 1000) / 10 : 0);
 
     res.json({
       siteId,
       gatewayCount,
       coverageRadiusM,
-      totalMeters,
-      totalMetersCovered: totalCovered,
-      overallCoveragePercent: overallPercent,
-      excludedMeterCount: rawData.excludedMeterCount ?? 0,
-      excludedAssetIds: rawData.excludedAssetIds ?? [],
-      gateways: enrichedGateways,
-      existingGatewaysCount: existingGateways.length,
+      existingMode,
+      // meters: the ones with a usable position are planned for; the others are counted so the page can say so
+      metersInSelection: map.summary.total,
+      totalMeters: plan.metersConsidered,
+      excludedMeterCount: map.summary.withoutCoordinates + plan.invalidMeters,
+      excludedAssetIds: [],
+      coordinatesStatus: map.coordinates.status,
+      coveredByExisting: plan.coveredByExisting,
+      newlyCovered: plan.newlyCovered,
+      totalMetersCovered: plan.totalCovered,
+      uncovered: plan.uncovered,
+      coverageBeforePercent: plan.coverageBeforePercent,
+      overallCoveragePercent: plan.coverageAfterPercent,
+      // why it stopped, and what more gateways would bring
+      stopReason: plan.stopReason,
+      nextGain: plan.nextGain,
+      minNewMetersUsed: plan.minNewMetersUsed,
+      targetCoveragePercent: plan.targetCoveragePercent,
+      curve: plan.curve,
+      curveComplete: plan.curveComplete,
+      gatewaysFor: plan.gatewaysFor,
+      existingGatewaysCount: gws.gateways.length,
+      existingCounted: plan.existingCounted,
+      unplacedGatewaysCount: gws.unplaced.length,
+      gateways: plan.gateways.map((g) => ({
+        gatewayNumber: g.rank,
+        latitude: g.lat,
+        longitude: g.lng,
+        metersAssigned: g.inRange,
+        metersCoveredCount: g.newlyCovered,
+        percentCovered: share(g.newlyCovered),
+        addedInOrder: g.addedInOrder,
+        onlyThisOne: g.onlyThisOne,
+        avgDistanceM: g.avgDistanceM,
+        maxDistanceM: g.maxDistanceM,
+        coverageRadiusM,
+        nearestExistingId: g.nearestExisting?.id ?? null,
+        nearestExistingName: g.nearestExisting?.id ?? null,
+        nearestExistingDistanceM: g.nearestExisting?.distanceM ?? null,
+        assignedAssetIds: [],
+      })),
+      computeMs,
     });
   } catch (err: any) {
     console.error('[gis] Error computing gateway placement:', err.message);
     res.status(500).json({ error: 'Failed to compute gateway placement' });
+  }
+});
+
+const MAX_MOVES = 100;
+const MAX_LOCKED = 1000;
+const MAX_MOVE_DISTANCE_M = 100_000;
+const GATEWAY_ID = /^[0-9a-f]{16}$/i;
+
+/**
+ * POST /api/gis/gateway-placement/relocate
+ * body: { siteId: 'ALL' | id | 'a,b', coverageRadiusM, maxMoves?: number | null (null = no limit),
+ *         minGain?: number | null (null = automatic), maxMoveDistanceM?: number | null (null = no limit),
+ *         allowRemove?: boolean (default true),
+ *         existingMode?: 'all' | 'working' (default 'working'), lockedGatewayIds?: string[] }
+ *
+ * Which existing gateways to keep, move or remove (services/gatewayRelocation.ts), for the chosen sites and every site
+ * below them. The number of gateways never grows. A gateway that stands in a site outside the selection, or that also
+ * serves meters of such a site, is never proposed for a move or removal: it is locked (lockedReason 'other-site' /
+ * 'serves-other-sites'), and still counted as reaching the meters around it.
+ */
+router.post('/gateway-placement/relocate', async (req, res) => {
+  try {
+    const siteId = String(req.body.siteId ?? 'ALL');
+    const scope = resolveSiteScope(siteId);
+    if (scope === undefined) return res.status(404).json({ error: 'Unknown site' });
+
+    const coverageRadiusM = Number(req.body.coverageRadiusM ?? 500);
+    const maxMovesRaw = req.body.maxMoves;
+    const maxMoves = maxMovesRaw == null || maxMovesRaw === '' ? null : Number(maxMovesRaw);
+    const minGainRaw = req.body.minGain;
+    const minGain = minGainRaw == null || minGainRaw === '' ? null : Number(minGainRaw);
+    const maxDistRaw = req.body.maxMoveDistanceM;
+    const maxMoveDistanceM = maxDistRaw == null || maxDistRaw === '' ? null : Number(maxDistRaw);
+    const allowRemove = req.body.allowRemove == null ? true : req.body.allowRemove === true;
+    const existingMode = String(req.body.existingMode ?? 'working');
+    const lockedRaw = req.body.lockedGatewayIds ?? [];
+
+    if (!Number.isFinite(coverageRadiusM) || coverageRadiusM < MIN_RADIUS_M || coverageRadiusM > MAX_RADIUS_M) {
+      return res.status(400).json({ error: `coverageRadiusM must be from ${MIN_RADIUS_M} to ${MAX_RADIUS_M} metres` });
+    }
+    if (maxMoves !== null && (!Number.isInteger(maxMoves) || maxMoves < 0 || maxMoves > MAX_MOVES)) {
+      return res.status(400).json({ error: `maxMoves must be empty (no limit) or a whole number from 0 to ${MAX_MOVES}` });
+    }
+    if (minGain !== null && (!Number.isInteger(minGain) || minGain < 1 || minGain > MAX_MIN_NEW_METERS)) {
+      return res.status(400).json({ error: `minGain must be empty (automatic) or a whole number from 1 to ${MAX_MIN_NEW_METERS}` });
+    }
+    if (maxMoveDistanceM !== null && (!Number.isFinite(maxMoveDistanceM) || maxMoveDistanceM < 0 || maxMoveDistanceM > MAX_MOVE_DISTANCE_M)) {
+      return res.status(400).json({ error: `maxMoveDistanceM must be empty (no limit) or from 0 to ${MAX_MOVE_DISTANCE_M} metres` });
+    }
+    if (req.body.allowRemove != null && typeof req.body.allowRemove !== 'boolean') {
+      return res.status(400).json({ error: 'allowRemove must be true or false' });
+    }
+    if (existingMode !== 'all' && existingMode !== 'working') {
+      return res.status(400).json({ error: "existingMode must be 'all' or 'working'" });
+    }
+    if (!Array.isArray(lockedRaw) || lockedRaw.length > MAX_LOCKED || lockedRaw.some((g) => typeof g !== 'string' || !GATEWAY_ID.test(g))) {
+      return res.status(400).json({ error: `lockedGatewayIds must be a list of at most ${MAX_LOCKED} 16-character gateway ids` });
+    }
+    const lockedByUser = new Set<string>(lockedRaw.map((g: string) => g.toLowerCase()));
+
+    const [map, gws, whole] = await Promise.all([getMeterMap(scope), getGateways(scope), wholeNetwork(scope)]);
+    const inScope = scope ? new Set(scope) : null;
+    // why a gateway may not be touched by this run (null: it may)
+    const lockReason = (g: { gatewayId: string; siteId: number | null }): 'you' | 'other-site' | 'serves-other-sites' | null => {
+      if (lockedByUser.has(g.gatewayId)) return 'you';
+      if (inScope && g.siteId !== null && !inScope.has(g.siteId)) return 'other-site';
+      if ((whole.servesOutside.get(g.gatewayId) ?? 0) > 0) return 'serves-other-sites';
+      return null;
+    };
+    const reasons = new Map(gws.gateways.map((g) => [g.gatewayId, lockReason(g)]));
+    const started = performance.now();
+    const planKey = JSON.stringify(['move', coverageRadiusM, maxMoves, minGain, maxMoveDistanceM, allowRemove, existingMode, [...lockedByUser].sort(), wholeKey(gws.gateways, whole)]);
+    const plan = cachedPlan(map, gws, planKey, () => planRelocation({
+      meters: map.rows.map((r) => ({ id: r[0], lat: r[2], lng: r[3] })),
+      existing: gws.gateways.map((g) => ({
+        id: g.gatewayId,
+        lat: g.lat,
+        lng: g.lng,
+        // working: judged from every meter it hears across the client's network, not only the selected sites
+        working: whole.working.get(g.gatewayId) ?? false,
+        locked: reasons.get(g.gatewayId) != null,
+      })),
+      radiusM: coverageRadiusM,
+      maxMoves,
+      minGain,
+      maxMoveDistanceM,
+      allowRemove,
+      existingMode,
+    }));
+    const computeMs = Math.round(performance.now() - started);
+    const bySite = new Map(gws.gateways.map((g) => [g.gatewayId, g]));
+
+    res.json({
+      siteId,
+      coverageRadiusM,
+      existingMode,
+      metersInSelection: map.summary.total,
+      totalMeters: plan.metersConsidered,
+      excludedMeterCount: map.summary.withoutCoordinates + plan.invalidMeters,
+      coordinatesStatus: map.coordinates.status,
+      coveredBefore: plan.coveredBefore,
+      coveredAfter: plan.coveredAfter,
+      coverageBeforePercent: plan.coverageBeforePercent,
+      coverageAfterPercent: plan.coverageAfterPercent,
+      uncovered: plan.uncovered,
+      existingCounted: plan.existingCounted,
+      movable: plan.movable,
+      locked: plan.locked,
+      moves: plan.moves,
+      removals: plan.removals,
+      removalLoss: plan.removalLoss,
+      minGainUsed: plan.minGainUsed,
+      stopReason: plan.stopReason,
+      nextNet: plan.nextNet,
+      steps: plan.steps,
+      unplacedGatewaysCount: gws.unplaced.length,
+      items: plan.items.map((i) => {
+        const g = bySite.get(i.id);
+        return {
+          ...i,
+          siteId: g?.siteId ?? null,
+          lockedReason: i.verdict !== 'locked' ? null : reasons.get(i.id) ?? null,
+        };
+      }),
+      computeMs,
+    });
+  } catch (err: any) {
+    console.error('[gis] Error computing gateway relocation:', err.message);
+    res.status(500).json({ error: 'Failed to compute gateway relocation' });
   }
 });
 

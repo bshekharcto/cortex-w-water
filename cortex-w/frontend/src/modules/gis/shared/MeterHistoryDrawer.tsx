@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, Component, ErrorInfo, ReactNode } from 'react';
+import { useState, useEffect, useMemo, useRef, Component, ErrorInfo, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   X,
@@ -84,7 +84,7 @@ class DrawerErrorBoundary extends Component<DrawerErrorBoundaryProps, DrawerErro
   }
 }
 
-/** The gateway closest to the meter on the map, and how far away it is. */
+/** A gateway shown under the meter's name (id and name), and how far away it is. */
 export interface NearestGateway {
   gatewayId: string;
   distanceLabel: string;
@@ -93,10 +93,30 @@ export interface NearestGateway {
 interface MeterHistoryDrawerProps {
   meter: GisMeter | null;
   onClose: () => void;
+  /** The gateway closest to the meter on the map. */
   nearestGateway?: NearestGateway | null;
+  /** The gateway the meter's last message came through. */
+  lastGateway?: NearestGateway | null;
 }
 
-function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: GisMeter; onClose: () => void; nearestGateway?: NearestGateway | null }) {
+/** The parts of the drawer that are fetched only when their tab is opened, one request each. */
+type PartName = 'profile' | 'documents';
+type PartState = 'idle' | 'loading' | 'done' | 'error';
+
+function unionOf(a: string[] | undefined, b: string[] | undefined): string[] {
+  return [...new Set([...(a ?? []), ...(b ?? [])])];
+}
+
+/** The answer for one part laid over what is already shown (the database part), never replacing it. */
+function mergePart(cur: LiveMeterDetailResponse, res: LiveMeterDetailResponse, part: PartName): LiveMeterDetailResponse {
+  const unavailable = unionOf(cur.unavailable, res.unavailable);
+  if (part === 'profile') {
+    return { ...cur, consumer: res.consumer, latestBill: res.latestBill, assetName: res.assetName, status: res.status, unavailable };
+  }
+  return { ...cur, photos: res.photos, replacement: res.replacement, unavailable };
+}
+
+function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway }: { meter: GisMeter; onClose: () => void; nearestGateway?: NearestGateway | null; lastGateway?: NearestGateway | null }) {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'readings' | 'alerts' | 'telemetry' | 'consumer'>('readings');
   const [isWide, setIsWide] = useState<boolean>(false);
@@ -108,15 +128,25 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
   const [detailError, setDetailError] = useState<string | null>(null);
   const [previewPhoto, setPreviewPhoto] = useState<{ url: string; name: string; category: string } | null>(null);
 
-  // Two steps: the database part (readings, signal, radio) arrives first and fills the drawer; the beta API parts
-  // (contact, photos, bill, replacement) follow and are merged in.
+  // Opening a meter fetches only the database part: the 10 days of readings, the month and yesterday, signal and radio.
+  // That is everything the first tab needs, and it is fast. Everything else (contact and bill, replacement history and
+  // photos, which come from slower APIs) is asked for the first time its tab is opened, one request per part, so a click
+  // on a meter never waits for them, and photographs are never fetched unless Consumer Profile is looked at.
+  const assetId = meter.assetId || (meter as any).id;
+  const meterKey = `${assetId}|${meter.meterId}`;
+  const meterKeyRef = useRef(meterKey);
+  meterKeyRef.current = meterKey;
+  const [parts, setParts] = useState<{ key: string; profile: PartState; documents: PartState }>({ key: meterKey, profile: 'idle', documents: 'idle' });
+  // states belong to a meter: after switching to another meter every part starts again from 'idle'
+  const partState: Record<PartName, PartState> = parts.key === meterKey ? parts : { key: meterKey, profile: 'idle', documents: 'idle' };
+
   useEffect(() => {
     let isCancelled = false;
     setIsLoadingDetail(true);
     setDetailError(null);
     setLiveDetail(null);
+    setParts({ key: meterKey, profile: 'idle', documents: 'idle' });
 
-    const assetId = meter.assetId || (meter as any).id;
     if (!assetId) {
       setIsLoadingDetail(false);
       return;
@@ -129,17 +159,6 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
       })
       .catch((err) => {
         if (!isCancelled) setDetailError((err as { operatorMessage?: string })?.operatorMessage || 'Could not load the details of this meter.');
-      });
-    mapApi
-      .getMeterDetail(assetId, meter.meterId)
-      .then((res) => {
-        if (!isCancelled && res) {
-          setLiveDetail(res);
-          setDetailError(null);
-        }
-      })
-      .catch((err) => {
-        console.warn('[gis] Failed to fetch meter detail:', err);
       })
       .finally(() => {
         if (!isCancelled) setIsLoadingDetail(false);
@@ -148,7 +167,38 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
     return () => {
       isCancelled = true;
     };
-  }, [meter.assetId, meter.meterId]);
+  }, [assetId, meter.meterId, meterKey]);
+
+  const loadPart = (part: PartName) => {
+    if (!assetId) return;
+    const key = meterKey;
+    const setState = (state: PartState) =>
+      setParts((p) => (p.key === key ? { ...p, [part]: state } : { key, profile: 'idle', documents: 'idle', [part]: state }));
+    setState('loading');
+    mapApi
+      .getMeterDetail(assetId, meter.meterId, { parts: [part] })
+      .then((res) => {
+        if (meterKeyRef.current !== key) return; // another meter has been opened since
+        // the database part may not have arrived (or failed): the part's answer then stands in for it
+        if (res) setLiveDetail((cur) => (cur ? mergePart(cur, res, part) : res));
+        setState('done');
+      })
+      .catch((err) => {
+        if (meterKeyRef.current !== key) return;
+        console.warn(`[gis] Failed to fetch ${part} of the meter:`, err);
+        setState('error');
+      });
+  };
+
+  // The Consumer Profile tab needs both extra parts: ask for them (once) as soon as it is opened.
+  useEffect(() => {
+    if (activeTab !== 'consumer') return;
+    if (partState.profile === 'idle') loadPart('profile');
+    if (partState.documents === 'idle') loadPart('documents');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, meterKey, partState.profile, partState.documents]);
+  const profilePending = partState.profile === 'idle' || partState.profile === 'loading';
+  const documentsPending = partState.documents === 'idle' || partState.documents === 'loading';
 
   // What is shown: the server's answer first, then what the page that opened the drawer already knew. Anything
   // nobody knows stays null and is shown as a dash, never a stand-in value.
@@ -202,7 +252,7 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
           <div className="gis-meter-header-topline">
             <span className="gis-meter-chip">METER 360</span>
             <span className={`gis-status-badge gis-status-badge--${badge.cssKey}`}>{badge.label}</span>
-            {isLoadingDetail && (
+            {(isLoadingDetail || (activeTab === 'consumer' && (profilePending || documentsPending))) && (
               <span className="gis-drawer-loading">
                 <RefreshCw size={11} className="gis-spin" /> Loading details…
               </span>
@@ -213,6 +263,12 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
             <p className="gis-meter-nearest-gw" title="Straight-line distance to the closest gateway on the map">
               <span>Nearest gateway</span> <b>{nearestGateway.gatewayId}</b>
               <span className="gis-nearest-dist">{nearestGateway.distanceLabel}</span>
+            </p>
+          )}
+          {lastGateway && (
+            <p className="gis-meter-nearest-gw" title="The gateway the meter's last message came through, and the straight-line distance to it">
+              <span>Last communication via</span> <b>{lastGateway.gatewayId}</b>
+              <span className="gis-nearest-dist">{lastGateway.distanceLabel}</span>
             </p>
           )}
           <p className="gis-meter-consumer-sub">
@@ -278,7 +334,18 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
             <span className="gis-kpi-small">{monthM3 != null ? `(${Math.round(monthM3 * 1000).toLocaleString()} L)` : ''}</span>
           </div>
           <div className="gis-kpi-footer">
-            <span className="gis-est-bill">{estimatedBill != null ? `Est. ₹${Number(estimatedBill).toFixed(0)}` : 'No billing data'}</span>
+            {/* The bill comes from a slower API and is fetched with the Consumer Profile tab, not when the meter is opened. */}
+            <span className="gis-est-bill">
+              {estimatedBill != null
+                ? `Est. ₹${Number(estimatedBill).toFixed(0)}`
+                : partState.profile === 'idle'
+                  ? 'Bill: see Consumer Profile'
+                  : partState.profile === 'loading'
+                    ? 'Loading bill…'
+                    : partState.profile === 'error'
+                      ? 'Bill unavailable'
+                      : 'No billing data'}
+            </span>
           </div>
         </div>
 
@@ -344,7 +411,7 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
         >
           <User size={13} />
           <span>Consumer Profile</span>
-          {liveDetail?.photos && liveDetail.photos.length > 0 && (
+          {partState.documents === 'done' && liveDetail?.photos && liveDetail.photos.length > 0 && (
             <span className="gis-tab-count-badge" style={{ background: '#2563EB' }}>
               {liveDetail.photos.length}
             </span>
@@ -601,6 +668,12 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
         <div className="gis-meter-tab-body">
           <div className="gis-card">
             <span className="gis-card-title">Consumer Account & Household</span>
+            {partState.profile === 'error' && (
+              <div style={{ margin: '6px 0', fontSize: 12, color: '#B45309' }}>
+                Could not load the contact details and bill.
+                <button className="gis-layer-btn" onClick={() => loadPart('profile')} style={{ marginLeft: 6 }}>Retry</button>
+              </div>
+            )}
             <div className="gis-kv-row">
               <span className="gis-k">Consumer Name</span>
               <span className="gis-v" style={{ color: '#2563EB', fontWeight: 700 }}>
@@ -616,7 +689,7 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
             <div className="gis-kv-row">
               <span className="gis-k">Contact Mobile</span>
               <span className="gis-v" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Phone size={12} color="#64748B" /> {consumerMobile || '—'}
+                <Phone size={12} color="#64748B" /> {profilePending && !consumerMobile ? 'Loading…' : consumerMobile || '—'}
               </span>
             </div>
             <div className="gis-kv-row">
@@ -632,7 +705,7 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
             <div className="gis-kv-row">
               <span className="gis-k">Account Status</span>
               <span className="gis-v" style={{ fontWeight: 600 }}>
-                {liveDetail?.consumer?.status || '—'}
+                {profilePending && !liveDetail?.consumer?.status ? 'Loading…' : liveDetail?.consumer?.status || '—'}
               </span>
             </div>
           </div>
@@ -641,14 +714,25 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
           <div className="gis-card">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span className="gis-card-title">Installation Proof & Documents</span>
-              {liveDetail?.photos && (
+              {partState.documents === 'done' && liveDetail?.photos && (
                 <span style={{ fontSize: 11, color: '#64748B' }}>
                   {liveDetail.photos.length} Photos on AWS S3
                 </span>
               )}
             </div>
 
-            {liveDetail?.photos && liveDetail.photos.length > 0 ? (
+            {/* The photo list is fetched, and the pictures are downloaded, only now that this tab is open. */}
+            {documentsPending ? (
+              <div style={{ padding: '16px 8px', textAlign: 'center', color: '#64748B', fontSize: 12 }}>
+                <RefreshCw size={16} className="gis-spin" style={{ margin: '0 auto 6px auto', display: 'block' }} />
+                <span>Loading photos…</span>
+              </div>
+            ) : partState.documents === 'error' ? (
+              <div style={{ padding: '16px 8px', textAlign: 'center', color: '#B45309', fontSize: 12 }}>
+                <span>Could not load the photos. </span>
+                <button className="gis-layer-btn" onClick={() => loadPart('documents')} style={{ marginLeft: 6 }}>Retry</button>
+              </div>
+            ) : liveDetail?.photos && liveDetail.photos.length > 0 ? (
               <div className="gis-photo-grid">
                 {liveDetail.photos.map((photo, pIdx) => (
                   <div
@@ -667,6 +751,7 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
                       alt={photo.name}
                       className="gis-photo-thumb"
                       loading="lazy"
+                      decoding="async"
                       onError={(e) => {
                         (e.target as HTMLElement).style.display = 'none';
                       }}
@@ -696,7 +781,7 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
             <span className="gis-card-title">Deployment Site</span>
             <div className="gis-kv-row">
               <span className="gis-k">Site</span>
-              <span className="gis-v">{liveDetail?.consumer?.siteName || '—'}</span>
+              <span className="gis-v">{profilePending && !liveDetail?.consumer?.siteName ? 'Loading…' : liveDetail?.consumer?.siteName || '—'}</span>
             </div>
             <div className="gis-kv-row">
               <span className="gis-k">Geographic Coordinates</span>
@@ -754,11 +839,11 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway }: { meter: Gi
   );
 }
 
-export function MeterHistoryDrawer({ meter, onClose, nearestGateway }: MeterHistoryDrawerProps) {
+export function MeterHistoryDrawer({ meter, onClose, nearestGateway, lastGateway }: MeterHistoryDrawerProps) {
   if (!meter) return null;
   return (
     <DrawerErrorBoundary onClose={onClose}>
-      <MeterHistoryDrawerInner meter={meter} onClose={onClose} nearestGateway={nearestGateway} />
+      <MeterHistoryDrawerInner meter={meter} onClose={onClose} nearestGateway={nearestGateway} lastGateway={lastGateway} />
     </DrawerErrorBoundary>
   );
 }

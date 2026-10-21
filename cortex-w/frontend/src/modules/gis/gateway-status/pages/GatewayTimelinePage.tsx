@@ -17,11 +17,11 @@ import {
   presetOf,
   rangeFromParams,
   rangeToParams,
-  reasonLabel,
   todayIn,
   viewAround,
   type View,
 } from '../gatewayStatusModel';
+import { possibleReasons } from '../offlineReasons';
 import { StateTimelineChart } from '../components/StateTimelineChart';
 import { RangeControls } from '../components/RangeControls';
 import { Pager } from '../components/Pager';
@@ -72,6 +72,11 @@ export function GatewayTimelinePage() {
 
   const stats = useMemo(() => (data ? computeTimelineStats(data) : null), [data]);
   const periods = useMemo(() => (data ? offlinePeriods(data) : []), [data]);
+  // the possible reasons of every offline period (see offlineReasons.ts): worked out from the period itself and its neighbours
+  const reasons = useMemo(
+    () => new Map(periods.map((p) => [p.index, possibleReasons(p, periods, { timeZone: data?.range.timeZone, heartbeatDays: data?.heartbeatDays })])),
+    [periods, data]
+  );
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(10);
   useEffect(() => setPage(0), [key]);
@@ -137,7 +142,7 @@ export function GatewayTimelinePage() {
               <div className="cw-table-wrap">
                 <table className="cw-table cw-table--centered gs-table">
                   <thead>
-                    <tr><th>#</th><th>Offline From</th><th>Back Online At</th><th>Duration</th><th>Reason</th></tr>
+                    <tr><th>#</th><th>Offline From</th><th>Back Online At</th><th>Duration</th><th className="gs-reasons-th">Possible Reasons</th></tr>
                   </thead>
                   <tbody>
                     {visible.map((p) => (
@@ -153,7 +158,17 @@ export function GatewayTimelinePage() {
                         <td>{fmtDateTime(p.segment.start)}</td>
                         <td>{p.ongoing ? 'Still offline' : fmtDateTime(p.segment.end)}</td>
                         <td>{fmtDuration(p.segment.durationSeconds)}</td>
-                        <td>{reasonLabel(p.segment.reason)}</td>
+                        <td className="gs-reasons">
+                          {(reasons.get(p.index) ?? []).map((r) => (
+                            <div key={r.label} className="gs-reason" title={r.detail}>
+                              <span className="gs-reason-label">
+                                {r.label}
+                                {r.confirmed && <span className="gs-reason-tag">reported</span>}
+                              </span>
+                              <span className="gs-reason-detail">{r.detail}</span>
+                            </div>
+                          ))}
+                        </td>
                       </tr>
                     ))}
                     {periods.length === 0 && (

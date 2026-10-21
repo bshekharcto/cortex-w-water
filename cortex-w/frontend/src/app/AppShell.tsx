@@ -2,6 +2,7 @@ import { Outlet, useLocation } from 'react-router-dom';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { TopHeader } from '@/components/layout/TopHeader';
 import { DataFreshnessProvider } from '@/components/layout/DataFreshness';
+import { HeaderStatusProvider } from '@/components/layout/HeaderStatus';
 
 export function AppShell() {
   const { pathname } = useLocation();
@@ -10,19 +11,21 @@ export function AppShell() {
 
   return (
     <DataFreshnessProvider>
-      <div className={`cw-shell ${isCommandCenter ? 'cw-shell--command-center' : ''}`}>
-        <Sidebar />
-        <div className="cw-main-area">
-          <TopHeader />
-          <main
-            className={`cw-page-content ${isCommandCenter ? 'cw-page-content--command-center' : ''} ${
-              isGis ? 'cw-page-content--gis' : ''
-            }`}
-          >
-            <Outlet />
-          </main>
+      <HeaderStatusProvider>
+        <div className={`cw-shell ${isCommandCenter ? 'cw-shell--command-center' : ''}`}>
+          <Sidebar />
+          <div className="cw-main-area">
+            <TopHeader />
+            <main
+              className={`cw-page-content ${isCommandCenter ? 'cw-page-content--command-center' : ''} ${
+                isGis ? 'cw-page-content--gis' : ''
+              }`}
+            >
+              <Outlet />
+            </main>
+          </div>
         </div>
-      </div>
+      </HeaderStatusProvider>
     </DataFreshnessProvider>
   );
 }
