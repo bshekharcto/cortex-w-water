@@ -114,6 +114,12 @@ router.get('/performance', async (req, res) => {
 // replacement history and the latest bill. If one of those calls fails the rest is still returned and the part is named in
 // `unavailable`; a value nobody knows is null, never a stand-in. With ?core=1 the beta API is not called at all: the answer
 // comes from Postgres alone (fast), and `partial: true` says the beta parts are still to be asked for.
+// The beta parts can be asked for one tab at a time with ?parts=profile,documents (each only calls its own beta APIs):
+//   profile    contact and consumer details (asset, household) and the latest bill   -> consumer, latestBill
+//   documents  replacement history and the photos (meter-image, plus the attachments of the replacement history)
+//              -> replacement, photos
+// Nothing asked for is ever fetched, so opening a meter costs only the database part until a tab needs more. Without
+// `core` and `parts` everything is returned, as before.
 router.get('/meter-detail/:assetId', async (req, res) => {
   try {
     const assetId = Number(req.params.assetId);
@@ -148,8 +154,12 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     // A call that threw or got a server error is "unavailable"; a 404/204 just means there is nothing to show.
     const unavailable: string[] = [];
     const coreOnly = req.query.core === '1';
-    const call = async (name: string, run: () => Promise<{ status: number; data: unknown }>) => {
-      if (coreOnly) return null;
+    const asked = String(req.query.parts ?? '').split(',').map((p) => p.trim()).filter(Boolean);
+    if (asked.some((p) => p !== 'profile' && p !== 'documents')) return res.status(400).json({ error: "parts must be 'profile', 'documents' or both" });
+    // no `parts` = every part (the original behaviour); `core=1` = none
+    const wants = (part: 'profile' | 'documents') => !coreOnly && (asked.length === 0 || asked.includes(part));
+    const call = async (name: string, part: 'profile' | 'documents', run: () => Promise<{ status: number; data: unknown }>) => {
+      if (!wants(part)) return null;
       try {
         const r = await run();
         if (r.status >= 500) unavailable.push(name);
@@ -161,11 +171,11 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     };
 
     const [asset, imeiData, imagesData, latestBill, hhDetail, daily, summary, frame] = await Promise.all([
-      call('consumer', () => proxyUpstream('GET', `/api/asset/${assetId}`, { headers })) as Promise<any>,
-      call('replacement history', () => proxyUpstream('GET', `/api/household/imei-history`, { query: { assetId: String(assetId) }, headers })),
-      call('photos', () => proxyUpstream('GET', `/api/water/meter-image/${assetId}`, { headers })),
-      call('bill', () => proxyUpstream('GET', `/api/billing/latest-bill/${assetId}`, { headers })) as Promise<any>,
-      call('consumer', () =>
+      call('consumer', 'profile', () => proxyUpstream('GET', `/api/asset/${assetId}`, { headers })) as Promise<any>,
+      call('replacement history', 'documents', () => proxyUpstream('GET', `/api/household/imei-history`, { query: { assetId: String(assetId) }, headers })),
+      call('photos', 'documents', () => proxyUpstream('GET', `/api/water/meter-image/${assetId}`, { headers })),
+      call('bill', 'profile', () => proxyUpstream('GET', `/api/billing/latest-bill/${assetId}`, { headers })) as Promise<any>,
+      call('consumer', 'profile', () =>
         proxyUpstream('POST', `/api/water/household-meter-details`, {
           body: { searchType: 'METER_NUMBER', value: meterId, fromDate: last30Days, toDate: today },
           headers,
@@ -269,7 +279,8 @@ router.get('/meter-detail/:assetId', async (req, res) => {
       photos,
       latestBill: latestBill ?? null,
       dailyReadings,
-      partial: coreOnly,
+      // true while some beta part has not been asked for (the page asks for each when its tab opens)
+      partial: !(wants('profile') && wants('documents')),
       unavailable: [...new Set(unavailable)],
     });
   } catch (err: any) {

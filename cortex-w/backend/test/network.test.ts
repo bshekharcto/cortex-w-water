@@ -202,6 +202,28 @@ try {
   const aMeterIds = new Set(gm.body.meters.map((m: any) => m.meterId));
   check('B /api/gis/meters shares no meter with A', gmB.status === 200 && gmB.body.meters.every((m: any) => !aMeterIds.has(m.meterId)), `${gmB.body?.meters?.length} meters`);
 
+  // --- Meter 360: the first click costs only the database part; contact/bill and photos/replacement come when asked ---
+  const mm = gm.body.meters.find((m: any) => m.assetId && m.householdId);
+  if (mm) {
+    const detail = (q: string, token = A.token) => get(`/api/gis/meter-detail/${mm.assetId}?meterId=${encodeURIComponent(mm.meterId)}${q}`, token);
+    const coreD = await detail('&core=1');
+    check('meter detail core 200 with the 10-day readings, no beta parts', coreD.status === 200 && Array.isArray(coreD.body.dailyReadings) && coreD.body.dailyReadings.length <= 10 && coreD.body.partial === true
+      && coreD.body.photos.length === 0 && coreD.body.latestBill === null && coreD.body.replacement === null && coreD.body.consumer.mobile === null, `${coreD.ms} ms`);
+    const profD = await detail('&parts=profile');
+    check('meter detail parts=profile: contact + bill asked, no photos or replacement', profD.status === 200 && profD.body.partial === true && profD.body.photos.length === 0 && profD.body.replacement === null
+      && !profD.body.unavailable.includes('photos') && !profD.body.unavailable.includes('replacement history'), `${profD.ms} ms`);
+    const docD = await detail('&parts=documents');
+    check('meter detail parts=documents: photos + replacement asked, no contact or bill', docD.status === 200 && docD.body.partial === true && Array.isArray(docD.body.photos) && docD.body.latestBill === null
+      && docD.body.consumer.mobile === null && !docD.body.unavailable.includes('bill') && !docD.body.unavailable.includes('consumer'), `${docD.ms} ms, ${docD.body?.photos?.length} photos`);
+    const bothD = await detail('&parts=profile,documents');
+    check('meter detail parts=profile,documents is complete', bothD.status === 200 && bothD.body.partial === false);
+    const allD = await detail('');
+    check('meter detail with no options still returns everything (as before)', allD.status === 200 && allD.body.partial === false && allD.body.dailyReadings.length === coreD.body.dailyReadings.length, `${allD.ms} ms`);
+    console.log(`      first click (core): ${coreD.ms} ms; everything at once: ${allD.ms} ms`);
+    check('meter detail rejects unknown parts', (await detail('&parts=photos')).status === 400);
+    check("B asking for A's meter -> 404, whatever the parts", (await detail('&parts=documents', B.token)).status === 404 && (await detail('&core=1', B.token)).status === 404);
+  }
+
   // --- Gateway Placement: add gateways / optimise existing ones (computed here, from the same meters and gateways) ---
   const post = async (path: string, body: unknown, token?: string) => {
     const t0 = performance.now();

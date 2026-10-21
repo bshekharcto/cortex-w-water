@@ -80,9 +80,14 @@ export const mapApi = {
   getMeters: (params?: { siteId?: string; gatewayId?: string; problemsOnly?: boolean; search?: string; limit?: number }) =>
     apiRequest<LiveMetersResponse>('/gis/meters', { query: params }),
 
-  /** `core` answers from the database alone (fast); without it the beta API parts are included too (slower). */
-  getMeterDetail: (assetId: number | string, meterId?: string, opts?: { core?: boolean }) =>
-    apiRequest<LiveMeterDetailResponse>(`/gis/meter-detail/${assetId}`, { query: { meterId, core: opts?.core ? '1' : undefined } }),
+  /**
+   * `core` answers from the database alone (fast). `parts` asks for beta API parts one at a time: 'profile' (contact,
+   * consumer, latest bill) and 'documents' (replacement history, photos). Without either, everything is returned.
+   */
+  getMeterDetail: (assetId: number | string, meterId?: string, opts?: { core?: boolean; parts?: Array<'profile' | 'documents'> }) =>
+    apiRequest<LiveMeterDetailResponse>(`/gis/meter-detail/${assetId}`, {
+      query: { meterId, core: opts?.core ? '1' : undefined, parts: opts?.parts?.length ? opts.parts.join(',') : undefined },
+    }),
 
   getAssetLocations: (siteId: number = 6394) =>
     apiRequest<Record<string, SensorRawDataDTO>>('/gis/asset-locations', { query: { siteIds: siteId } }),

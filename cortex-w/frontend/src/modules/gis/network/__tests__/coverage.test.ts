@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeGatewayReach, distanceM, formatDistance } from '../coverage';
+import { computeGatewayReach, distanceM, formatDistance, lastGatewayInfo } from '../coverage';
 import type { MeterPoint } from '../networkModel';
 
 const gw = { gatewayId: 'g1', lat: 20, lng: 85 };
@@ -50,5 +50,41 @@ describe('distance helpers', () => {
     expect(formatDistance(19.4)).toBe('19 m');
     expect(formatDistance(1234)).toBe('1.2 km');
     expect(formatDistance(545100)).toBe('545 km');
+  });
+});
+
+describe('lastGatewayInfo', () => {
+  // two gateways, one named; the meter stands about 1.1 km north of "g1"
+  const gateways = [
+    { gatewayId: '506f980000000001', name: 'GW-1 (Dumduma)', address: null, lat: 20.3, lng: 85.8 },
+    { gatewayId: '506f980000000002', name: '506f980000000002', address: null, lat: 20.4, lng: 85.9 },
+  ];
+  const meter = { lat: 20.31, lng: 85.8, gatewayId: '506f980000000001' };
+
+  it('names the gateway of the meter\'s last message ("id · name") and the distance to it', () => {
+    const info = lastGatewayInfo(meter, gateways);
+    expect(info?.gatewayId).toBe('506f980000000001 · GW-1 (Dumduma)');
+    expect(info?.distanceLabel).toBe('1.1 km');
+  });
+
+  it('shows just the id for a gateway without a separate name', () => {
+    expect(lastGatewayInfo({ ...meter, gatewayId: '506f980000000002' }, gateways)?.gatewayId).toBe('506f980000000002');
+  });
+
+  it('matches the id whatever its case', () => {
+    expect(lastGatewayInfo({ ...meter, gatewayId: '506F980000000001' }, gateways)?.distanceLabel).toBe('1.1 km');
+  });
+
+  it('is null for a meter that never reported (no gateway)', () => {
+    expect(lastGatewayInfo({ ...meter, gatewayId: null }, gateways)).toBeNull();
+    expect(lastGatewayInfo({ ...meter, gatewayId: '' }, gateways)).toBeNull();
+  });
+
+  it('still names a gateway that is not on the map, with the distance unknown', () => {
+    expect(lastGatewayInfo({ ...meter, gatewayId: 'abcdabcdabcdabcd' }, gateways)).toEqual({ gatewayId: 'abcdabcdabcdabcd', distanceLabel: 'position unknown' });
+  });
+
+  it('says the distance is unknown when the meter has no position', () => {
+    expect(lastGatewayInfo({ lat: null, lng: null, gatewayId: '506f980000000001' }, gateways)?.distanceLabel).toBe('distance unknown');
   });
 });

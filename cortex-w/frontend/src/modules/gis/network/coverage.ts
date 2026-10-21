@@ -1,5 +1,5 @@
 import type { NetMeterStatus } from '@/services/api/networkApi';
-import type { MeterPoint } from './networkModel';
+import { gatewayLabel, type MeterPoint } from './networkModel';
 
 /** Great-circle distance in metres. */
 export function distanceM(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -98,6 +98,29 @@ export function computeGatewayReach(points: ReadonlyArray<MeterPoint>, gateway: 
 }
 
 /** "19 m", "1.2 km", "545 km". */
+/**
+ * The gateway the meter's last message came through, with the straight-line distance to it, for the Meter 360 panel.
+ * `gatewayId` is the gateway of the meter's newest frame. null when the meter has no gateway (it never reported).
+ * A gateway that is not on the map (it has no position) is still named, with the distance unknown.
+ */
+export function lastGatewayInfo(
+  meter: { lat: number | null | undefined; lng: number | null | undefined; gatewayId: string | null | undefined },
+  gateways: ReadonlyArray<{ gatewayId: string; name?: string | null; address?: string | null; lat: number; lng: number }>
+): { gatewayId: string; distanceLabel: string } | null {
+  const id = meter.gatewayId?.trim().toLowerCase();
+  if (!id) return null;
+  const gw = gateways.find((g) => g.gatewayId.toLowerCase() === id);
+  if (!gw) return { gatewayId: id, distanceLabel: 'position unknown' };
+  // "id · name" (just the id when the gateway has no separate name), the same as the nearest-gateway line
+  const label = gatewayLabel(gw);
+  const text = label.toLowerCase() === gw.gatewayId.toLowerCase() ? gw.gatewayId : `${gw.gatewayId} · ${label}`;
+  const { lat, lng } = meter;
+  if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(gw.lat) || !Number.isFinite(gw.lng)) {
+    return { gatewayId: text, distanceLabel: 'distance unknown' };
+  }
+  return { gatewayId: text, distanceLabel: formatDistance(distanceM(lat, lng, gw.lat, gw.lng)) };
+}
+
 export function formatDistance(m: number): string {
   if (m < 1000) return `${Math.round(m)} m`;
   const km = m / 1000;

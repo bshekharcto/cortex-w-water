@@ -36,7 +36,7 @@ import { GatewayCoveragePanel, defaultRadius } from '../components/GatewayCovera
 import { GatewayPicker, gatewayEntry } from '../components/GatewayPicker';
 import { GatewayRangeCards } from '../components/GatewayRangeCards';
 import { MeterSearchBox } from '../components/MeterSearchBox';
-import { computeGatewayReach, distanceM, formatDistance } from '../coverage';
+import { computeGatewayReach, distanceM, formatDistance, lastGatewayInfo } from '../coverage';
 import {
   GATEWAY_STATUS_LABEL,
   METER_STATUS_STYLE,
@@ -269,6 +269,12 @@ export function NetworkExplorerPage() {
     const e = gatewayEntry(best.gw);
     return { gatewayId: e.name ? `${e.id} · ${e.name}` : e.id, distanceLabel: formatDistance(best.d) };
   }, [selectedEntity, gateways]);
+
+  // the gateway the open meter's last message came through (the meter's gateway column), and how far it is
+  const lastGateway = useMemo(
+    () => (selectedEntity?.type === 'meter' ? lastGatewayInfo(selectedEntity.data, gateways) : null),
+    [selectedEntity, gateways]
+  );
 
   // ---- opening a meter: instantly from what the map knows, then completed from the server ----
   const openMeter = useCallback(
@@ -1143,7 +1149,7 @@ export function NetworkExplorerPage() {
       )}
 
       {/* Meter 360 History Drawer (from the map and the table) */}
-      {selectedEntity?.type === 'meter' && <MeterHistoryDrawer meter={selectedEntity.data} nearestGateway={nearestGateway} onClose={() => setSelectedEntity(null)} />}
+      {selectedEntity?.type === 'meter' && <MeterHistoryDrawer meter={selectedEntity.data} nearestGateway={nearestGateway} lastGateway={lastGateway} onClose={() => setSelectedEntity(null)} />}
     </div>
   );
 }
