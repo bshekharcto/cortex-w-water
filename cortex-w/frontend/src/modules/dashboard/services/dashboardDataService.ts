@@ -30,6 +30,9 @@ export async function fetchNodeChildren(parentId: string | null): Promise<NodeRo
   return Array.isArray(res) ? res : [];
 }
 
+/** What the meter list can be narrowed to: the 25 h / 30 d windows of the cards, or Never Seen. */
+export type MeterStatusFilter = 'ALL' | 'ACTIVE_25H' | 'INACTIVE_25H' | 'ACTIVE_30D' | 'INACTIVE_30D' | 'NEVER_SEEN';
+
 export type MeterSortField =
   | 'devEui'
   | 'meterId'
@@ -45,6 +48,8 @@ export interface NodeSummaryTotals {
   connected: number;
   disconnected: number;
   neverSeen: number;
+  active25h: number;
+  active30d: number;
   yesterdayFlowM3: number;
   todayFlowM3: number;
   monthToDateFlowM3: number;
@@ -66,7 +71,7 @@ export const EMPTY_METER_PAGE: MeterPage = {
   size: 15,
   total: 0,
   totalPages: 0,
-  summary: { totalDevices: 0, connected: 0, disconnected: 0, neverSeen: 0, yesterdayFlowM3: 0, todayFlowM3: 0, monthToDateFlowM3: 0 },
+  summary: { totalDevices: 0, connected: 0, disconnected: 0, neverSeen: 0, active25h: 0, active30d: 0, yesterdayFlowM3: 0, todayFlowM3: 0, monthToDateFlowM3: 0 },
 };
 
 /**
@@ -120,4 +125,19 @@ export async function fetchNodeTrend(nodeId: string, mode: TrendMode, days: numb
 export async function fetchNodeBoundaries(nodeId: string): Promise<Boundary[]> {
   const res = await apiRequest<Boundary[]>(`/dashboard/nodes/${encodeURIComponent(nodeId)}/boundaries`);
   return Array.isArray(res) ? res : [];
+}
+
+export interface ClientBrandInfo {
+  name: string;
+  logo: string | null;
+}
+
+/** The name and logo of the signed-in user's client. Null when it cannot be loaded: the Dashboard works without it. */
+export async function fetchClientBrand(): Promise<ClientBrandInfo | null> {
+  if (isSeedMode()) return null;
+  try {
+    return await apiRequest<ClientBrandInfo>('/dashboard/client');
+  } catch {
+    return null;
+  }
 }

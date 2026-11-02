@@ -1,5 +1,5 @@
 import { authApi } from '@/services/api/authApi';
-import { setAuthToken, clearAuthState } from './authTokenStore';
+import { setAuthToken, setStoredUser, clearAuthState } from './authTokenStore';
 import type { AuthenticatedUser } from '../types/auth.types';
 
 /**
@@ -12,7 +12,9 @@ export const authRepository = {
   async login(username: string, password: string): Promise<AuthenticatedUser> {
     const res = await authApi.login({ username, password });
     setAuthToken(res.token);
-    return { displayName: res.displayName, role: res.role };
+    const user = { displayName: res.displayName, role: res.role };
+    setStoredUser(user);
+    return user;
   },
 
   async logout(): Promise<void> {

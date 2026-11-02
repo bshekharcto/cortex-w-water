@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { authRepository } from '../repository/authRepository';
+import { getStoredUser } from '../repository/authTokenStore';
 import type { AuthState, AuthenticatedUser } from '../types/auth.types';
 
 interface AuthStore extends AuthState {
@@ -15,8 +16,9 @@ interface AuthStore extends AuthState {
  * services/api and each module's hooks/.
  */
 export const useAuth = create<AuthStore>((set) => ({
-  user: null,
-  isAuthenticated: false,
+  // restored after a refresh, when the token is still in the tab's session
+  user: getStoredUser(),
+  isAuthenticated: getStoredUser() !== null,
 
   login: async (username, password) => {
     const user = await authRepository.login(username, password);

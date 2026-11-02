@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { logRouteError } from '../db/pool.js';
+import { brandFor } from '../config/clientBrands.js';
 import {
   getNodeChildren,
   getNodeMeters,
@@ -8,6 +9,8 @@ import {
   getNodeBoundaries,
   getDataFreshness,
   METER_SORT_KEYS,
+  METER_STATUS_FILTERS,
+  MeterStatusFilter,
   MeterSortKey,
   TrendMode,
   SessionExpiredError,
@@ -30,6 +33,15 @@ router.get('/freshness', async (_req, res) => {
     logRouteError('[dashboard] Error reading the data freshness:', err);
     return res.status(500).json({ error: 'Failed to read when the data was last updated' });
   }
+});
+
+/**
+ * GET /api/dashboard/client
+ * The name and logo of the client the caller belongs to (derived from their own token, never from the request).
+ */
+router.get('/client', (req, res) => {
+  const ids = req.client && !req.client.unscoped ? req.client.clientIds : [];
+  return res.json(brandFor(ids));
 });
 
 /**
@@ -73,14 +85,14 @@ const intParam = (value: unknown, fallback: number, min: number, max: number) =>
 };
 
 /**
- * GET /api/dashboard/nodes/:nodeId/meters?page=0&size=15&sort=devEui&dir=asc&q=...&status=ALL|CONNECTED|DISCONNECTED|NEVER_SEEN
+ * GET /api/dashboard/nodes/:nodeId/meters?page=0&size=15&sort=devEui&dir=asc&q=...&status=ALL|ACTIVE_25H|INACTIVE_25H|ACTIVE_30D|INACTIVE_30D|CONNECTED|DISCONNECTED|NEVER_SEEN
  * One page of the meters of this node, sorted, searched and filtered by the database, with the totals of the whole node.
  */
 router.get('/nodes/:nodeId/meters', async (req, res) => {
   try {
     const sort = METER_SORT_KEYS.includes(req.query.sort as MeterSortKey) ? (req.query.sort as MeterSortKey) : 'devEui';
-    const status = ['CONNECTED', 'DISCONNECTED', 'NEVER_SEEN'].includes(String(req.query.status))
-      ? (String(req.query.status) as 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN')
+    const status: MeterStatusFilter = METER_STATUS_FILTERS.includes(String(req.query.status) as MeterStatusFilter)
+      ? (String(req.query.status) as MeterStatusFilter)
       : 'ALL';
     const result = await getNodeMeters(
       req.params.nodeId,
@@ -107,6 +119,8 @@ router.get('/nodes/:nodeId/meters', async (req, res) => {
         latestReadingAt: m.decodedAt ?? undefined,
         latestReadingLocal: m.decodedLocal ?? undefined,
         connectivityStatus: m.connectivity,
+        active25h: m.active25h,
+        active30d: m.active30d,
       })),
       page: result.page,
       size: result.size,

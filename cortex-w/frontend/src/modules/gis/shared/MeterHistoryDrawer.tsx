@@ -14,13 +14,13 @@ import {
   Minimize2,
   Activity,
   Zap,
-  Image as ImageIcon,
   Phone,
   RefreshCw,
   ShieldCheck,
 } from 'lucide-react';
 import { GisMeter, MeterAlert } from './gisData';
 import { mapApi, LiveMeterDetailResponse, MeterDayRow } from '@/services/api/mapApi';
+import { MeterPhotoGrid } from './MeterPhotoGrid';
 import { consumerHeadline, csvCell, formatMHz, formatStamp, statusBadge, summarizeDays } from './meterDetailModel';
 
 interface DrawerErrorBoundaryProps {
@@ -97,6 +97,12 @@ interface MeterHistoryDrawerProps {
   nearestGateway?: NearestGateway | null;
   /** The gateway the meter's last message came through. */
   lastGateway?: NearestGateway | null;
+  /**
+   * 'screen' (default): a full-height panel at the right edge of the screen. 'map': as tall as the map area it is opened
+   * from: it sits inside its positioned parent, from `mapTop` px down to the parent's bottom.
+   */
+  placement?: 'screen' | 'map';
+  mapTop?: number;
 }
 
 /** The parts of the drawer that are fetched only when their tab is opened, one request each. */
@@ -116,7 +122,7 @@ function mergePart(cur: LiveMeterDetailResponse, res: LiveMeterDetailResponse, p
   return { ...cur, photos: res.photos, replacement: res.replacement, unavailable };
 }
 
-function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway }: { meter: GisMeter; onClose: () => void; nearestGateway?: NearestGateway | null; lastGateway?: NearestGateway | null }) {
+function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway, placement = 'screen', mapTop }: { meter: GisMeter; onClose: () => void; nearestGateway?: NearestGateway | null; lastGateway?: NearestGateway | null; placement?: 'screen' | 'map'; mapTop?: number }) {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'readings' | 'alerts' | 'telemetry' | 'consumer'>('readings');
   const [isWide, setIsWide] = useState<boolean>(false);
@@ -126,7 +132,6 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway }
   const [liveDetail, setLiveDetail] = useState<LiveMeterDetailResponse | null>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState<boolean>(true);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [previewPhoto, setPreviewPhoto] = useState<{ url: string; name: string; category: string } | null>(null);
 
   // Opening a meter fetches only the database part: the 10 days of readings, the month and yesterday, signal and radio.
   // That is everything the first tab needs, and it is fast. Everything else (contact and bill, replacement history and
@@ -168,6 +173,13 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway }
       isCancelled = true;
     };
   }, [assetId, meter.meterId, meterKey]);
+
+  // Escape closes the panel
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const loadPart = (part: PartName) => {
     if (!assetId) return;
@@ -245,7 +257,10 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway }
   const unavailableNote = liveDetail?.unavailable?.length ? `Could not load: ${liveDetail.unavailable.join(', ')}.` : null;
 
   return (
-    <div className={`gis-meter-drawer ${isWide ? 'gis-meter-drawer--wide' : ''}`}>
+    <div
+      className={`gis-meter-drawer ${placement === 'map' ? 'gis-meter-drawer--inmap' : 'gis-meter-drawer--fixed'} ${isWide ? 'gis-meter-drawer--wide' : ''}`}
+      style={placement === 'map' && mapTop != null ? { top: mapTop } : undefined}
+    >
       {/* Top Header */}
       <div className="gis-meter-drawer-header">
         <div className="gis-meter-header-info">
@@ -374,7 +389,9 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway }
             {/* No upstream or local source reports an instantaneous flow rate
                 for this hardware — say so rather than showing a fake "0 Static". */}
             <span className="gis-kpi-big">—</span>
-            <span className="gis-kpi-small">Not available</span>
+          </div>
+          <div className="gis-kpi-footer">
+            <span className="gis-trend-zero">Not reported by this hardware</span>
           </div>
         </div>
       </div>
@@ -722,59 +739,11 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway }
             </div>
 
             {/* The photo list is fetched, and the pictures are downloaded, only now that this tab is open. */}
-            {documentsPending ? (
-              <div style={{ padding: '16px 8px', textAlign: 'center', color: '#64748B', fontSize: 12 }}>
-                <RefreshCw size={16} className="gis-spin" style={{ margin: '0 auto 6px auto', display: 'block' }} />
-                <span>Loading photos…</span>
-              </div>
-            ) : partState.documents === 'error' ? (
-              <div style={{ padding: '16px 8px', textAlign: 'center', color: '#B45309', fontSize: 12 }}>
-                <span>Could not load the photos. </span>
-                <button className="gis-layer-btn" onClick={() => loadPart('documents')} style={{ marginLeft: 6 }}>Retry</button>
-              </div>
-            ) : liveDetail?.photos && liveDetail.photos.length > 0 ? (
-              <div className="gis-photo-grid">
-                {liveDetail.photos.map((photo, pIdx) => (
-                  <div
-                    key={pIdx}
-                    className="gis-photo-card"
-                    onClick={() =>
-                      setPreviewPhoto({
-                        url: photo.url,
-                        name: photo.name,
-                        category: photo.category,
-                      })
-                    }
-                  >
-                    <img
-                      src={photo.url}
-                      alt={photo.name}
-                      className="gis-photo-thumb"
-                      loading="lazy"
-                      decoding="async"
-                      onError={(e) => {
-                        (e.target as HTMLElement).style.display = 'none';
-                      }}
-                    />
-                    <div className="gis-photo-info">
-                      <span className="gis-photo-category">
-                        {photo.category.replace(/_/g, ' ')}
-                      </span>
-                      {photo.uploadDate && (
-                        <span className="gis-photo-date">
-                          {photo.uploadDate.split('T')[0]}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{ padding: '16px 8px', textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>
-                <ImageIcon size={24} style={{ margin: '0 auto 6px auto', display: 'block', opacity: 0.5 }} />
-                <span>No proof photos uploaded for this meter.</span>
-              </div>
-            )}
+            <MeterPhotoGrid
+              photos={liveDetail?.photos ?? []}
+              state={documentsPending ? 'loading' : partState.documents === 'error' ? 'error' : 'done'}
+              onRetry={() => loadPart('documents')}
+            />
           </div>
 
           <div className="gis-card">
@@ -788,31 +757,6 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway }
               <span className="gis-v">
                 {meter.lat != null && meter.lng != null ? `${meter.lat.toFixed(4)}° N, ${meter.lng.toFixed(4)}° E` : '—'}
               </span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Lightbox Modal for Photo Inspection */}
-      {previewPhoto && (
-        <div className="gis-modal-backdrop" onClick={() => setPreviewPhoto(null)}>
-          <div className="gis-modal-content" onClick={(e) => e.stopPropagation()}>
-            <button className="gis-modal-close-btn" onClick={() => setPreviewPhoto(null)}>
-              <X size={18} />
-            </button>
-            <img src={previewPhoto.url} alt={previewPhoto.name} className="gis-modal-image" />
-            <div className="gis-modal-caption">
-              <span>
-                <strong>{previewPhoto.category.replace(/_/g, ' ')}</strong> · {previewPhoto.name}
-              </span>
-              <a
-                href={previewPhoto.url}
-                target="_blank"
-                rel="noreferrer"
-                style={{ color: '#60A5FA', textDecoration: 'underline', fontSize: 11 }}
-              >
-                Open Original
-              </a>
             </div>
           </div>
         </div>
@@ -839,11 +783,11 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway }
   );
 }
 
-export function MeterHistoryDrawer({ meter, onClose, nearestGateway, lastGateway }: MeterHistoryDrawerProps) {
+export function MeterHistoryDrawer({ meter, onClose, nearestGateway, lastGateway, placement, mapTop }: MeterHistoryDrawerProps) {
   if (!meter) return null;
   return (
     <DrawerErrorBoundary onClose={onClose}>
-      <MeterHistoryDrawerInner meter={meter} onClose={onClose} nearestGateway={nearestGateway} lastGateway={lastGateway} />
+      <MeterHistoryDrawerInner meter={meter} onClose={onClose} nearestGateway={nearestGateway} lastGateway={lastGateway} placement={placement} mapTop={mapTop} />
     </DrawerErrorBoundary>
   );
 }

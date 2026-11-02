@@ -30,6 +30,9 @@ const DEFAULT_ZONE = 'UTC';
 const SNAPSHOT_TTL_MS = 60 * 1000;
 /** A meter is connected when its newest frame is not older than this. */
 export const CONNECTED_WINDOW_HOURS = networkHealthThresholds.meterConnectedHours;
+/** The Dashboard's "last 25 h" and "last 30 days" cards count meters whose newest frame is not older than these. */
+export const RECENT_WINDOW_HOURS = networkHealthThresholds.meterRecentHours;
+export const MONTH_WINDOW_DAYS = networkHealthThresholds.meterMonthDays;
 const ALLOWED_TTL_MS = 5 * 60 * 1000;
 const ALLOWED_CACHE_MAX = 50;
 
@@ -57,6 +60,8 @@ export interface MeterPageRow {
   decodedAt: string | null;
   decodedLocal: string | null; // the same moment as clock time at the meter's site: "2026-10-08 17:38:01"
   connectivity: Connectivity;
+  active25h: boolean; // a frame in the last 25 hours
+  active30d: boolean; // a frame in the last 30 days
 }
 
 /** The meters of one site (or of a whole subtree, summed) and how they are doing. */
@@ -65,6 +70,8 @@ interface NodeTotals {
   connected: number;
   disconnected: number;
   neverSeen: number;
+  active25h: number;
+  active30d: number;
   yesterdayKl: number;
   todayKl: number;
   monthKl: number;
@@ -100,7 +107,9 @@ const STATS_SQL = `
     SELECT d.site_id,
            COUNT(*)::int AS meters,
            COUNT(*) FILTER (WHERE l.decoded_at IS NULL)::int AS never_seen,
-           COUNT(*) FILTER (WHERE l.decoded_at > NOW() - INTERVAL '${CONNECTED_WINDOW_HOURS} hours')::int AS connected
+           COUNT(*) FILTER (WHERE l.decoded_at > NOW() - INTERVAL '${CONNECTED_WINDOW_HOURS} hours')::int AS connected,
+           COUNT(*) FILTER (WHERE l.decoded_at > NOW() - INTERVAL '${RECENT_WINDOW_HOURS} hours')::int AS active_25h,
+           COUNT(*) FILTER (WHERE l.decoded_at > NOW() - INTERVAL '${MONTH_WINDOW_DAYS} days')::int AS active_30d
     FROM mtd d
     LEFT JOIN water_meter_latest l ON l.meter_id = d.meter_id
     GROUP BY d.site_id
@@ -117,6 +126,7 @@ const STATS_SQL = `
     GROUP BY d.site_id
   )
   SELECT st.site_id, st.meters, st.connected, (st.meters - st.connected - st.never_seen) AS disconnected, st.never_seen,
+         st.active_25h, st.active_30d,
          COALESCE(f.yesterday_kl, 0) AS yesterday_kl, COALESCE(f.today_kl, 0) AS today_kl, COALESCE(f.month_kl, 0) AS month_kl
   FROM status st
   LEFT JOIN flows f ON f.site_id IS NOT DISTINCT FROM st.site_id
@@ -126,7 +136,7 @@ let snapshot: Snapshot | null = null;
 let snapshotBuild: Promise<Snapshot> | null = null;
 
 function emptyTotals(): NodeTotals {
-  return { meters: 0, connected: 0, disconnected: 0, neverSeen: 0, yesterdayKl: 0, todayKl: 0, monthKl: 0 };
+  return { meters: 0, connected: 0, disconnected: 0, neverSeen: 0, active25h: 0, active30d: 0, yesterdayKl: 0, todayKl: 0, monthKl: 0 };
 }
 
 function addTotals(into: NodeTotals, from: NodeTotals) {
@@ -134,6 +144,8 @@ function addTotals(into: NodeTotals, from: NodeTotals) {
   into.connected += from.connected;
   into.disconnected += from.disconnected;
   into.neverSeen += from.neverSeen;
+  into.active25h += from.active25h;
+  into.active30d += from.active30d;
   into.yesterdayKl += from.yesterdayKl;
   into.todayKl += from.todayKl;
   into.monthKl += from.monthKl;
@@ -229,6 +241,8 @@ async function buildSnapshot(): Promise<Snapshot> {
       connected: Number(r.connected) || 0,
       disconnected: Number(r.disconnected) || 0,
       neverSeen: Number(r.never_seen) || 0,
+      active25h: Number(r.active_25h) || 0,
+      active30d: Number(r.active_30d) || 0,
       yesterdayKl: Number(r.yesterday_kl) || 0,
       todayKl: Number(r.today_kl) || 0,
       monthKl: Number(r.month_kl) || 0,
@@ -332,6 +346,8 @@ export interface NodeSummary {
   connected: number;
   disconnected: number;
   neverSeen: number;
+  active25h: number; // meters with a frame in the last 25 hours
+  active30d: number; // meters with a frame in the last 30 days
   yesterdayFlowM3: number;
   todayFlowM3: number;
   monthToDateFlowM3: number;
@@ -370,6 +386,8 @@ function summaryOf(
     connected: t.connected,
     disconnected: t.disconnected,
     neverSeen: t.neverSeen,
+    active25h: t.active25h,
+    active30d: t.active30d,
     yesterdayFlowM3: round2(t.yesterdayKl),
     todayFlowM3: round2(t.todayKl),
     monthToDateFlowM3: round2(t.monthKl),
@@ -494,14 +512,33 @@ export interface MeterPageOptions {
   sort: MeterSortKey;
   dir: 'asc' | 'desc';
   q?: string;
-  status?: Connectivity | 'ALL';
+  status?: MeterStatusFilter;
 }
+
+/** What the meter list can be narrowed to: the 25 h / 30 d windows of the cards, or the 7-day connectivity. */
+export type MeterStatusFilter = 'ALL' | Connectivity | 'ACTIVE_25H' | 'INACTIVE_25H' | 'ACTIVE_30D' | 'INACTIVE_30D';
+export const METER_STATUS_FILTERS: readonly MeterStatusFilter[] = [
+  'ALL', 'CONNECTED', 'DISCONNECTED', 'NEVER_SEEN', 'ACTIVE_25H', 'INACTIVE_25H', 'ACTIVE_30D', 'INACTIVE_30D',
+];
+
+// the SQL behind each filter (fixed text: nothing from the request is put into the query)
+const STATUS_WHERE: Record<Exclude<MeterStatusFilter, 'ALL'>, string> = {
+  CONNECTED: `connectivity = 'CONNECTED'`,
+  DISCONNECTED: `connectivity = 'DISCONNECTED'`,
+  NEVER_SEEN: `connectivity = 'NEVER_SEEN'`,
+  ACTIVE_25H: `active_25h`,
+  INACTIVE_25H: `NOT active_25h`,
+  ACTIVE_30D: `active_30d`,
+  INACTIVE_30D: `NOT active_30d`,
+};
 
 export interface NodeSummaryTotals {
   totalDevices: number;
   connected: number;
   disconnected: number;
   neverSeen: number;
+  active25h: number; // meters with a frame in the last 25 hours
+  active30d: number; // meters with a frame in the last 30 days
   yesterdayFlowM3: number;
   todayFlowM3: number;
   monthToDateFlowM3: number;
@@ -549,8 +586,7 @@ export async function getNodeMeters(nodeRef: string, opts: MeterPageOptions, aut
   }
   let statusFilter = '';
   if (opts.status && opts.status !== 'ALL') {
-    params.push(opts.status);
-    statusFilter = `WHERE connectivity = $${params.length}`;
+    statusFilter = `WHERE ${STATUS_WHERE[opts.status]}`;
   }
   params.push(opts.size, opts.page * opts.size);
   const order = `${SORT_SQL[opts.sort]} ${opts.dir === 'desc' ? 'DESC' : 'ASC'} NULLS LAST, meter_id ASC`;
@@ -564,7 +600,9 @@ export async function getNodeMeters(nodeRef: string, opts: MeterPageOptions, aut
                 WHEN l.decoded_at IS NULL THEN 'NEVER_SEEN'
                 WHEN l.decoded_at > NOW() - INTERVAL '${CONNECTED_WINDOW_HOURS} hours' THEN 'CONNECTED'
                 ELSE 'DISCONNECTED'
-              END AS connectivity
+              END AS connectivity,
+              COALESCE(l.decoded_at > NOW() - INTERVAL '${RECENT_WINDOW_HOURS} hours', false) AS active_25h,
+              COALESCE(l.decoded_at > NOW() - INTERVAL '${MONTH_WINDOW_DAYS} days', false) AS active_30d
        FROM meter_metadata m
        LEFT JOIN site_metadata s ON s.site_id = m.site_id
        CROSS JOIN LATERAL (SELECT COALESCE(s.tz_sql, 'UTC') AS tz) z
@@ -595,6 +633,8 @@ export async function getNodeMeters(nodeRef: string, opts: MeterPageOptions, aut
     decodedAt: r.decoded_at ? new Date(r.decoded_at).toISOString() : null,
     decodedLocal: r.decoded_local ?? null,
     connectivity: r.connectivity,
+    active25h: !!r.active_25h,
+    active30d: !!r.active_30d,
   }));
   return { content, page: opts.page, size: opts.size, total, totalPages: Math.ceil(total / opts.size), summary };
 }
@@ -606,6 +646,8 @@ function summaryTotals(t: NodeTotals, dataLocalTime: string): NodeSummaryTotals 
     connected: t.connected,
     disconnected: t.disconnected,
     neverSeen: t.neverSeen,
+    active25h: t.active25h,
+    active30d: t.active30d,
     yesterdayFlowM3: round2(t.yesterdayKl),
     todayFlowM3: round2(t.todayKl),
     monthToDateFlowM3: round2(t.monthKl),

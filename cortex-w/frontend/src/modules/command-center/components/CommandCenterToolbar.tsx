@@ -1,6 +1,7 @@
 import { Activity, Search } from 'lucide-react';
 import { TimeWindow } from '../types/commandCenter.types';
 import { SiteTreeSelect } from './SiteTreeSelect';
+import { CustomRangePicker } from './CustomRangePicker';
 
 interface Props {
   activeTab: 'Gateways' | 'Meters';
@@ -89,23 +90,11 @@ export function CommandCenterToolbar({
           </div>
 
           {timeRange === 'CUSTOM' && customRange && (
-            <div className="cc-time-group" title="Up to 92 days">
-              <input
-                type="date"
-                className="cc-time-btn"
-                value={customRange.from}
-                max={customRange.to}
-                onChange={(e) => e.target.value && onCustomRangeChange?.({ ...customRange, from: e.target.value })}
-              />
-              <input
-                type="date"
-                className="cc-time-btn"
-                value={customRange.to}
-                min={customRange.from}
-                max={maxDate}
-                onChange={(e) => e.target.value && onCustomRangeChange?.({ ...customRange, to: e.target.value })}
-              />
-            </div>
+            <CustomRangePicker
+              range={customRange}
+              today={maxDate ?? new Date().toLocaleDateString('en-CA')}
+              onApply={(r) => onCustomRangeChange?.(r)}
+            />
           )}
         </div>
       </div>

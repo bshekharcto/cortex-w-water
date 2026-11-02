@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, ChevronLeft, ChevronRight, Eye } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state/EmptyState';
-import { StatusBadge } from '@/components/status/StatusBadge';
 import { formatNumber } from '@/utils/number';
 import type { MeterRow } from '../models/dashboardRows';
 import type { MeterSortField } from '../services/dashboardDataService';
@@ -23,6 +22,28 @@ interface NodeMeterTableProps {
 }
 
 type SortField = MeterSortField;
+
+/** Yes (green) when the meter sent a frame within the window, otherwise No (grey). */
+function ActiveTag({ on }: { on: boolean }) {
+  return <span className={`cw-badge ${on ? 'cw-badge--green' : 'cw-badge--muted'}`}>{on ? 'Yes' : 'No'}</span>;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "14 Oct, 09:30": the date as well as the time, since a meter can have last reported weeks ago. Site clock when known. */
+function formatLastData(m: MeterRow): string {
+  const local = m.latestReadingLocal; // "2026-10-14 09:30:12"
+  if (local && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(local)) {
+    return `${local.slice(8, 10)} ${MONTHS[Number(local.slice(5, 7)) - 1] ?? ''}, ${local.slice(11, 16)}`;
+  }
+  if (m.latestReadingAt) {
+    const d = new Date(m.latestReadingAt);
+    if (!Number.isNaN(d.getTime())) {
+      return `${d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}, ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
+    }
+  }
+  return '—';
+}
 
 // Renders the meter list for whichever real leaf node the user has drilled
 // into. The breadcrumb above already shows the full ancestor chain, so this
@@ -50,19 +71,6 @@ export function NodeMeterTable({
   const renderSortIcon = (field: SortField) => {
     if (sortField !== field) return <ArrowUpDown size={12} style={{ opacity: 0.4, marginLeft: 4 }} />;
     return sortAsc ? <ChevronUp size={12} style={{ marginLeft: 4 }} /> : <ChevronDown size={12} style={{ marginLeft: 4 }} />;
-  };
-
-  const getBadgeStatus = (status: 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN'): string => {
-    switch (status) {
-      case 'CONNECTED':
-        return 'Connected';
-      case 'DISCONNECTED':
-        return 'Disconnected';
-      case 'NEVER_SEEN':
-        return 'Never Seen';
-      default:
-        return 'Unknown';
-    }
   };
 
   if (isLoading && meters.length === 0) {
@@ -117,8 +125,11 @@ export function NodeMeterTable({
               <th style={{ cursor: 'pointer' }} onClick={() => handleSort('latestReadingAt')}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>Last Data {renderSortIcon('latestReadingAt')}</div>
               </th>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('connectivityStatus')}>
-                <div style={{ display: 'flex', alignItems: 'center' }}>Status {renderSortIcon('connectivityStatus')}</div>
+              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('latestReadingAt')} title="Sorted by the time of the last data">
+                <div style={{ display: 'flex', alignItems: 'center' }}>Active · 25 h {renderSortIcon('latestReadingAt')}</div>
+              </th>
+              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('latestReadingAt')} title="Sorted by the time of the last data">
+                <div style={{ display: 'flex', alignItems: 'center' }}>Active · 30 d {renderSortIcon('latestReadingAt')}</div>
               </th>
               <th style={{ width: 50, textAlign: 'center' }}>Action</th>
             </tr>
@@ -144,11 +155,10 @@ export function NodeMeterTable({
                   {m.totalizerM3 !== undefined ? formatNumber(m.totalizerM3) : '—'}
                 </td>
                 <td style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-                  {m.latestReadingLocal ? m.latestReadingLocal.slice(11, 16) : m.latestReadingAt ? new Date(m.latestReadingAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                  {formatLastData(m)}
                 </td>
-                <td>
-                  <StatusBadge status={getBadgeStatus(m.connectivityStatus)} />
-                </td>
+                <td><ActiveTag on={m.active25h} /></td>
+                <td><ActiveTag on={m.active30d} /></td>
                 <td style={{ textAlign: 'center' }}>
                   <button
                     className="cw-icon-btn"

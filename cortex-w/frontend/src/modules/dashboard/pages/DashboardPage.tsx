@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RotateCcw, AlertTriangle } from 'lucide-react';
 import { FilterBar } from '@/components/filters/FilterBar';
@@ -14,6 +14,7 @@ import { useDashboardScope } from '../hooks/useDashboardScope';
 import { useNodeAncestors } from '../hooks/useNodeAncestors';
 import { useNodeChildren } from '../hooks/useNodeChildren';
 import { useNodeMeters, METERS_PAGE_SIZE } from '../hooks/useNodeMeters';
+import type { MeterStatusFilter } from '../services/dashboardDataService';
 import { aggregateNodeKpis, aggregateSummaryKpis } from '../services/dashboardAggregation';
 import '@/modules/gis/shared/gis.css';
 
@@ -59,7 +60,7 @@ function meterRowToGisMeter(row: MeterRow, locality: string): GisMeter {
 export function DashboardPage() {
   const nav = useNavigate();
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN'>('ALL');
+  const [statusFilter, setStatusFilter] = useState<MeterStatusFilter>('ALL');
   const [selectedMeter, setSelectedMeter] = useState<MeterRow | null>(null);
 
   // The current node id is just the last segment of the real URL path
@@ -69,6 +70,12 @@ export function DashboardPage() {
   // Real root-to-current name chain, resolved fresh from the live site tree
   // every time — correct on a deep link or refresh, not just on in-app clicks.
   const { ancestors, isLoading: ancestorsLoading } = useNodeAncestors(currentNodeId);
+
+  // a search or status filter belongs to the area it was typed in: another area starts clean
+  useEffect(() => {
+    setSearchQuery('');
+    setStatusFilter('ALL');
+  }, [currentNodeId]);
 
   // Children of the current node (or the real top-level sites at the root).
   const {
@@ -150,13 +157,13 @@ export function DashboardPage() {
       {isLeafView && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <label htmlFor="dashboard-status-filter" style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)', whiteSpace: 'nowrap' }}>
-            Status:
+            Show:
           </label>
           <select
             id="dashboard-status-filter"
             className="cw-filter-select"
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as any)}
+            onChange={(e) => setStatusFilter(e.target.value as MeterStatusFilter)}
             style={{
               background: 'var(--cw-bg-input, #fff)',
               border: '1px solid var(--cw-border, #cbd5e1)',
@@ -166,10 +173,12 @@ export function DashboardPage() {
               color: 'var(--cw-text, #1e293b)',
             }}
           >
-            <option value="ALL">All Statuses</option>
-            <option value="CONNECTED">Connected</option>
-            <option value="DISCONNECTED">Disconnected</option>
-            <option value="NEVER_SEEN">Never Seen</option>
+            <option value="ALL">All Meters</option>
+            <option value="ACTIVE_25H">Active · 25 h</option>
+            <option value="INACTIVE_25H">Not active · 25 h</option>
+            <option value="ACTIVE_30D">Active · 30 days</option>
+            <option value="INACTIVE_30D">Not active · 30 days</option>
+            <option value="NEVER_SEEN">Never seen</option>
           </select>
         </div>
       )}
@@ -231,8 +240,6 @@ export function DashboardPage() {
             isLeaf={isLeafView}
             kpis={kpis}
             isLoading={false}
-            selectedStatusFilter={statusFilter}
-            onStatusFilterChange={setStatusFilter}
           />
 
           {/* 4. Scope-specific data table; the search and the filters sit at the right of its heading */}

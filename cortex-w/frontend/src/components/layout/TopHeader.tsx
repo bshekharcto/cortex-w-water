@@ -58,8 +58,8 @@ export function TopHeader() {
   return (
     <header className={`cw-top-header ${isCommandCenter ? 'cw-top-header--dark' : ''}`}>
       <div className="cw-top-header-left">
-        <h1 className="cw-top-header-title">Cortex-W <span className="cw-top-header-sep">|</span> {title}</h1>
-        <span className="cw-top-header-powered">POWERED BY COGNECTO</span>
+        <h1 className="cw-top-header-title">{title}</h1>
+        <span className="cw-top-header-powered">CORTEX-W <span className="cw-top-header-sep">·</span> POWERED BY COGNECTO</span>
       </div>
       <div className="cw-top-header-right">
         {pill && (

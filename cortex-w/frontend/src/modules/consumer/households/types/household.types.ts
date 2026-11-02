@@ -30,6 +30,5 @@ export interface HouseholdDTO {
   dma?: string;
   guardianName?: string;
   guardianRelation?: 'S/O' | 'D/O' | 'W/O' | 'C/O';
-  city?: string;
   attachments?: AttachmentDTO[];
 }

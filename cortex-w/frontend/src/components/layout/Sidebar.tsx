@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, LogOut } from 'lucide-react';
 import { CORTEX_ICONS } from '@/theme/cortexTheme';
 import { useAuth } from '@/modules/auth/hooks/useAuth';
 import clsx from 'clsx';
+import { ClientLogo, SidebarBrand } from './SidebarBrand';
 
 interface NavItem { label: string; path: string; icon: keyof typeof CORTEX_ICONS }
 interface NavGroup { title: string; items: NavItem[] }
@@ -75,15 +76,18 @@ export function Sidebar() {
   return (
     <aside className={clsx('cw-sidebar', collapsed && 'cw-sidebar--collapsed')}>
       {/* Brand block */}
-      <div className="cw-sidebar-brand">
-        <div className="cw-sidebar-brand-mark">CW</div>
-        {!collapsed && (
-          <div>
-            <div className="cw-sidebar-brand-name">Cortex-W</div>
-            <div className="cw-sidebar-brand-sub">Water Intelligence</div>
-          </div>
-        )}
-      </div>
+      <button
+        className="cw-sidebar-collapse-btn"
+        onClick={() => {
+          autoCollapsed.current = false; // a choice of the user's own
+          setCollapsed((v) => !v);
+        }}
+        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      >
+        {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+      </button>
+      <SidebarBrand collapsed={collapsed} />
 
       {/* Nav groups */}
       <nav className="cw-sidebar-nav">
@@ -111,7 +115,8 @@ export function Sidebar() {
       {/* Bottom: user profile + logout + collapse toggle */}
       <div className="cw-sidebar-footer">
         <div className="cw-sidebar-user" title={user ? `${user.displayName} (${user.role})` : 'User Profile'}>
-          <div className="cw-sidebar-avatar">{user?.displayName ? user.displayName[0].toUpperCase() : 'U'}</div>
+          {/* collapsed: only the sign-out button is left in the footer */}
+          {!collapsed && <ClientLogo size={32} />}
           {!collapsed && (
             <div style={{ minWidth: 0, flex: 1 }}>
               <div className="cw-sidebar-user-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -124,12 +129,6 @@ export function Sidebar() {
             <LogOut size={16} />
           </button>
         </div>
-        <button className="cw-sidebar-collapse-btn" onClick={() => {
-          autoCollapsed.current = false; // a choice of the user's own
-          setCollapsed((v) => !v);
-        }} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
-          {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-        </button>
       </div>
     </aside>
   );

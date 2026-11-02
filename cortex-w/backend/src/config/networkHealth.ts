@@ -8,6 +8,10 @@ export const networkHealthThresholds = {
   gatewayStaleMinutes: 24 * 60,
   gatewayCriticalMinutes: 48 * 60,
   meterConnectedHours: 7 * 24,
+  // The Dashboard also counts meters that sent a frame within the last 25 hours (a daily report plus an hour of slack) and
+  // within the last 30 days, next to the 7-day "connected" count.
+  meterRecentHours: 25,
+  meterMonthDays: 30,
   gatewayTrafficDropWarningPct: 30,
   gatewayTrafficDropCriticalPct: 60,
   rssiWeakDbm: -95,

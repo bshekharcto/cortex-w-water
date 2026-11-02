@@ -81,7 +81,7 @@ export function CommandCenterPage() {
   // /app/command-center/gateways/:gatewayId (from the Network Explorer) opens that gateway
   const { gatewayId: routeGatewayId, meterId: routeMeterId } = useParams<{ gatewayId?: string; meterId?: string }>();
   const [activeMode, setActiveMode] = useState<'Gateways' | 'Meters'>('Gateways');
-  const [timeRange, setTimeRange] = useState<TimeWindow>('7D');
+  const [timeRange, setTimeRange] = useState<TimeWindow>('30D');
   const [customRange, setCustomRange] = useState<CustomRange>({ from: isoDaysAgo(6), to: isoDaysAgo(0) });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGatewayId, setSelectedGatewayId] = useState<string | null>(routeGatewayId ?? null);

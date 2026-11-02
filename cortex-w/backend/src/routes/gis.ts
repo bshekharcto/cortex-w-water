@@ -8,6 +8,7 @@ import { getGateways, getLegacyGisData, getMeterMap, resolveSiteScope, type Site
 import { planGateways, type ExistingMode } from '../services/gatewayPlacement.js';
 import { planRelocation } from '../services/gatewayRelocation.js';
 import { clientTenantIds } from '../services/tenantScope.js';
+import { buildMeterPhotos } from '../services/householdService.js';
 
 const router = Router();
 
@@ -204,22 +205,8 @@ router.get('/meter-detail/:assetId', async (req, res) => {
     const imeiHistories: any[] = Array.isArray(imeiData) ? imeiData : [];
     const images: any[] = Array.isArray(imagesData) ? imagesData : [];
 
-    // Photo attachments from installation records and meter-swap history
-    const photos: Array<{ documentId?: number; name: string; category: string; url: string; uploadDate?: string }> = [];
-    images.forEach((img: any) => {
-      if (img.s3BucketURL) {
-        photos.push({ documentId: img.documentId, name: img.name, category: img.category || 'NEW_METER_DOCUMENT', url: img.s3BucketURL, uploadDate: img.uploadDateTime });
-      }
-    });
-    imeiHistories.forEach((ih: any) => {
-      if (Array.isArray(ih.attachments)) {
-        ih.attachments.forEach((att: any) => {
-          if (att.s3BucketURL && !photos.some((p) => p.url === att.s3BucketURL)) {
-            photos.push({ documentId: att.documentId, name: att.name, category: att.category || 'OLD_METER_DOCUMENT', url: att.s3BucketURL, uploadDate: att.uploadDateTime });
-          }
-        });
-      }
-    });
+    // Photographs from the installation records and the meter-swap history, and the newest real swap
+    const photos = buildMeterPhotos(images, imeiHistories);
     const replacement = imeiHistories.find((ih: any) => ih.oldImeiNumber && ih.oldImeiNumber !== ih.newImeiNumber);
 
     // Oldest first, only days that exist: nothing is padded to ten

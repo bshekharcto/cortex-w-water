@@ -86,13 +86,13 @@ describe('Dashboard Drill-down Aggregations & Invariants', () => {
         {
           id: 'dma-1', name: 'DMA 1', level: 3, parentId: 'zone-1', parentName: 'Zone 1',
           hasChildren: false, meterCount: 100,
-          totalDevices: 100, connected: 70, disconnected: 20, neverSeen: 10,
+          totalDevices: 100, connected: 70, disconnected: 20, neverSeen: 10, active25h: 60, active30d: 85,
           yesterdayFlowM3: 50, todayFlowM3: 40, monthToDateFlowM3: 600,
         },
         {
           id: 'dma-2', name: 'DMA 2', level: 3, parentId: 'zone-1', parentName: 'Zone 1',
           hasChildren: false, meterCount: 200,
-          totalDevices: 200, connected: 150, disconnected: 40, neverSeen: 10,
+          totalDevices: 200, connected: 150, disconnected: 40, neverSeen: 10, active25h: 120, active30d: 170,
           yesterdayFlowM3: 100, todayFlowM3: 80, monthToDateFlowM3: 1200,
         },
       ];
@@ -102,6 +102,10 @@ describe('Dashboard Drill-down Aggregations & Invariants', () => {
       expect(kpis.connected).toBe(220);
       expect(kpis.disconnected).toBe(60);
       expect(kpis.neverSeen).toBe(20);
+      expect(kpis.active25h).toBe(180);
+      expect(kpis.active30d).toBe(255);
+      expect(kpis.active25hPct).toBe(60);
+      expect(kpis.active30dPct).toBe(85);
       expect(kpis.connected + kpis.disconnected + kpis.neverSeen).toBe(kpis.totalDevices);
       expect(kpis.yesterdayFlowM3).toBe(150);
       expect(kpis.todayFlowM3).toBe(120);
@@ -113,13 +117,13 @@ describe('Dashboard Drill-down Aggregations & Invariants', () => {
         {
           id: 'zone-1', name: 'Zone 1', level: 1, parentId: null, parentName: null,
           hasChildren: true, meterCount: 0,
-          totalDevices: 300, connected: 220, disconnected: 60, neverSeen: 20,
+          totalDevices: 300, connected: 220, disconnected: 60, neverSeen: 20, active25h: 180, active30d: 255,
           yesterdayFlowM3: 150, todayFlowM3: 120, monthToDateFlowM3: 1800,
         },
         {
           id: 'zone-2', name: 'Zone 2', level: 1, parentId: null, parentName: null,
           hasChildren: true, meterCount: 0,
-          totalDevices: 200, connected: 180, disconnected: 10, neverSeen: 10,
+          totalDevices: 200, connected: 180, disconnected: 10, neverSeen: 10, active25h: 150, active30d: 190,
           yesterdayFlowM3: 100, todayFlowM3: 90, monthToDateFlowM3: 1500,
         },
       ];

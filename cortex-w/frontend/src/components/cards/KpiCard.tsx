@@ -9,6 +9,8 @@ export interface KpiCardProps {
   subtitle?: string;
   delta?: { direction: 'up' | 'down'; label: string };
   onClick?: () => void;
+  /** For a card that filters the page: true while its filter is the one applied (drawn with a border). */
+  selected?: boolean;
 }
 
 const TONE_VAR: Record<NonNullable<KpiCardProps['iconTone']>, string> = {
@@ -30,14 +32,16 @@ function getKpiFontSize(val: string): string {
   return '15px';
 }
 
-export function KpiCard({ icon: Icon, iconTone = 'primary', label, value, subtitle, delta, onClick }: KpiCardProps) {
+export function KpiCard({ icon: Icon, iconTone = 'primary', label, value, subtitle, delta, onClick, selected }: KpiCardProps) {
   const tone = TONE_VAR[iconTone];
   return (
     <div
-      className={clsx('cw-surface', 'cw-kpi-card', onClick && 'cw-kpi-card--clickable')}
+      className={clsx('cw-surface', 'cw-kpi-card', onClick && 'cw-kpi-card--clickable', selected && 'cw-kpi-card--selected')}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
+      aria-pressed={onClick && selected !== undefined ? selected : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
     >
       <div className="cw-kpi-icon" style={{ color: `var(${tone})`, background: `color-mix(in srgb, var(${tone}) 14%, transparent)` }}>
         <Icon size={18} strokeWidth={1.5} />

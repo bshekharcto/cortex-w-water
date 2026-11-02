@@ -1201,3 +1201,15 @@
 .cc-container *::-webkit-scrollbar-corner {
   background: #0E1626;
 }
+
+/* Custom range calendar (shared with Gateway Status): on the dark palette the brand colour is light, so the first and last
+   day take the deeper brand shade with white text, and the days between sit on the soft tint. */
+.cc-range-picker { margin-left: 4px; }
+.cc-range-trigger { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.cw-scope-dark .gs-range-pop { background: var(--cw-surface); border-color: var(--cw-border-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55); }
+.cw-scope-dark .gs-cal-day--edge,
+.cw-scope-dark .gs-cal-day--edge:hover:not(:disabled),
+.cw-scope-dark .gs-range-apply { background: #5B5CF6; color: #fff; }
+.cw-scope-dark .gs-cal-day--in { background: rgba(91, 92, 246, 0.22); color: #C7C8FF; }
+.cw-scope-dark .gs-cal-day:hover:not(:disabled) { background: rgba(91, 92, 246, 0.32); }
+.cw-scope-dark .gs-cal-day--today:not(.gs-cal-day--edge) { box-shadow: inset 0 0 0 1px #7A7BFF; }
