@@ -14,7 +14,9 @@ interface NodeOverviewTableProps {
   onSelectNode: (node: NodeRow) => void;
 }
 
-type SortField = 'name' | 'totalDevices' | 'active25h' | 'active30d' | 'yesterdayFlowM3' | 'todayFlowM3' | 'monthToDateFlowM3';
+const PAGE_SIZES = [10, 25, 50, 100];
+
+type SortField = 'name' | 'totalDevices' | 'active25h' | 'everConnected' | 'yesterdayFlowM3' | 'todayFlowM3' | 'monthToDateFlowM3';
 
 // Generic overview table for any level of the real site hierarchy — the
 // same component renders the root list, a zone's children, a DMA's
@@ -24,7 +26,7 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [page, setPage] = useState<number>(0);
-  const pageSize = 10;
+  const [pageSize, setPageSize] = useState<number>(25);
   // the area whose consumption chart / boundary map is open
   const [trendNode, setTrendNode] = useState<NodeRow | null>(null);
   const [mapNode, setMapNode] = useState<NodeRow | null>(null);
@@ -112,8 +114,8 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
               <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('active25h')}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Active · 25 h {renderSortIcon('active25h')}</div>
               </th>
-              <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('active30d')}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Active · 30 d {renderSortIcon('active30d')}</div>
+              <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('everConnected')}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Connected {renderSortIcon('everConnected')}</div>
               </th>
               <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('yesterdayFlowM3')}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Yesterday Flow (m³) {renderSortIcon('yesterdayFlowM3')}</div>
@@ -131,7 +133,7 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
           <tbody>
             {pagedNodes.map((n) => {
               const pct25h = n.totalDevices > 0 ? ((n.active25h / n.totalDevices) * 100).toFixed(1) : '0';
-              const pct30d = n.totalDevices > 0 ? ((n.active30d / n.totalDevices) * 100).toFixed(1) : '0';
+              const pctEver = n.totalDevices > 0 ? ((n.everConnected / n.totalDevices) * 100).toFixed(1) : '0';
 
               return (
                 <tr
@@ -150,7 +152,7 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
                     {formatNumber(n.active25h)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({pct25h}%)</span>
                   </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--cw-blue)' }}>
-                    {formatNumber(n.active30d)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({pct30d}%)</span>
+                    {formatNumber(n.everConnected)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({pctEver}%)</span>
                   </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                     {formatNumber(n.yesterdayFlowM3)}
@@ -202,8 +204,31 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
         </table>
       </div>
 
-      {totalPages > 1 && (
+      {sortedNodes.length > PAGE_SIZES[0] && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
+            Rows per page
+            <select
+              style={{
+                background: 'var(--cw-bg-input, #fff)',
+                border: '1px solid var(--cw-border, #cbd5e1)',
+                borderRadius: 'var(--cw-radius, 6px)',
+                padding: '4px 8px',
+                fontSize: '0.85rem',
+                color: 'var(--cw-text, #1e293b)',
+              }}
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value));
+                setPage(0);
+              }}
+              aria-label="Rows per page"
+            >
+              {PAGE_SIZES.map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+          </label>
           <button
             className="cw-icon-btn"
             disabled={shownPage === 0}

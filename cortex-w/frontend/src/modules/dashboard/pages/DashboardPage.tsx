@@ -29,8 +29,9 @@ function meterRowToGisMeter(row: MeterRow, locality: string): GisMeter {
     // Real dev_eui looked up from synced Postgres telemetry by the backend —
     // null (never fabricated) if this meter hasn't synced any packets yet.
     devEui: row.devEui || null,
-    householdId: row.consumerId || row.meterId,
-    householdShortId: row.consumerId || row.meterId,
+    // no consumer id means no household is linked; the drawer then disables its Household 360 button
+    householdId: row.consumerId || '',
+    householdShortId: row.consumerId || '',
     householdName: row.consumerName || 'Consumer',
     locality,
     // Everything below is an honest "unknown" placeholder until the drawer's
@@ -176,8 +177,7 @@ export function DashboardPage() {
             <option value="ALL">All Meters</option>
             <option value="ACTIVE_25H">Active · 25 h</option>
             <option value="INACTIVE_25H">Not active · 25 h</option>
-            <option value="ACTIVE_30D">Active · 30 days</option>
-            <option value="INACTIVE_30D">Not active · 30 days</option>
+            <option value="EVER_CONNECTED">Connected</option>
             <option value="NEVER_SEEN">Never seen</option>
           </select>
         </div>

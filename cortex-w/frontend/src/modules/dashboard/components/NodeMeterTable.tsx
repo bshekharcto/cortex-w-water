@@ -128,9 +128,6 @@ export function NodeMeterTable({
               <th style={{ cursor: 'pointer' }} onClick={() => handleSort('latestReadingAt')} title="Sorted by the time of the last data">
                 <div style={{ display: 'flex', alignItems: 'center' }}>Active · 25 h {renderSortIcon('latestReadingAt')}</div>
               </th>
-              <th style={{ cursor: 'pointer' }} onClick={() => handleSort('latestReadingAt')} title="Sorted by the time of the last data">
-                <div style={{ display: 'flex', alignItems: 'center' }}>Active · 30 d {renderSortIcon('latestReadingAt')}</div>
-              </th>
               <th style={{ width: 50, textAlign: 'center' }}>Action</th>
             </tr>
           </thead>
@@ -158,7 +155,6 @@ export function NodeMeterTable({
                   {formatLastData(m)}
                 </td>
                 <td><ActiveTag on={m.active25h} /></td>
-                <td><ActiveTag on={m.active30d} /></td>
                 <td style={{ textAlign: 'center' }}>
                   <button
                     className="cw-icon-btn"

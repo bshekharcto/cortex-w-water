@@ -14,7 +14,7 @@ export interface NodeRow {
   disconnected: number;
   neverSeen: number;
   active25h: number;             // meters with a frame in the last 25 hours
-  active30d: number;             // meters with a frame in the last 30 days
+  everConnected: number;             // meters that have sent a frame, ever
   yesterdayFlowM3: number;
   todayFlowM3: number;
   monthToDateFlowM3: number;
@@ -37,7 +37,6 @@ export interface MeterRow {
   latestReadingLocal?: string;   // the same moment as clock time at the meter's site
   connectivityStatus: 'CONNECTED' | 'DISCONNECTED' | 'NEVER_SEEN';
   active25h: boolean;            // sent a frame in the last 25 hours
-  active30d: boolean;            // sent a frame in the last 30 days
   subDmaName?: string;
   distanceMeters?: number;
   isWithin1km?: boolean;

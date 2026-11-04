@@ -12,7 +12,7 @@ export function HouseholdDetailPage() {
       <HouseholdDetailDrawer
         household={{
           id: Number(householdId) || 0,
-          customId: householdId?.startsWith('WS/') ? householdId : (householdId ? `WS/BMC/${householdId}` : undefined),
+          customId: householdId?.includes('/') ? householdId : (householdId ? `WS/BMC/${householdId}` : undefined),
           name: '',
           location: '',
           pinCode: '',

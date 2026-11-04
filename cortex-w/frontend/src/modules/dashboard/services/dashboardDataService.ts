@@ -30,8 +30,8 @@ export async function fetchNodeChildren(parentId: string | null): Promise<NodeRo
   return Array.isArray(res) ? res : [];
 }
 
-/** What the meter list can be narrowed to: the 25 h / 30 d windows of the cards, or Never Seen. */
-export type MeterStatusFilter = 'ALL' | 'ACTIVE_25H' | 'INACTIVE_25H' | 'ACTIVE_30D' | 'INACTIVE_30D' | 'NEVER_SEEN';
+/** What the meter list can be narrowed to: the 25 h window of the card, Connected (ever sent a frame), or Never Seen. */
+export type MeterStatusFilter = 'ALL' | 'ACTIVE_25H' | 'INACTIVE_25H' | 'EVER_CONNECTED'  | 'NEVER_SEEN';
 
 export type MeterSortField =
   | 'devEui'
@@ -49,7 +49,7 @@ export interface NodeSummaryTotals {
   disconnected: number;
   neverSeen: number;
   active25h: number;
-  active30d: number;
+  everConnected: number;
   yesterdayFlowM3: number;
   todayFlowM3: number;
   monthToDateFlowM3: number;
@@ -71,7 +71,7 @@ export const EMPTY_METER_PAGE: MeterPage = {
   size: 15,
   total: 0,
   totalPages: 0,
-  summary: { totalDevices: 0, connected: 0, disconnected: 0, neverSeen: 0, active25h: 0, active30d: 0, yesterdayFlowM3: 0, todayFlowM3: 0, monthToDateFlowM3: 0 },
+  summary: { totalDevices: 0, connected: 0, disconnected: 0, neverSeen: 0, active25h: 0, everConnected: 0, yesterdayFlowM3: 0, todayFlowM3: 0, monthToDateFlowM3: 0 },
 };
 
 /**

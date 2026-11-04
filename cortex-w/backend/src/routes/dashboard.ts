@@ -85,7 +85,7 @@ const intParam = (value: unknown, fallback: number, min: number, max: number) =>
 };
 
 /**
- * GET /api/dashboard/nodes/:nodeId/meters?page=0&size=15&sort=devEui&dir=asc&q=...&status=ALL|ACTIVE_25H|INACTIVE_25H|ACTIVE_30D|INACTIVE_30D|CONNECTED|DISCONNECTED|NEVER_SEEN
+ * GET /api/dashboard/nodes/:nodeId/meters?page=0&size=15&sort=devEui&dir=asc&q=...&status=ALL|ACTIVE_25H|INACTIVE_25H|EVER_CONNECTED|CONNECTED|DISCONNECTED|NEVER_SEEN
  * One page of the meters of this node, sorted, searched and filtered by the database, with the totals of the whole node.
  */
 router.get('/nodes/:nodeId/meters', async (req, res) => {
@@ -120,7 +120,6 @@ router.get('/nodes/:nodeId/meters', async (req, res) => {
         latestReadingLocal: m.decodedLocal ?? undefined,
         connectivityStatus: m.connectivity,
         active25h: m.active25h,
-        active30d: m.active30d,
       })),
       page: result.page,
       size: result.size,

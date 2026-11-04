@@ -124,6 +124,7 @@ function mergePart(cur: LiveMeterDetailResponse, res: LiveMeterDetailResponse, p
 
 function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway, placement = 'screen', mapTop }: { meter: GisMeter; onClose: () => void; nearestGateway?: NearestGateway | null; lastGateway?: NearestGateway | null; placement?: 'screen' | 'map'; mapTop?: number }) {
   const navigate = useNavigate();
+  const householdKey = meter.householdId || meter.householdShortId || '';
   const [activeTab, setActiveTab] = useState<'readings' | 'alerts' | 'telemetry' | 'consumer'>('readings');
   const [isWide, setIsWide] = useState<boolean>(false);
   const [hoveredDay, setHoveredDay] = useState<MeterDayRow | null>(null);
@@ -766,11 +767,12 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway, 
       <div className="gis-meter-drawer-footer">
         <button
           className="gis-drawer-btn gis-drawer-btn--primary"
-          disabled={!(meter.householdShortId || meter.householdId)}
-          title={meter.householdShortId || meter.householdId ? undefined : 'No household is linked to this meter'}
-          onClick={() => navigate(`/app/consumer/households/${meter.householdShortId || meter.householdId}`)}
+          disabled={!householdKey}
+          title={householdKey ? undefined : 'No household is linked to this meter'}
+          // the id has slashes ("WS/BMC/123"), so it goes into the address encoded as one piece
+          onClick={() => navigate(`/app/consumer/households/${encodeURIComponent(householdKey)}`)}
         >
-          <User size={14} /> View Household 360 & Billing
+          <User size={14} /> Household 360
         </button>
         <button
           className="gis-drawer-btn gis-drawer-btn--secondary"

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { EMPTY_METER_PAGE, fetchNodeMeters, type MeterPage, type MeterSortField, type MeterStatusFilter } from '../services/dashboardDataService';
 import { useDataFreshness } from '@/components/layout/DataFreshness';
 
-export const METERS_PAGE_SIZE = 15;
+export const METERS_PAGE_SIZE = 25;
 
 /**
  * One page of the meters attached to a node, sorted, searched and filtered by the server. Only meaningful for a real

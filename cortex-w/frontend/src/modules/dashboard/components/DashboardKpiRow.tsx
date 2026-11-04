@@ -64,13 +64,12 @@ export function DashboardKpiRow({
         subtitle={`${kpis.active25hPct.toFixed(2)}% sent data in the last 25 hours`}
       />
 
-      {/* 4. Sent data in the last 30 days */}
+      {/* 4. Connected: has sent data at least once, however long ago */}
       <KpiCard
         icon={CalendarCheck}
         iconTone="blue"
-        label="Active · Last 30 Days"
-        value={formatNumber(kpis.active30d)}
-        subtitle={`${kpis.active30dPct.toFixed(2)}% sent data in the last 30 days`}
+        label="Connected"
+        value={formatNumber(kpis.everConnected)}
       />
 
       {/* 6. Yesterday Flow (m³) */}

@@ -1387,6 +1387,7 @@
 
 /* the shared site tree filter, in this page's light palette */
 .gis-toolbar .cc-sitetree,
+.gp-header .cc-sitetree,
 .cw-toolbar-left .cc-sitetree {
   --st-panel-bg: #FFFFFF;
   --st-border: #CBD5E1;
@@ -1404,6 +1405,7 @@
   --st-button-text: #1E293B;
 }
 .gis-toolbar .cc-sitetree-button,
+.gp-header .cc-sitetree-button,
 .cw-toolbar-left .cc-sitetree-button {
   min-width: 150px;
   padding: 5px 10px;

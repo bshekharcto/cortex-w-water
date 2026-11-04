@@ -6,13 +6,13 @@ export interface DashboardKpis {
   disconnected: number;
   neverSeen: number;
   active25h: number;             // sent a frame in the last 25 hours
-  active30d: number;             // sent a frame in the last 30 days
+  everConnected: number;             // has sent a frame, ever
 
   connectedPct: number;          // connected / totalDevices * 100
   disconnectedPct: number;
   neverSeenPct: number;
   active25hPct: number;
-  active30dPct: number;
+  everConnectedPct: number;
 
   yesterdayFlowM3: number;
   todayFlowM3: number;
