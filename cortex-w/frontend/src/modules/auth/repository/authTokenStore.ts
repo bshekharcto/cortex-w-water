@@ -39,7 +39,7 @@ export function getStoredUser(): AuthenticatedUser | null {
   if (!getAuthToken()) return null;
   try {
     const u = JSON.parse(sessionStorage.getItem(USER_KEY) ?? 'null');
-    return u && typeof u.displayName === 'string' ? { displayName: u.displayName, role: String(u.role ?? '') } : null;
+    return u && typeof u.displayName === 'string' ? { displayName: u.displayName, role: String(u.role ?? ''), roles: Array.isArray(u.roles) ? u.roles.map(String) : [String(u.role ?? '')], hideBilling: u.hideBilling === true } : null;
   } catch {
     return null;
   }

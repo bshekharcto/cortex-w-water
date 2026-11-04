@@ -1,3 +1,4 @@
+import { denyBillingForClient } from '../middleware/auth.js';
 import { Router, type Request, type Response } from 'express';
 import { proxyUpstream } from '../services/upstreamProxy.js';
 import { getAuthToken } from './gis.js';
@@ -185,7 +186,7 @@ async function withPrimary(req: Request, res: Response) {
 
 // GET /api/households/:id/bills: the latest bill of the household's meter (the same beta call Meter 360 uses) and the
 // tariff slabs of the household's site (what the beta bills by)
-router.get('/:id/bills', async (req, res) => {
+router.get('/:id/bills', denyBillingForClient, async (req, res) => {
   try {
     const ctx = await withPrimary(req, res);
     if (!ctx) return;

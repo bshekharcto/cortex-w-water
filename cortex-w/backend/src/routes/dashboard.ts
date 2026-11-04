@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { logRouteError } from '../db/pool.js';
-import { brandFor } from '../config/clientBrands.js';
+import { brandFor, hidesBilling } from '../config/clientBrands.js';
 import {
   getNodeChildren,
   getNodeMeters,
@@ -41,7 +41,7 @@ router.get('/freshness', async (_req, res) => {
  */
 router.get('/client', (req, res) => {
   const ids = req.client && !req.client.unscoped ? req.client.clientIds : [];
-  return res.json(brandFor(ids));
+  return res.json({ ...brandFor(ids), hideBilling: hidesBilling(ids) });
 });
 
 /**

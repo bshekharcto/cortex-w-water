@@ -8,6 +8,8 @@ import { OverviewTab } from './tabs/OverviewTab';
 import { ReadingsTab } from './tabs/ReadingsTab';
 import { HardwareTab } from './tabs/HardwareTab';
 import { BillingTab } from './tabs/BillingTab';
+import { useAuth } from '@/modules/auth/hooks/useAuth';
+import { canSeeBilling } from '@/modules/auth/access';
 import '@/modules/gis/shared/gis.css';
 
 // --- Error boundary preventing any crash from tearing down the screen ---
@@ -83,18 +85,19 @@ type TabKey = 'overview' | 'readings' | 'hardware' | 'billing';
 
 function HouseholdDetailDrawerContent({ household, onClose }: { household: HouseholdDTO; onClose: () => void }) {
   const lookupKey = household.customId || household.id;
+  const showBilling = canSeeBilling(useAuth((s) => s.user));
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
   const [isWide, setIsWide] = useState(false);
   const { core, coreState, coreError, reloadCore, parts, states, ensure, load } = useHouseholdParts(lookupKey);
 
   // the slower parts are asked for the first time their tab is opened (the hardware tab needs two)
   useEffect(() => {
-    if (activeTab === 'billing') ensure('bills');
+    if (activeTab === 'billing' && showBilling) ensure('bills');
     if (activeTab === 'hardware') {
       ensure('hardware');
       ensure('documents');
     }
-  }, [activeTab, ensure]);
+  }, [activeTab, ensure, showBilling]);
 
   // Escape closes the drawer
   useEffect(() => {
@@ -203,7 +206,7 @@ function HouseholdDetailDrawerContent({ household, onClose }: { household: House
           <TabBtn k="overview" icon={<User size={13} />} label="Profile & Info" />
           <TabBtn k="readings" icon={<Droplet size={13} />} label="Readings" />
           <TabBtn k="hardware" icon={<Radio size={13} />} label="Meter Hardware" count={states.documents === 'done' ? parts.documents?.photos.length : undefined} />
-          <TabBtn k="billing" icon={<FileText size={13} />} label="Billing & Tariff" />
+          {showBilling && <TabBtn k="billing" icon={<FileText size={13} />} label="Billing & Tariff" />}
         </div>
 
         {activeTab === 'overview' && <OverviewTab consumer={consumer} loading={loadingCore} />}
@@ -211,7 +214,7 @@ function HouseholdDetailDrawerContent({ household, onClose }: { household: House
         {activeTab === 'hardware' && (
           <HardwareTab core={core} hardware={parts.hardware} documents={parts.documents} hardwareState={states.hardware} documentsState={states.documents} onRetry={load} />
         )}
-        {activeTab === 'billing' && <BillingTab bills={parts.bills} state={states.bills} onRetry={() => load('bills')} />}
+        {showBilling && activeTab === 'billing' && <BillingTab bills={parts.bills} state={states.bills} onRetry={() => load('bills')} />}
       </div>
     </div>
   );

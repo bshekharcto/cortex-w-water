@@ -130,6 +130,8 @@ export async function fetchNodeBoundaries(nodeId: string): Promise<Boundary[]> {
 export interface ClientBrandInfo {
   name: string;
   logo: string | null;
+  /** True for a client that has no billing: the app shows nothing about bills to its users. */
+  hideBilling?: boolean;
 }
 
 /** The name and logo of the signed-in user's client. Null when it cannot be loaded: the Dashboard works without it. */

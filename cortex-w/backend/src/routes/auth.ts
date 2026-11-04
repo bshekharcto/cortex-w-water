@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 import { PgRateLimitStore } from '../middleware/pgRateLimitStore.js';
 import { config } from '../config/env.js';
-import { issueLocalToken } from '../middleware/auth.js';
+import { issueLocalToken, rolesOf } from '../middleware/auth.js';
 import { forgetToken } from '../services/clientContext.js';
 
 const router = Router();
@@ -13,6 +13,7 @@ const SEED_USERS: Record<string, { password: string; displayName: string; role: 
   'bill desk': { password: 'admin', displayName: 'Bill Desk User', role: 'Bill Desk' },
   billdesk:    { password: 'admin', displayName: 'Bill Desk User', role: 'Bill Desk' },
   operations:  { password: 'admin', displayName: 'Ops User',       role: 'Operations' },
+  operator:    { password: 'admin', displayName: 'Operator User',  role: 'Operator' },
   billing:     { password: 'admin', displayName: 'Billing User',   role: 'Billing' },
 };
 
@@ -39,6 +40,7 @@ async function loginCognecto(username: string, password: string) {
             token: data.token,
             displayName: payload.userName ?? username,
             role: Array.isArray(payload.Roles) ? payload.Roles[0] : (payload.Roles ?? 'Root'),
+            roles: rolesOf(payload.Roles),
             userId: payload.sub,
             isCognecto: true,
           };
@@ -87,7 +89,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     const user = SEED_USERS[username.toLowerCase()];
     if (user && user.password === password) {
       const token = issueLocalToken(user.displayName, user.role);
-      return res.json({ token, displayName: user.displayName, role: user.role, isCognecto: false });
+      return res.json({ token, displayName: user.displayName, role: user.role, roles: [user.role], isCognecto: false });
     }
     return res.status(401).json({ error: 'Invalid credentials' });
   }

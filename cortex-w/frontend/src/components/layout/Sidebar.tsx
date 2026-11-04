@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, LogOut } from 'lucide-react';
 import { CORTEX_ICONS } from '@/theme/cortexTheme';
 import { useAuth } from '@/modules/auth/hooks/useAuth';
+import { canAccessPath } from '@/modules/auth/access';
 import clsx from 'clsx';
 import { ClientLogo, SidebarBrand } from './SidebarBrand';
 
@@ -91,7 +92,9 @@ export function Sidebar() {
 
       {/* Nav groups */}
       <nav className="cw-sidebar-nav">
-        {NAV_GROUPS.map((group) => (
+        {NAV_GROUPS.map((group) => ({ ...group, items: group.items.filter((i) => canAccessPath(user, i.path)) }))
+          .filter((group) => group.items.length > 0)
+          .map((group) => (
           <div key={group.title} className="cw-sidebar-group">
             {!collapsed && <div className="cw-sidebar-group-title">{group.title}</div>}
             {group.items.map((item) => {

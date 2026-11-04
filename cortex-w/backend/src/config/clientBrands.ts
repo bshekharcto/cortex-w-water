@@ -6,10 +6,12 @@
 export interface ClientBrand {
   name: string;
   logo?: string;
+  /** True when this client has no billing in the app: no Billing page, no bills in the other pages, no billing API. */
+  hideBilling?: boolean;
 }
 
 const DEFAULT_BRANDS: Record<number, ClientBrand> = {
-  91: { name: 'WATCO', logo: '/clients/watco.png' },
+  91: { name: 'WATCO', logo: '/clients/watco.png', hideBilling: true },
   101: { name: 'Ayodhya Nagar Nigam' },
 };
 
@@ -33,4 +35,9 @@ export function brandFor(clientIds: number[]): { name: string; logo: string | nu
   if (clientIds.length === 0) return { name: '', logo: null };
   const found = clientIds.map((id) => brands[id] ?? { name: `Client ${id}` });
   return { name: found.map((b) => b.name).join(' · '), logo: found.length === 1 ? found[0].logo ?? DEFAULT_LOGO : DEFAULT_LOGO };
+}
+
+/** True when any of the client ids is one that has billing switched off. */
+export function hidesBilling(clientIds: number[]): boolean {
+  return clientIds.some((id) => brands[id]?.hideBilling === true);
 }

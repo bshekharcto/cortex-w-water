@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo, useRef, Component, ErrorInfo, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '@/modules/auth/hooks/useAuth';
+import { canSeeBilling } from '@/modules/auth/access';
 import {
   X,
   Droplet,
@@ -124,6 +126,7 @@ function mergePart(cur: LiveMeterDetailResponse, res: LiveMeterDetailResponse, p
 
 function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway, placement = 'screen', mapTop }: { meter: GisMeter; onClose: () => void; nearestGateway?: NearestGateway | null; lastGateway?: NearestGateway | null; placement?: 'screen' | 'map'; mapTop?: number }) {
   const navigate = useNavigate();
+  const showBilling = canSeeBilling(useAuth((s) => s.user));
   const householdKey = meter.householdId || meter.householdShortId || '';
   const [activeTab, setActiveTab] = useState<'readings' | 'alerts' | 'telemetry' | 'consumer'>('readings');
   const [isWide, setIsWide] = useState<boolean>(false);
@@ -351,7 +354,7 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway, 
           </div>
           <div className="gis-kpi-footer">
             {/* The bill comes from a slower API and is fetched with the Consumer Profile tab, not when the meter is opened. */}
-            <span className="gis-est-bill">
+            {showBilling && <span className="gis-est-bill">
               {estimatedBill != null
                 ? `Est. ₹${Number(estimatedBill).toFixed(0)}`
                 : partState.profile === 'idle'
@@ -361,7 +364,7 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway, 
                     : partState.profile === 'error'
                       ? 'Bill unavailable'
                       : 'No billing data'}
-            </span>
+            </span>}
           </div>
         </div>
 
@@ -688,7 +691,7 @@ function MeterHistoryDrawerInner({ meter, onClose, nearestGateway, lastGateway, 
             <span className="gis-card-title">Consumer Account & Household</span>
             {partState.profile === 'error' && (
               <div style={{ margin: '6px 0', fontSize: 12, color: '#B45309' }}>
-                Could not load the contact details and bill.
+                {showBilling ? 'Could not load the contact details and bill.' : 'Could not load the contact details.'}
                 <button className="gis-layer-btn" onClick={() => loadPart('profile')} style={{ marginLeft: 6 }}>Retry</button>
               </div>
             )}

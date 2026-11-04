@@ -1,4 +1,5 @@
 import { authApi } from '@/services/api/authApi';
+import { apiRequest } from '@/services/api/httpClient';
 import { setAuthToken, setStoredUser, clearAuthState } from './authTokenStore';
 import type { AuthenticatedUser } from '../types/auth.types';
 
@@ -12,7 +13,9 @@ export const authRepository = {
   async login(username: string, password: string): Promise<AuthenticatedUser> {
     const res = await authApi.login({ username, password });
     setAuthToken(res.token);
-    const user = { displayName: res.displayName, role: res.role };
+    // asked now, so a client without billing never sees the Billing menu, even for a moment
+    const brand = await apiRequest<{ hideBilling?: boolean }>('/dashboard/client').catch(() => null);
+    const user = { displayName: res.displayName, role: res.role, roles: res.roles ?? [res.role], hideBilling: brand?.hideBilling === true };
     setStoredUser(user);
     return user;
   },
