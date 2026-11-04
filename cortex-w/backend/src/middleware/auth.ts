@@ -1,6 +1,7 @@
 import { type Request, type Response, type NextFunction } from 'express';
 import jwt, { type JwtPayload } from 'jsonwebtoken';
 import { config } from '../config/env.js';
+import { hidesBilling } from '../config/clientBrands.js';
 import {
   AuthUnavailableError,
   SEED_CLIENT,
@@ -16,6 +17,8 @@ export interface AuthPayload {
 }
 
 export interface AuthUser extends AuthPayload {
+  /** Every role the upstream token carries (`role` is the first). */
+  roles: string[];
   userId?: string;
   verified: boolean;
 }
@@ -29,6 +32,31 @@ declare module 'express-serve-static-core' {
 
 const upstreamKey = config.UPSTREAM_JWT_PUBLIC_KEY?.replace(/\\n/g, '\n') ?? config.UPSTREAM_JWT_SECRET;
 
+/** The roles claim of an upstream token (one name or a list) as a list of names. */
+export function rolesOf(claim: unknown): string[] {
+  const list = Array.isArray(claim) ? claim : claim == null ? [] : [claim];
+  return list.filter((r): r is string => typeof r === 'string' && r !== '');
+}
+
+/** True when the user holds the role, whatever its letter case. */
+export function hasRole(user: AuthUser | undefined, role: string): boolean {
+  return !!user && user.roles.some((r) => r.toLowerCase() === role.toLowerCase());
+}
+
+/** Answers 403 to users of a client that has billing switched off (the Billing pages are hidden for them too). */
+export function denyBillingForClient(req: Request, res: Response, next: NextFunction) {
+  if (req.client && !req.client.unscoped && hidesBilling(req.client.clientIds)) {
+    return res.status(403).json({ error: 'Billing is not available for your account' });
+  }
+  next();
+}
+
+/** Answers 403 to users holding the role, for the parts of the API an Operator may not use. */
+export function denyRole(role: string) {
+  return (req: Request, res: Response, next: NextFunction) =>
+    hasRole(req.user, role) ? res.status(403).json({ error: 'Your role has no access to this' }) : next();
+}
+
 /** Local demo tokens exist only outside pure api mode. */
 function acceptsLocalTokens(): boolean {
   return config.APP_DATA_MODE !== 'api';
@@ -39,7 +67,7 @@ function verifyLocal(token: string): AuthUser | null {
   try {
     const p = jwt.verify(token, config.JWT_LOCAL_SIGNING_SECRET, { algorithms: ['HS256'] }) as JwtPayload & AuthPayload;
     if (typeof p.displayName !== 'string' || typeof p.role !== 'string') return null;
-    return { displayName: p.displayName, role: p.role, verified: true };
+    return { displayName: p.displayName, role: p.role, roles: [p.role], verified: true };
   } catch {
     return null;
   }
@@ -72,6 +100,7 @@ async function verifyUpstream(token: string): Promise<{ user: AuthUser; client: 
     user: {
       displayName: d.userName ?? d.displayName ?? 'User',
       role: Array.isArray(d.Roles) ? d.Roles[0] : (d.Roles ?? 'Unknown'),
+      roles: rolesOf(d.Roles),
       userId: d.sub,
       verified: true,
     },

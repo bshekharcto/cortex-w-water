@@ -670,12 +670,6 @@ function AlertDetailDrawerContent({ alert, onClose, onAlertUpdated }: { alert: A
               <CheckCircle2 size={16} /> Resolved
             </div>
           )}
-          <button
-            onClick={onClose}
-            className="gis-drawer-btn gis-drawer-btn--primary"
-          >
-            Close
-          </button>
         </div>
 
         {/* Modal Lightbox for Full Photo Preview */}

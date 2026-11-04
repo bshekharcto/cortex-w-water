@@ -1,11 +1,13 @@
 import { create } from 'zustand';
 import { authRepository } from '../repository/authRepository';
+import { getStoredUser, setStoredUser } from '../repository/authTokenStore';
 import type { AuthState, AuthenticatedUser } from '../types/auth.types';
 
 interface AuthStore extends AuthState {
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   hydrateFromSession: (user: AuthenticatedUser) => void;
+  setHideBilling: (hide: boolean) => void;
 }
 
 /**
@@ -15,8 +17,9 @@ interface AuthStore extends AuthState {
  * services/api and each module's hooks/.
  */
 export const useAuth = create<AuthStore>((set) => ({
-  user: null,
-  isAuthenticated: false,
+  // restored after a refresh, when the token is still in the tab's session
+  user: getStoredUser(),
+  isAuthenticated: getStoredUser() !== null,
 
   login: async (username, password) => {
     const user = await authRepository.login(username, password);
@@ -29,4 +32,13 @@ export const useAuth = create<AuthStore>((set) => ({
   },
 
   hydrateFromSession: (user) => set({ user, isAuthenticated: true }),
+
+  // a session started before the flag existed learns it from the client's settings
+  setHideBilling: (hide) =>
+    set((s) => {
+      if (!s.user || (s.user.hideBilling === true) === hide) return s;
+      const user = { ...s.user, hideBilling: hide };
+      setStoredUser(user);
+      return { user };
+    }),
 }));

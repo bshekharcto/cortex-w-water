@@ -164,6 +164,18 @@ export function NetworkExplorerPage() {
   const { gateways, unplaced, points, summary, coordinates } = data;
 
   const pageRef = useRef<HTMLDivElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  // where the map area starts (just under the toolbar): Meter 360 is exactly as tall as the map, from here to the bottom
+  const [mapTop, setMapTop] = useState(0);
+  useEffect(() => {
+    const bar = toolbarRef.current;
+    if (!bar) return;
+    const measure = () => setMapTop(bar.offsetTop + bar.offsetHeight + 10);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, []);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
@@ -604,7 +616,7 @@ export function NetworkExplorerPage() {
   return (
     <div className="gis-container" ref={pageRef}>
       {/* Top Floating Control Bar */}
-      <div className="gis-toolbar">
+      <div className="gis-toolbar" ref={toolbarRef}>
         <div className="gis-toolbar-left">
           <div className="gis-title-badge">
             <Radio size={16} className="gis-title-icon" />
@@ -1149,7 +1161,7 @@ export function NetworkExplorerPage() {
       )}
 
       {/* Meter 360 History Drawer (from the map and the table) */}
-      {selectedEntity?.type === 'meter' && <MeterHistoryDrawer meter={selectedEntity.data} nearestGateway={nearestGateway} lastGateway={lastGateway} onClose={() => setSelectedEntity(null)} />}
+      {selectedEntity?.type === 'meter' && <MeterHistoryDrawer placement="map" mapTop={mapTop} meter={selectedEntity.data} nearestGateway={nearestGateway} lastGateway={lastGateway} onClose={() => setSelectedEntity(null)} />}
     </div>
   );
 }

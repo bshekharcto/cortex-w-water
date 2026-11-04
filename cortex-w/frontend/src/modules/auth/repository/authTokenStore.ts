@@ -1,3 +1,5 @@
+import type { AuthenticatedUser } from '../types/auth.types';
+
 const STORAGE_KEY = 'cortex-w.auth.token';
 
 /**
@@ -22,12 +24,34 @@ export function getAuthToken(): string | null {
   return inMemoryToken;
 }
 
+const USER_KEY = 'cortex-w.auth.user';
+
+/** The signed-in user's name and role, kept with the token so a refresh still shows who is signed in. */
+export function setStoredUser(user: AuthenticatedUser): void {
+  try {
+    sessionStorage.setItem(USER_KEY, JSON.stringify(user));
+  } catch {
+    // storage unavailable
+  }
+}
+
+export function getStoredUser(): AuthenticatedUser | null {
+  if (!getAuthToken()) return null;
+  try {
+    const u = JSON.parse(sessionStorage.getItem(USER_KEY) ?? 'null');
+    return u && typeof u.displayName === 'string' ? { displayName: u.displayName, role: String(u.role ?? ''), roles: Array.isArray(u.roles) ? u.roles.map(String) : [String(u.role ?? '')], hideBilling: u.hideBilling === true } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** localStorage keys holding per-user data (e.g. cached KPI summaries). */
 const USER_DATA_PREFIX = 'cortex_w_';
 
 export function clearAuthState(): void {
   inMemoryToken = null;
   sessionStorage.removeItem(STORAGE_KEY);
+  sessionStorage.removeItem(USER_KEY);
   // Cached data belongs to the account that fetched it; never let the next
   // login on this browser see it.
   try {

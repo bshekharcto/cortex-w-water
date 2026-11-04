@@ -67,6 +67,21 @@
   font: 700 13px var(--cw-font-family);
   flex-shrink: 0;
 }
+.cw-sidebar-brand--client { flex-direction: row; justify-content: flex-start; text-align: left; gap: 14px; padding: 20px 16px; }
+.cw-sidebar--collapsed .cw-sidebar-brand--client { padding: 18px 8px; justify-content: center; }
+.cw-client-logo {
+  border-radius: 50%; background: #fff; overflow: hidden; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.10), 0 6px 18px rgba(0,0,0,0.35);
+  transition: width 0.2s, height 0.2s;
+}
+.cw-sidebar-user .cw-client-logo { box-shadow: 0 0 0 2px rgba(255,255,255,0.12); }
+.cw-client-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cw-client-logo span { font: 700 18px var(--cw-font-family); color: var(--cw-primary); }
+.cw-client-name {
+  font: 700 17px/1.25 var(--cw-font-family); color: #fff; letter-spacing: 0.01em;
+  flex: 1; min-width: 0; overflow-wrap: anywhere;
+}
 .cw-sidebar-brand-name { font: 600 15px var(--cw-font-family); color: #fff; }
 .cw-sidebar-brand-sub { font: var(--cw-font-meta); color: var(--cw-sidebar-text); }
 .cw-sidebar-nav { flex: 1; overflow-y: auto; padding: 8px 0; }
@@ -133,10 +148,18 @@
 .cw-sidebar--collapsed .cw-sidebar-user .cw-sidebar-logout {
   margin-left: 0;
 }
+/* the collapse / expand toggle: a small round tab on the panel's right edge, level with the logo */
+.cw-sidebar { position: relative; z-index: 20; }
 .cw-sidebar-collapse-btn {
-  width: 100%; background: none; border: none; color: var(--cw-sidebar-text);
-  cursor: pointer; padding: 6px; display: flex; justify-content: center;
+  position: absolute; top: 34px; right: -13px; z-index: 3;
+  width: 26px; height: 26px; padding: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: #fff; border: 1px solid var(--cw-border, #E2E8F0); color: #475569;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.25); cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
 }
+.cw-sidebar-collapse-btn:hover { background: var(--cw-primary); border-color: var(--cw-primary); color: #fff; transform: scale(1.08); }
+.cw-sidebar--collapsed .cw-sidebar-collapse-btn { top: 30px; }
 
 /* ---------- Top header ---------- */
 .cw-top-header {
@@ -237,6 +260,10 @@
   font: var(--cw-font-table-body); background: var(--cw-surface); color: var(--cw-text); width: 220px;
 }
 .cw-filter-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+/* a table heading whose search and filters sit at the left, next to the title (the site picker's panel then opens inside the page) */
+.cw-toolbar-left { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin-bottom: 12px; }
+.cw-toolbar-left .cw-filter-bar--inline { justify-content: flex-start; flex-wrap: wrap; }
+.cw-toolbar-left .cw-filter-search-input { width: min(440px, 52vw); }
 .cw-filter-reset {
   display: flex; align-items: center; gap: 4px; background: none; border: none;
   color: var(--cw-text-muted); cursor: pointer; font: var(--cw-font-meta);
@@ -254,6 +281,9 @@
 }
 .cw-kpi-card--clickable { cursor: pointer; }
 .cw-kpi-card--clickable:hover { border-color: var(--cw-primary-border); }
+/* the card whose filter is applied: a clear border (a ring, so the card does not move) */
+.cw-kpi-card--selected,
+.cw-kpi-card--selected:hover { border-color: var(--cw-primary); box-shadow: 0 0 0 1px var(--cw-primary); }
 .cw-kpi-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .cw-kpi-value {
   font-family: var(--cw-font-family);

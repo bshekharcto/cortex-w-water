@@ -9,6 +9,7 @@ export interface LoginResponse {
   token: string;
   displayName: string;
   role: string;
+  roles?: string[];
 }
 
 /**

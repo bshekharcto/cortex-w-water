@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 
 import { config } from "./config/env.js";
 import { pool } from "./db/pool.js";
-import { authMiddleware, requireAuth } from "./middleware/auth.js";
+import { authMiddleware, requireAuth, denyRole, denyBillingForClient } from "./middleware/auth.js";
 import { errorHandler, notFound, wrapAsync } from "./middleware/errors.js";
 
 import authRoutes from "./routes/auth.js";
@@ -133,7 +133,8 @@ app.use("/api/command-center", waterReportRoutes);
 app.use("/api/households", householdsRoutes);
 
 // Billing
-app.use("/api/billing", billingRoutes);
+// Operators have no Billing module, so the server refuses them too (hiding the page alone would not)
+app.use("/api/billing", denyRole("operator"), denyBillingForClient, billingRoutes);
 
 // Alarms
 app.use("/api/alarms", alarmsRoutes);

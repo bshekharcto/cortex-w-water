@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { ProtectedRoute } from './ProtectedRoute';
 import { AppShell } from './AppShell';
 import { CommandCenterDarkScope } from './CommandCenterDarkScope';
+import { RoleGuard } from './RoleGuard';
 
 // Route-level code splitting — each module is its own chunk (spec 36)
 const LoginPage = lazy(() => import('@/modules/auth/pages/LoginPage').then(m => ({ default: m.LoginPage })));
@@ -46,6 +47,7 @@ export function AppRouter() {
 
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
+           <Route element={<RoleGuard />}>
             {/* GLOBAL TOOLS */}
             {/* Single splat route: the real site hierarchy is variable-depth
                 (district -> zone -> DMA today, possibly deeper later), so
@@ -81,6 +83,7 @@ export function AppRouter() {
             <Route path="/app/settings/integrations" element={<IntegrationsPage />} />
             <Route path="/app/settings/users" element={<UsersPage />} />
             <Route path="/app/settings/general" element={<SettingsPage />} />
+           </Route>
           </Route>
         </Route>
 

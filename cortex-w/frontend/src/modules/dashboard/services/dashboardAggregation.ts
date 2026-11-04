@@ -39,6 +39,10 @@ export function convertKlToM3(kl: number): number {
 /**
  * Computes rounded percentages ensuring two decimal places
  */
+export function pct(part: number, total: number): number {
+  return !total || total <= 0 ? 0 : Number(((part / total) * 100).toFixed(2));
+}
+
 export function computePercentages(
   connected: number,
   disconnected: number,
@@ -73,6 +77,8 @@ export function aggregateNodeKpis(nodes: NodeRow[]): DashboardKpis {
   let connected = 0;
   let disconnected = 0;
   let neverSeen = 0;
+  let active25h = 0;
+  let everConnected = 0;
   let yesterdayFlowM3 = 0;
   let todayFlowM3 = 0;
   let monthToDateFlowM3 = 0;
@@ -83,6 +89,8 @@ export function aggregateNodeKpis(nodes: NodeRow[]): DashboardKpis {
     connected += n.connected;
     disconnected += n.disconnected;
     neverSeen += n.neverSeen;
+    active25h += n.active25h;
+    everConnected += n.everConnected;
     yesterdayFlowM3 += n.yesterdayFlowM3;
     todayFlowM3 += n.todayFlowM3;
     monthToDateFlowM3 += n.monthToDateFlowM3;
@@ -110,9 +118,13 @@ export function aggregateNodeKpis(nodes: NodeRow[]): DashboardKpis {
     connected,
     disconnected,
     neverSeen,
+    active25h,
+    everConnected,
     connectedPct,
     disconnectedPct,
     neverSeenPct,
+    active25hPct: pct(active25h, totalDevices),
+    everConnectedPct: pct(everConnected, totalDevices),
     yesterdayFlowM3: Number(yesterdayFlowM3.toFixed(2)),
     todayFlowM3: Number(todayFlowM3.toFixed(2)),
     monthToDateFlowM3: Number(monthToDateFlowM3.toFixed(2)),
@@ -128,6 +140,8 @@ export function aggregateSummaryKpis(summary: {
   connected: number;
   disconnected: number;
   neverSeen: number;
+  active25h: number;
+  everConnected: number;
   yesterdayFlowM3: number;
   todayFlowM3: number;
   monthToDateFlowM3: number;
@@ -144,9 +158,13 @@ export function aggregateSummaryKpis(summary: {
     connected: summary.connected,
     disconnected: summary.disconnected,
     neverSeen: summary.neverSeen,
+    active25h: summary.active25h,
+    everConnected: summary.everConnected,
     connectedPct,
     disconnectedPct,
     neverSeenPct,
+    active25hPct: pct(summary.active25h, summary.totalDevices),
+    everConnectedPct: pct(summary.everConnected, summary.totalDevices),
     yesterdayFlowM3: summary.yesterdayFlowM3,
     todayFlowM3: summary.todayFlowM3,
     monthToDateFlowM3: summary.monthToDateFlowM3,
@@ -166,9 +184,17 @@ export function aggregateMeterKpis(
   let connected = 0;
   let disconnected = 0;
   let neverSeen = 0;
+  let active25h = 0;
+  let everConnected = 0;
   let latestTimestamp: string | undefined = undefined;
+  const now = Date.now();
 
   for (const m of meters) {
+    if (m.latestReadingAt) {
+      const age = now - new Date(m.latestReadingAt).getTime();
+      if (age <= 25 * 3600_000) active25h++;
+      everConnected++;
+    }
     if (m.connectivityStatus === 'CONNECTED') connected++;
     else if (m.connectivityStatus === 'DISCONNECTED') disconnected++;
     else neverSeen++;
@@ -191,9 +217,13 @@ export function aggregateMeterKpis(
     connected,
     disconnected,
     neverSeen,
+    active25h,
+    everConnected,
     connectedPct,
     disconnectedPct,
     neverSeenPct,
+    active25hPct: pct(active25h, totalDevices),
+    everConnectedPct: pct(everConnected, totalDevices),
     yesterdayFlowM3: flowTotals?.yesterdayFlowM3 ?? 0,
     todayFlowM3: flowTotals?.todayFlowM3 ?? 0,
     monthToDateFlowM3: flowTotals?.monthToDateFlowM3 ?? 0,

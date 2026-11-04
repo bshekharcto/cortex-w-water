@@ -654,11 +654,13 @@
 .gis-meter-kpi-card {
   background: #F8FAFC;
   border: 1px solid #E2E8F0;
-  border-radius: 6px;
-  padding: 8px 10px;
+  border-radius: 8px;
+  padding: 9px 12px;
+  min-height: 84px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .gis-kpi-top {
@@ -678,12 +680,15 @@
 .gis-kpi-val-group {
   display: flex;
   align-items: baseline;
-  gap: 4px;
-  margin-top: 1px;
+  gap: 5px;
+  min-height: 24px;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .gis-kpi-big {
-  font-size: 15px;
+  font-size: 16px;
+  line-height: 1.25;
   font-weight: 700;
   color: #0F172A;
 }
@@ -693,9 +698,14 @@
   color: #64748B;
 }
 
+/* the line at the bottom of every card sits at the same place, whatever the card above it holds */
 .gis-kpi-footer {
   font-size: 10.5px;
-  margin-top: 1px;
+  margin-top: auto;
+  min-height: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .gis-trend-up {
@@ -1376,7 +1386,9 @@
 }
 
 /* the shared site tree filter, in this page's light palette */
-.gis-toolbar .cc-sitetree {
+.gis-toolbar .cc-sitetree,
+.gp-header .cc-sitetree,
+.cw-toolbar-left .cc-sitetree {
   --st-panel-bg: #FFFFFF;
   --st-border: #CBD5E1;
   --st-text: #1E293B;
@@ -1392,7 +1404,9 @@
   --st-button-bg: #FFFFFF;
   --st-button-text: #1E293B;
 }
-.gis-toolbar .cc-sitetree-button {
+.gis-toolbar .cc-sitetree-button,
+.gp-header .cc-sitetree-button,
+.cw-toolbar-left .cc-sitetree-button {
   min-width: 150px;
   padding: 5px 10px;
   height: 30px;
@@ -1614,3 +1628,136 @@
 .gis-meter-nearest-gw > span:first-child { flex-shrink: 0; }
 .gis-meter-nearest-gw b { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .gis-meter-nearest-gw .gis-nearest-dist { flex-shrink: 0; margin-left: 0; }
+
+/* ---- Full-screen drawers (Household 360, Alarm 360): fit any width, zoom level and "expanded" state ----
+   The drawer is a column that scrolls as a whole: its parts keep their own height instead of being squeezed, tables scroll
+   sideways inside their box instead of being cut off, and the layout follows the drawer's own width (a container), so it
+   adapts when the page is magnified as well as when the drawer is expanded. */
+.gis-meter-drawer-backdrop .gis-meter-drawer {
+  width: min(520px, 100vw);
+  max-width: 100vw;
+  container-type: inline-size;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+}
+.gis-meter-drawer-backdrop .gis-meter-drawer--wide {
+  width: min(1040px, 100vw);
+  max-width: 100vw;
+}
+.gis-meter-drawer-backdrop .gis-meter-drawer > * { flex-shrink: 0; min-width: 0; }
+.gis-meter-drawer-backdrop .gis-meter-header-info { min-width: 0; }
+.gis-meter-drawer-backdrop .gis-meter-header-info h2,
+.gis-meter-drawer-backdrop .gis-meter-consumer-sub { overflow-wrap: anywhere; }
+.gis-meter-drawer-backdrop .gis-drawer-table-wrap { overflow-x: auto; }
+.gis-meter-drawer-backdrop .gis-mini-table { min-width: 420px; }
+.gis-meter-drawer-backdrop .gis-meter-nav-tabs { overflow-x: auto; scrollbar-width: thin; }
+.gis-meter-drawer-backdrop .gis-meter-tab { flex-shrink: 0; white-space: nowrap; }
+.gis-meter-drawer-backdrop .gis-kv-row { gap: 12px; }
+.gis-meter-drawer-backdrop .gis-kv-row .gis-v { overflow-wrap: anywhere; min-width: 0; }
+
+@container (min-width: 720px) {
+  .gis-meter-drawer-backdrop .gis-meter-kpi-grid { grid-template-columns: repeat(4, 1fr); }
+}
+@container (max-width: 360px) {
+  .gis-meter-drawer-backdrop .gis-meter-kpi-grid { grid-template-columns: 1fr; }
+  .gis-meter-drawer-backdrop .gis-readings-stats-strip { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+  .gis-meter-drawer-backdrop .gis-meter-drawer { padding: 12px; }
+}
+
+/* ---- Meter 360 (and every drawer of this kind): never scrolls sideways ----
+   Only up and down. Anything wider than the drawer (a table, a long id or address) scrolls inside its own box or wraps. */
+.gis-meter-drawer { overflow-x: hidden; box-sizing: border-box; }
+.gis-meter-drawer > * { min-width: 0; max-width: 100%; }
+.gis-meter-drawer .gis-drawer-table-wrap { overflow-x: auto; max-width: 100%; }
+.gis-meter-drawer .gis-meter-nav-tabs { overflow-x: auto; scrollbar-width: none; }
+.gis-meter-drawer .gis-meter-nav-tabs::-webkit-scrollbar { display: none; }
+.gis-meter-drawer .gis-meter-tab-body,
+.gis-meter-drawer .gis-card,
+.gis-meter-drawer .gis-chart-box { min-width: 0; max-width: 100%; }
+.gis-meter-drawer .gis-kv-row { gap: 12px; }
+.gis-meter-drawer .gis-kv-row .gis-v,
+.gis-meter-drawer .gis-meter-id-title,
+.gis-meter-drawer .gis-meter-consumer-sub,
+.gis-meter-drawer .gis-meter-nearest-gw { overflow-wrap: anywhere; min-width: 0; }
+.gis-meter-drawer .gis-bar-chart-container { max-width: 100%; overflow: hidden; }
+.gis-meter-drawer .gis-photo-grid { max-width: 100%; }
+
+/* ---- Drawer header: the title column takes the room that is left and shrinks; the buttons never shrink or leave ---- */
+.gis-meter-drawer-header { align-items: flex-start; min-width: 0; }
+.gis-meter-drawer-header .gis-meter-header-info { flex: 1 1 0; min-width: 0; }
+.gis-meter-drawer-header .gis-meter-header-actions { flex: 0 0 auto; margin-left: auto; position: sticky; top: 0; }
+.gis-meter-drawer-header .gis-icon-btn { flex-shrink: 0; }
+.gis-meter-drawer-header .gis-meter-nearest-gw { max-width: 100%; box-sizing: border-box; overflow: hidden; }
+.gis-meter-drawer-header .gis-meter-id-title { overflow-wrap: anywhere; }
+
+
+/* ---- Meter 360 as a full-height panel (placement 'screen'; placement 'map' further down keeps it inside the map's height) (the same layout as the Household 360), wherever a meter is opened ----
+   It slides in from the right edge of the screen over the page, so it is never boxed in by the map or the table behind it:
+   it scrolls up and down as a whole, its parts keep their height, and its layout follows its own width. */
+.gis-meter-drawer--fixed {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  height: 100vh;
+  z-index: 1000;
+  width: min(520px, 100vw);
+  max-width: 100vw;
+  border-radius: 0;
+  border-width: 0 0 0 1px;
+  box-shadow: -8px 0 32px rgba(15, 23, 42, 0.25);
+  container-type: inline-size;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: gisSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.gis-meter-drawer--fixed.gis-meter-drawer--wide { width: min(1040px, 100vw); max-width: 100vw; }
+.gis-meter-drawer--fixed > * { flex-shrink: 0; min-width: 0; }
+.gis-meter-drawer--fixed .gis-meter-nav-tabs { overflow-x: auto; scrollbar-width: none; }
+.gis-meter-drawer--fixed .gis-meter-tab { flex-shrink: 0; white-space: nowrap; }
+.gis-meter-drawer--fixed .gis-mini-table { min-width: 420px; }
+@container (min-width: 720px) {
+  .gis-meter-drawer--fixed .gis-meter-kpi-grid { grid-template-columns: repeat(4, 1fr); }
+}
+@container (max-width: 360px) {
+  .gis-meter-drawer--fixed .gis-meter-kpi-grid { grid-template-columns: 1fr; }
+  .gis-meter-drawer--fixed .gis-readings-stats-strip { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ---- Meter 360 inside the map area (Network Explorer): as tall as the map, never taller ----
+   Same inner layout as the full-height panel above; the page gives it `top` (just under the toolbar) and it runs to the
+   bottom of the explorer, which is the bottom of the map. */
+.gis-meter-drawer--inmap {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  height: auto;
+  z-index: 30;
+  width: min(520px, 100%);
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid #E2E8F0;
+  box-shadow: -8px 0 28px rgba(15, 23, 42, 0.22);
+  container-type: inline-size;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: gisSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.gis-meter-drawer--inmap.gis-meter-drawer--wide { width: min(1040px, 100%); max-width: 100%; }
+.gis-meter-drawer--inmap > * { flex-shrink: 0; min-width: 0; }
+.gis-meter-drawer--inmap .gis-meter-nav-tabs { overflow-x: auto; scrollbar-width: none; }
+.gis-meter-drawer--inmap .gis-meter-tab { flex-shrink: 0; white-space: nowrap; }
+.gis-meter-drawer--inmap .gis-mini-table { min-width: 420px; }
+@container (min-width: 720px) {
+  .gis-meter-drawer--inmap .gis-meter-kpi-grid { grid-template-columns: repeat(4, 1fr); }
+}
+@container (max-width: 360px) {
+  .gis-meter-drawer--inmap .gis-meter-kpi-grid { grid-template-columns: 1fr; }
+  .gis-meter-drawer--inmap .gis-readings-stats-strip { grid-template-columns: repeat(2, 1fr); }
+}

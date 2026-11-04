@@ -14,7 +14,9 @@ interface NodeOverviewTableProps {
   onSelectNode: (node: NodeRow) => void;
 }
 
-type SortField = 'name' | 'totalDevices' | 'connected' | 'disconnected' | 'neverSeen' | 'yesterdayFlowM3' | 'todayFlowM3' | 'monthToDateFlowM3';
+const PAGE_SIZES = [10, 25, 50, 100];
+
+type SortField = 'name' | 'totalDevices' | 'active25h' | 'everConnected' | 'yesterdayFlowM3' | 'todayFlowM3' | 'monthToDateFlowM3';
 
 // Generic overview table for any level of the real site hierarchy — the
 // same component renders the root list, a zone's children, a DMA's
@@ -24,7 +26,7 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [page, setPage] = useState<number>(0);
-  const pageSize = 10;
+  const [pageSize, setPageSize] = useState<number>(25);
   // the area whose consumption chart / boundary map is open
   const [trendNode, setTrendNode] = useState<NodeRow | null>(null);
   const [mapNode, setMapNode] = useState<NodeRow | null>(null);
@@ -58,10 +60,12 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
   }, [nodes, sortField, sortAsc]);
 
   const totalPages = Math.ceil(sortedNodes.length / pageSize) || 1;
+  // a search can leave fewer pages than the one being viewed: show the last one that exists
+  const shownPage = Math.min(page, totalPages - 1);
   const pagedNodes = useMemo(() => {
-    const start = page * pageSize;
+    const start = shownPage * pageSize;
     return sortedNodes.slice(start, start + pageSize);
-  }, [sortedNodes, page, pageSize]);
+  }, [sortedNodes, shownPage, pageSize]);
 
   const renderSortIcon = (field: SortField) => {
     if (sortField !== field) return <ArrowUpDown size={12} style={{ opacity: 0.4, marginLeft: 4 }} />;
@@ -107,14 +111,11 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
               <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('totalDevices')}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Devices {renderSortIcon('totalDevices')}</div>
               </th>
-              <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('connected')}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Connected {renderSortIcon('connected')}</div>
+              <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('active25h')}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Active · 25 h {renderSortIcon('active25h')}</div>
               </th>
-              <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('disconnected')}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Disconnected {renderSortIcon('disconnected')}</div>
-              </th>
-              <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('neverSeen')}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Never Seen {renderSortIcon('neverSeen')}</div>
+              <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('everConnected')}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Connected {renderSortIcon('everConnected')}</div>
               </th>
               <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('yesterdayFlowM3')}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Yesterday Flow (m³) {renderSortIcon('yesterdayFlowM3')}</div>
@@ -131,9 +132,8 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
           </thead>
           <tbody>
             {pagedNodes.map((n) => {
-              const connPct = n.totalDevices > 0 ? ((n.connected / n.totalDevices) * 100).toFixed(1) : '0';
-              const discPct = n.totalDevices > 0 ? ((n.disconnected / n.totalDevices) * 100).toFixed(1) : '0';
-              const neverPct = n.totalDevices > 0 ? ((n.neverSeen / n.totalDevices) * 100).toFixed(1) : '0';
+              const pct25h = n.totalDevices > 0 ? ((n.active25h / n.totalDevices) * 100).toFixed(1) : '0';
+              const pctEver = n.totalDevices > 0 ? ((n.everConnected / n.totalDevices) * 100).toFixed(1) : '0';
 
               return (
                 <tr
@@ -148,14 +148,11 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                     {formatNumber(n.totalDevices)}
                   </td>
-                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--cw-green)' }}>
-                    {formatNumber(n.connected)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({connPct}%)</span>
+                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--cw-teal)' }}>
+                    {formatNumber(n.active25h)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({pct25h}%)</span>
                   </td>
-                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--cw-orange)' }}>
-                    {formatNumber(n.disconnected)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({discPct}%)</span>
-                  </td>
-                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--cw-red)' }}>
-                    {formatNumber(n.neverSeen)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({neverPct}%)</span>
+                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--cw-blue)' }}>
+                    {formatNumber(n.everConnected)} <span style={{ fontSize: '0.8rem', opacity: 0.85 }}>({pctEver}%)</span>
                   </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                     {formatNumber(n.yesterdayFlowM3)}
@@ -207,23 +204,46 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
         </table>
       </div>
 
-      {totalPages > 1 && (
+      {sortedNodes.length > PAGE_SIZES[0] && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
+            Rows per page
+            <select
+              style={{
+                background: 'var(--cw-bg-input, #fff)',
+                border: '1px solid var(--cw-border, #cbd5e1)',
+                borderRadius: 'var(--cw-radius, 6px)',
+                padding: '4px 8px',
+                fontSize: '0.85rem',
+                color: 'var(--cw-text, #1e293b)',
+              }}
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value));
+                setPage(0);
+              }}
+              aria-label="Rows per page"
+            >
+              {PAGE_SIZES.map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+          </label>
           <button
             className="cw-icon-btn"
-            disabled={page === 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={shownPage === 0}
+            onClick={() => setPage(Math.max(0, shownPage - 1))}
             style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
           >
             <ChevronLeft size={16} /> Prev
           </button>
           <span style={{ fontSize: '0.85rem', color: 'var(--cw-text-muted)' }}>
-            Page {page + 1} of {totalPages}
+            Page {shownPage + 1} of {totalPages}
           </span>
           <button
             className="cw-icon-btn"
-            disabled={page >= totalPages - 1}
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+            disabled={shownPage >= totalPages - 1}
+            onClick={() => setPage(Math.min(totalPages - 1, shownPage + 1))}
             style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
           >
             Next <ChevronRight size={16} />

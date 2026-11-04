@@ -9,12 +9,14 @@ interface DateRangeCalendarProps {
   today: string;
   onChange: (pick: DayPick) => void;
   pick: DayPick | null;
+  /** The first day that can be picked (Gateway Status: when its data begins). */
+  min?: string;
 }
 
 const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
 /** A month calendar for choosing a range of days: click the first day, then the last. */
-export function DateRangeCalendar({ value, today, pick, onChange }: DateRangeCalendarProps) {
+export function DateRangeCalendar({ value, today, pick, onChange, min = DATA_AVAILABLE_FROM }: DateRangeCalendarProps) {
   const [month, setMonth] = useState(monthOf(value.end));
   const [hover, setHover] = useState<string | null>(null);
 
@@ -26,7 +28,7 @@ export function DateRangeCalendar({ value, today, pick, onChange }: DateRangeCal
     : value;
 
   const canNext = addMonths(month, 1) <= monthOf(today);
-  const canPrev = month > monthOf(DATA_AVAILABLE_FROM);
+  const canPrev = month > monthOf(min);
 
   return (
     <div className="gs-cal">
@@ -53,7 +55,7 @@ export function DateRangeCalendar({ value, today, pick, onChange }: DateRangeCal
                 (day === shown.start || day === shown.end) && 'gs-cal-day--edge',
                 day === today && 'gs-cal-day--today'
               )}
-              disabled={!dayPickable(day, pick, today)}
+              disabled={!dayPickable(day, pick, today, min)}
               aria-label={day}
               aria-selected={day >= shown.start && day <= shown.end}
               onMouseEnter={() => setHover(day)}

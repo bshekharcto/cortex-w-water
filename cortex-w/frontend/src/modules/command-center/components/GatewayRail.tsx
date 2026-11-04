@@ -15,7 +15,7 @@ export function GatewayRail({
   onSelectGateway,
   loading,
 }: Props) {
-  const [filter, setFilter] = useState<'ALL' | 'REPORTING' | 'DEGRADED' | 'STALE' | 'NO_TRAFFIC'>('ALL');
+  const [filter, setFilter] = useState<'ALL' | 'REPORTING' | 'DEGRADED' | 'STALE' | 'NO_TRAFFIC'>('REPORTING');
   const [railSearch, setRailSearch] = useState('');
 
   const filteredList = useMemo(() => {

@@ -697,7 +697,7 @@ export function GatewayPlacementPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 60px)', margin: -20, position: 'relative' }}>
       {/* 1. TOP HEADER BAR matching Cognecto Beta 1:1 */}
-      <div style={{
+      <div className="gp-header" style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
