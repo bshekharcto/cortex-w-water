@@ -91,11 +91,6 @@
   flex-wrap: wrap;
 }
 
-.gis-layer-pills {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
 .gis-layer-btn {
   background: var(--cw-surface-soft, #F8FAFC);
   border: 1px solid var(--cw-border, #E2E8F0);
@@ -1761,3 +1756,7 @@
   .gis-meter-drawer--inmap .gis-meter-kpi-grid { grid-template-columns: 1fr; }
   .gis-meter-drawer--inmap .gis-readings-stats-strip { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* Network Explorer: the show / hide switches for the map layers, top left under the Map / Satellite switch */
+.gis-map-layers { position: absolute; top: 56px; left: 12px; z-index: 20; display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-radius: 8px; background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(4px); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); font-size: 12px; }
+.gis-map-layers label { display: flex; align-items: center; gap: 8px; font-weight: 500; color: #1E293B; cursor: pointer; white-space: nowrap; }

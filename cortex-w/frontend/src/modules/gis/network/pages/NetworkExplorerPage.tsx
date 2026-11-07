@@ -683,25 +683,6 @@ export function NetworkExplorerPage() {
         </div>
 
         <div className="gis-toolbar-right">
-          <div className="gis-layer-pills">
-            <button className={`gis-layer-btn ${showGateways ? 'gis-layer-btn--active' : ''}`} onClick={() => setShowGateways(!showGateways)}>
-              Gateways ({filteredGateways.length})
-            </button>
-            <button className={`gis-layer-btn ${showMeters ? 'gis-layer-btn--active' : ''}`} onClick={() => setShowMeters(!showMeters)}>
-              Meters ({filteredPoints.length.toLocaleString()})
-            </button>
-            <button className={`gis-layer-btn ${showCircles ? 'gis-layer-btn--active' : ''}`} onClick={() => setShowCircles(!showCircles)}>
-              Coverage Circles
-            </button>
-            <button
-              className={`gis-layer-btn ${enableClustering ? 'gis-layer-btn--active' : ''}`}
-              onClick={() => setEnableClustering(!enableClustering)}
-              title="Group nearby meters"
-            >
-              Cluster ({enableClustering ? 'On' : 'Off'})
-            </button>
-          </div>
-
           <div className="gis-view-tabs">
             <button className={`gis-view-tab ${activeView === 'map' ? 'gis-view-tab--active' : ''}`} onClick={() => setActiveView('map')}>
               <MapIcon size={12} style={{ display: 'inline', marginRight: 4 }} />
@@ -731,6 +712,26 @@ export function NetworkExplorerPage() {
       {/* Map - kept mounted so the Google Maps canvas survives tab switches */}
       <div className="gis-map-viewport" style={{ display: activeView === 'map' ? 'block' : 'none' }}>
         <div ref={mapContainerRef} className="gis-google-map-canvas" />
+
+        {/* Top left, under the Map / Satellite switch: what to show on the map */}
+        <div className="gis-map-layers">
+          <label>
+            <input type="checkbox" checked={showMeters} onChange={(e) => setShowMeters(e.target.checked)} />
+            <span>Meters ({filteredPoints.length.toLocaleString()})</span>
+          </label>
+          <label>
+            <input type="checkbox" checked={showGateways} onChange={(e) => setShowGateways(e.target.checked)} />
+            <span>Gateways ({filteredGateways.length})</span>
+          </label>
+          <label>
+            <input type="checkbox" checked={showCircles} onChange={(e) => setShowCircles(e.target.checked)} />
+            <span>Coverage circles</span>
+          </label>
+          <label title="Group nearby meters">
+            <input type="checkbox" checked={enableClustering} onChange={(e) => setEnableClustering(e.target.checked)} />
+            <span>Cluster</span>
+          </label>
+        </div>
 
         {/* Nothing to draw yet: say what is being waited for. Quiet background refreshes only show the thin bar. */}
         {!loadError && !data.metersReady && !data.gatewaysReady && (data.isLoading || !isLoaded) && (
