@@ -258,6 +258,12 @@ export function NetworkExplorerPage() {
     });
   }, [gateways, selectedGatewayId, mapSearch]);
 
+  // The map always draws every gateway: picking one in the filter opens it (coverage, fly-to, details) but does not hide the others.
+  const mapGateways = useMemo(() => {
+    const q = mapSearch.toLowerCase();
+    return gateways.filter((g) => !q || g.gatewayId.includes(q) || gatewayLabel(g).toLowerCase().includes(q));
+  }, [gateways, mapSearch]);
+
   const filteredPoints = useMemo(
     () =>
       points.filter((p) => {
@@ -442,8 +448,8 @@ export function NetworkExplorerPage() {
   }, [isLoaded, siteId, data.loadedSiteId, points, gateways, fitMapTo]);
 
   // Searching moves the map to what was found; clearing the search goes back to the whole selection.
-  const shownRef = useRef({ filteredPoints, filteredGateways, points, gateways });
-  shownRef.current = { filteredPoints, filteredGateways, points, gateways };
+  const shownRef = useRef({ filteredPoints, mapGateways, points, gateways });
+  shownRef.current = { filteredPoints, mapGateways, points, gateways };
   const lastSearchRef = useRef('');
   useEffect(() => {
     const previous = lastSearchRef.current;
@@ -451,7 +457,7 @@ export function NetworkExplorerPage() {
     if (!isLoaded || !mapInstanceRef.current || previous === mapSearch) return;
     const r = shownRef.current;
     const box = mapSearch
-      ? unionBounds(trimmedBounds(r.filteredPoints, 0), trimmedBounds(r.filteredGateways, 0))
+      ? unionBounds(trimmedBounds(r.filteredPoints, 0), trimmedBounds(r.mapGateways, 0))
       : unionBounds(trimmedBounds(r.points), trimmedBounds(r.gateways));
     if (box) fitMapTo(box);
   }, [mapSearch, isLoaded, fitMapTo]);
@@ -468,7 +474,7 @@ export function NetworkExplorerPage() {
     circlesRef.current = [];
 
     if (!showGateways) return;
-    filteredGateways.forEach((gw) => {
+    mapGateways.forEach((gw) => {
       const marker = new google.maps.Marker({
         position: { lat: gw.lat, lng: gw.lng },
         map: mapInstanceRef.current,
@@ -506,7 +512,7 @@ export function NetworkExplorerPage() {
         circlesRef.current.push(circle);
       }
     });
-  }, [isLoaded, filteredGateways, showGateways, showCircles, coverageGatewayId]);
+  }, [isLoaded, mapGateways, showGateways, showCircles, coverageGatewayId]);
 
   // The open gateway's radius circle: drawn at the chosen radius, redrawn as the slider moves, and the map goes to it once
   // when a gateway is opened (not on every slider step, which would fight the user's own panning)
@@ -721,7 +727,7 @@ export function NetworkExplorerPage() {
           </label>
           <label>
             <input type="checkbox" checked={showGateways} onChange={(e) => setShowGateways(e.target.checked)} />
-            <span>Gateways ({filteredGateways.length})</span>
+            <span>Gateways ({mapGateways.length})</span>
           </label>
           <label>
             <input type="checkbox" checked={showCircles} onChange={(e) => setShowCircles(e.target.checked)} />
