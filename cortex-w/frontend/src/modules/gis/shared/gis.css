@@ -1587,16 +1587,6 @@
 .gis-cov-details .gis-action-btn { margin-top: 6px; }
 @media (max-width: 900px) { .gis-map-top { width: 300px; } }
 
-/* gateway + status live together in one box: label, control, divider, label, control, all on one rhythm */
-.gis-filter-group { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 6px 0 10px; background: var(--cw-surface-soft, #F8FAFC); border: 1px solid var(--cw-border, #E2E8F0); border-radius: 8px; flex-shrink: 0; }
-.gis-filter-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #64748B; white-space: nowrap; }
-.gis-filter-sep { width: 1px; height: 18px; background: #CBD5E1; margin: 0 4px; }
-.gis-filter-group .gis-gwpick-btn { min-width: 0; width: auto; max-width: 240px; height: 26px; border-color: transparent; background: #FFFFFF; gap: 6px; }
-.gis-filter-group .gis-gwpick-btn:hover { border-color: #93C5FD; }
-.gis-filter-group .gis-gwpick-btn--active { background: #EFF6FF; border-color: #2563EB; }
-.gis-filter-group .gis-select--bare { height: 26px; background: #FFFFFF; border-color: transparent; }
-.gis-filter-group .gis-select--bare:hover { border-color: #93C5FD; }
-
 /* Network Explorer: the whole bar (title, filters, layers, views) stays on one line on a normal laptop screen; below 1200px it may wrap */
 .gis-container .gis-toolbar { flex-wrap: nowrap; gap: 8px; }
 .gis-container .gis-toolbar-left { flex-wrap: nowrap; gap: 8px; min-width: 0; flex: 1 1 auto; }
@@ -1612,10 +1602,13 @@
 .gis-filter-row .gis-search-wrap { flex: 1 1 220px; min-width: 150px; max-width: 360px; }
 .gis-filter-row .gis-search-input { width: 100%; }
 .gis-filter-row .cc-sitetree-button { min-width: 150px; }
-.gis-filter-group .gis-select--bare { width: auto; min-width: 150px; max-width: 230px; padding: 0 28px 0 8px; text-overflow: ellipsis; }
-.gis-filter-row .gis-filter-group { flex: 1 1 auto; min-width: 0; max-width: 640px; }
-.gis-filter-group .gis-gwpick { flex: 1 1 auto; min-width: 0; }
-.gis-filter-group .gis-gwpick-btn { width: 100%; min-width: 200px; max-width: none; }
+/* the gateway and status filters look like the site filter: one bordered dropdown each, no label */
+.gis-filter-row .gis-gwpick-btn, .gis-filter-row .gis-filter-select { background: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 6px; color: #1E293B; font-size: 12px; font-weight: 600; height: 30px; box-sizing: border-box; padding: 5px 10px; }
+.gis-filter-row .gis-gwpick-btn { width: 100%; min-width: 220px; max-width: 380px; }
+.gis-filter-row .gis-gwpick-btn:hover, .gis-filter-row .gis-filter-select:hover { border-color: #93C5FD; }
+.gis-filter-row .gis-gwpick-btn--active { background: #EFF6FF; border-color: #2563EB; }
+.gis-filter-row .gis-filter-select { width: auto; min-width: 150px; max-width: 230px; padding-right: 28px; text-overflow: ellipsis; }
+
 @media (max-width: 1200px) {
   .gis-container .gis-toolbar, .gis-container .gis-toolbar-left, .gis-container .gis-toolbar-right { flex-wrap: wrap; }
   .gis-filter-row { flex-wrap: wrap; }
@@ -1623,7 +1616,6 @@
 @media (max-width: 1500px) {
   .gis-container .gis-fullscreen-btn span { display: none; }
   .gis-container .gis-fullscreen-btn { padding-left: 8px; padding-right: 8px; }
-  .gis-filter-group .gis-filter-label { font-size: 10px; }
 }
 
 /* nearest gateway: label, gateway and distance on a single line (a long gateway name is cut with … rather than wrapping) */
@@ -1696,7 +1688,6 @@
 .gis-meter-drawer-header .gis-icon-btn { flex-shrink: 0; }
 .gis-meter-drawer-header .gis-meter-nearest-gw { max-width: 100%; box-sizing: border-box; overflow: hidden; }
 .gis-meter-drawer-header .gis-meter-id-title { overflow-wrap: anywhere; }
-
 
 /* ---- Meter 360 as a full-height panel (placement 'screen'; placement 'map' further down keeps it inside the map's height) (the same layout as the Household 360), wherever a meter is opened ----
    It slides in from the right edge of the screen over the page, so it is never boxed in by the map or the table behind it:

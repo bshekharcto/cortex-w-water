@@ -660,8 +660,6 @@ export function NetworkExplorerPage() {
 
           <SiteTreeSelect sites={sites} value={siteId} onChange={setSiteId} />
 
-          <div className="gis-filter-group">
-            <span className="gis-filter-label">Gateway</span>
           <GatewayPicker
             gateways={gateways}
             value={selectedGatewayId}
@@ -673,9 +671,7 @@ export function NetworkExplorerPage() {
             }}
           />
 
-            <span className="gis-filter-sep" />
-            <span className="gis-filter-label">Status</span>
-          <select className="gis-select gis-select--bare" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)} title="Meter status">
+          <select className="gis-select gis-filter-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)} title="Meter status">
             <option value="ALL">All statuses</option>
             {STATUS_ORDER.map((s) => (
               <option key={s} value={s}>
@@ -684,7 +680,6 @@ export function NetworkExplorerPage() {
               </option>
             ))}
           </select>
-          </div>
           </div>
         </div>
 
