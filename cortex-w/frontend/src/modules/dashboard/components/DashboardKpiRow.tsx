@@ -70,7 +70,7 @@ export function DashboardKpiRow({
         iconTone="blue"
         label="Connected"
         value={formatNumber(kpis.everConnected)}
-        subtitle={`${kpis.everConnectedPct.toFixed(2)}% have reported at least once`}
+        subtitle={`${kpis.everConnectedPct.toFixed(2)}% have reported`}
       />
 
       {/* 6. Yesterday Flow (m³) */}
