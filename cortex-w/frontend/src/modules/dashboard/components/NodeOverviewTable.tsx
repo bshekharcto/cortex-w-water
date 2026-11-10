@@ -81,9 +81,12 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
     );
   }
 
+  // what the rows are called for this client ("ULB", "Division"...); "Area" when no name has been set
+  const levelLabel = nodes[0]?.levelLabel || 'Area';
+
   const heading = (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 12 }}>
-      <h2 className="cw-section-title" style={{ margin: 0 }}>Area Overview</h2>
+      <h2 className="cw-section-title" style={{ margin: 0 }}>{levelLabel} Overview</h2>
       {toolbar}
     </div>
   );
@@ -106,7 +109,7 @@ export function NodeOverviewTable({ nodes, isLoading, onSelectNode, toolbar }: N
           <thead>
             <tr>
               <th style={{ cursor: 'pointer' }} onClick={() => handleSort('name')}>
-                <div style={{ display: 'flex', alignItems: 'center' }}>Area {renderSortIcon('name')}</div>
+                <div style={{ display: 'flex', alignItems: 'center' }}>{levelLabel} {renderSortIcon('name')}</div>
               </th>
               <th style={{ cursor: 'pointer', textAlign: 'right' }} onClick={() => handleSort('totalDevices')}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>Devices {renderSortIcon('totalDevices')}</div>

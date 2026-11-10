@@ -7,12 +7,14 @@ interface DashboardKpiRowProps {
   isLeaf: boolean; // true = currently showing meters (no "child areas" concept)
   kpis: DashboardKpis | null;
   isLoading?: boolean;
+  childLabelPlural?: string; // what the areas below are called for this client: "ULBs", "Divisions"... default "Areas"
 }
 
 export function DashboardKpiRow({
   isLeaf,
   kpis,
   isLoading,
+  childLabelPlural = 'Areas',
 }: DashboardKpiRowProps) {
   if (isLoading || !kpis) {
     return (
@@ -40,7 +42,7 @@ export function DashboardKpiRow({
         <KpiCard
           icon={MapPin}
           iconTone="primary"
-          label="Areas Below"
+          label={childLabelPlural}
           value={formatNumber(kpis.childAreaCount ?? 0)}
           subtitle="Configured sub-areas"
         />

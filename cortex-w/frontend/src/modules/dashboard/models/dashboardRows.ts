@@ -6,6 +6,8 @@ export interface NodeRow {
   id: string;
   name: string;
   level: number | null;
+  levelLabel?: string;           // what this level is called for the client ("ULB", "Division"); "Area" when none is set
+  levelLabelPlural?: string;
   parentId: string | null;
   parentName: string | null;
   hasChildren: boolean;
