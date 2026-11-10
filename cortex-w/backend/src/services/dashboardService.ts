@@ -43,8 +43,17 @@ export interface SiteNode {
   level: number | null;
   parentId: number | null;
   parentName: string | null;
+  clientId: number | null; // the client the site belongs to (site_metadata.tenant_id): which level names apply
   timeZone: string; // a zone Postgres reads correctly, e.g. "UTC-05:30" (5 h 30 min east) or "Asia/Kolkata"
 }
+
+/** What the Dashboard calls one level of one client's site tree (table site_level_labels, filled by hand). */
+interface LevelLabel {
+  label: string;
+  plural: string;
+}
+
+const DEFAULT_LEVEL_LABEL: LevelLabel = { label: 'Area', plural: 'Areas' };
 
 /** One row of a node's meter list (a page of it): what the meter table shows. */
 export interface MeterPageRow {
@@ -81,6 +90,7 @@ interface Snapshot {
   nowLocal: Map<string, string>; // zone -> the clock time there when the scheduler last updated the numbers
   sites: Map<number, SiteNode>;
   childrenOf: Map<number, number[]>;
+  levelLabels: Map<string, LevelLabel>; // "clientId:level" -> its name; a missing key means "Area" / "Areas"
   direct: Map<number, NodeTotals>;  // per site, the meters attached to that site itself
   subtree: Map<number, NodeTotals>; // per site, itself and everything below (filled on first use)
 }
@@ -190,8 +200,8 @@ function subtreeTotals(snap: Snapshot, siteId: number): NodeTotals {
 }
 
 async function buildSnapshot(): Promise<Snapshot> {
-  const [siteRes, statsRes, zoneRes] = await Promise.all([
-    pool.query(`SELECT site_id, name, level, parent_site_id, tz_sql FROM site_metadata WHERE is_active`),
+  const [siteRes, statsRes, zoneRes, labelRes] = await Promise.all([
+    pool.query(`SELECT site_id, name, level, parent_site_id, tenant_id, tz_sql FROM site_metadata WHERE is_active`),
     pool.query(STATS_SQL),
     // when the cortex history scheduler last updated the daily rows (every 15 minutes), as the clock time of each zone
     pool.query(
@@ -199,7 +209,15 @@ async function buildSnapshot(): Promise<Snapshot> {
        FROM (SELECT DISTINCT tz_sql AS tz FROM site_metadata WHERE is_active) z
        CROSS JOIN (SELECT MAX(updated_at) AS ts FROM water_meter_daily WHERE day >= CURRENT_DATE - 2) u`
     ),
+    // the level names are optional: before migration 017 (or with no rows) every level is simply called "Area"
+    pool
+      .query(`SELECT client_id, level, label, label_plural FROM site_level_labels`)
+      .catch(() => ({ rows: [] as any[] })),
   ]);
+  const levelLabels = new Map<string, LevelLabel>();
+  for (const r of labelRes.rows) {
+    levelLabels.set(`${Number(r.client_id)}:${Number(r.level)}`, { label: r.label, plural: r.label_plural });
+  }
   const nowLocal = new Map<string, string>(zoneRes.rows.filter((r: any) => r.local).map((r: any) => [r.tz, r.local]));
   const updatedAtRow = zoneRes.rows.find((r: any) => r.updated_at);
   const dataUpdatedAt: number | null = updatedAtRow ? new Date(updatedAtRow.updated_at).getTime() : null; // null: no daily rows lately
@@ -212,6 +230,7 @@ async function buildSnapshot(): Promise<Snapshot> {
       level: r.level,
       parentId: r.parent_site_id != null ? Number(r.parent_site_id) : null,
       parentName: null,
+      clientId: r.tenant_id != null ? Number(r.tenant_id) : null,
       timeZone: r.tz_sql || DEFAULT_ZONE,
     });
   }
@@ -249,7 +268,7 @@ async function buildSnapshot(): Promise<Snapshot> {
 
   if (unplaced > 0) console.warn(`[dashboard] ${unplaced} active meter(s) have no known site and are left out of every total`);
 
-  return { builtAt: Date.now(), dataUpdatedAt, nowLocal, sites, childrenOf, direct, subtree: new Map() };
+  return { builtAt: Date.now(), dataUpdatedAt, nowLocal, sites, childrenOf, levelLabels, direct, subtree: new Map() };
 }
 
 function startBuild(): Promise<Snapshot> {
@@ -336,6 +355,8 @@ export interface NodeSummary {
   id: string;
   name: string;
   level: number | null;
+  levelLabel: string; // what this level is called for the node's client: "ULB", "Division"... or "Area" when none is set
+  levelLabelPlural: string;
   parentId: string | null;
   parentName: string | null;
   hasChildren: boolean;
@@ -355,11 +376,18 @@ export interface NodeSummary {
 
 const round2 = (n: number) => Number(n.toFixed(2));
 
+/** The name of a level for a client: its row in site_level_labels, else "Area" / "Areas". */
+function levelLabelFor(snap: Snapshot, clientId: number | null, level: number | null): LevelLabel {
+  if (clientId == null || level == null) return DEFAULT_LEVEL_LABEL;
+  return snap.levelLabels.get(`${clientId}:${level}`) ?? DEFAULT_LEVEL_LABEL;
+}
+
 function summarize(snap: Snapshot, node: SiteNode, allowed: Set<number>, parentIdParam: string | null): NodeSummary {
   return summaryOf(snap, node.id, node.name, node.level, node.parentName, subtreeTotals(snap, node.id), {
     parentIdParam,
     hasChildren: (snap.childrenOf.get(node.id) ?? []).some((c) => allowed.has(c)),
     zone: node.timeZone,
+    clientId: node.clientId,
   });
 }
 
@@ -370,12 +398,15 @@ function summaryOf(
   level: number | null,
   parentName: string | null,
   t: NodeTotals,
-  opts: { parentIdParam: string | null; hasChildren: boolean; zone: string }
+  opts: { parentIdParam: string | null; hasChildren: boolean; zone: string; clientId: number | null }
 ): NodeSummary {
+  const names = levelLabelFor(snap, opts.clientId, level);
   return {
     id: String(id),
     name,
     level,
+    levelLabel: names.label,
+    levelLabelPlural: names.plural,
     parentId: opts.parentIdParam,
     parentName,
     hasChildren: opts.hasChildren,
@@ -479,7 +510,7 @@ export async function getNodeChildren(parentRef: string | null, authHeader?: str
         parent.level != null ? parent.level + 1 : null,
         parent.name,
         own,
-        { parentIdParam: String(parent.id), hasChildren: false, zone: parent.timeZone }
+        { parentIdParam: String(parent.id), hasChildren: false, zone: parent.timeZone, clientId: parent.clientId }
       )
     );
   }

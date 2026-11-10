@@ -132,11 +132,14 @@ export function DashboardPage() {
     nav(`/app/dashboard/${[...pathIds, node.id].join('/')}`);
   };
 
+  // what the areas below are called for this client ("ULBs", "Divisions"...); "Areas" when no name has been set
+  const childLabelPlural = childNodes[0]?.levelLabelPlural || 'Areas';
+
   const searchPlaceholder = isLeafView
     ? 'Search device ID, meter ID, consumer, address...'
     : currentNodeId === null
-    ? 'Search areas...'
-    : `Search areas in ${ancestors[ancestors.length - 1]?.name || ''}...`;
+    ? `Search ${childLabelPlural.toLowerCase()}...`
+    : `Search ${childLabelPlural.toLowerCase()} in ${ancestors[ancestors.length - 1]?.name || ''}...`;
 
   const activeError = childrenError || (isLeafView && metersError) || undefined;
 
@@ -240,6 +243,7 @@ export function DashboardPage() {
             isLeaf={isLeafView}
             kpis={kpis}
             isLoading={false}
+            childLabelPlural={childLabelPlural}
           />
 
           {/* 4. Scope-specific data table; the search and the filters sit at the right of its heading */}
